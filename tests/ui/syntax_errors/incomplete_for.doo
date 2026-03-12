@@ -1,0 +1,8 @@
+// Tests that for loop without iterable compiles
+// Note: for {} is treated as an infinite loop by the compiler
+
+fn main() {
+    for {
+        print("loop");
+    }
+}

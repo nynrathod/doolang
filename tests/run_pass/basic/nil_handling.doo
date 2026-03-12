@@ -1,0 +1,19 @@
+// OUTPUT: no value
+// OUTPUT: has value
+
+fn maybeValue(hasIt: Bool) -> Int ! Str {
+    if !hasIt { Err "none"; }
+    Ok 42;
+}
+
+fn main() {
+    let _, e1 = maybeValue(false);
+    if e1 != nil {
+        print("no value");
+    }
+
+    let v, e2 = maybeValue(true);
+    if e2 == nil {
+        print("has value");
+    }
+}

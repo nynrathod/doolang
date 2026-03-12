@@ -126,4 +126,18 @@ fn main() {
         },
         _ => print("Default: Other result"),
     }
+
 }
+
+
+    // expect_output("=== Nested Match: HttpCode ===");
+    // expect_output("Fatal server error");
+    // expect_output("=== Nested Match: Complex Payloads ===");
+    // expect_output("Matched all triple values");
+    // expect_output("=== Nested Match: Arrays and Maps ===");
+    // expect_output("First array element is 1");
+    // expect_output("Role is admin");
+    // expect_output("=== Deeply Nested Enums ===");
+    // expect_output("Deep Success 200");
+    // expect_output("=== Default Case in Nested Match ===");
+    // expect_output("Default: Success with code 123");

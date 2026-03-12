@@ -1,0 +1,23 @@
+[package]
+name = "doo_ffi_core"
+version.workspace = true
+edition.workspace = true
+description = "Core FFI types shared across all Doo FFI libraries"
+license = "MIT"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# Serialization (needed by rfc7807.rs, validation.rs)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# C interop
+libc = "0.2"
+
+# Clean float formatting (shortest representation)
+ryu = "1.0"
+
+[dev-dependencies]
+pretty_assertions = "1.4"

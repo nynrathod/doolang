@@ -1,0 +1,11 @@
+// ERROR: arithmetic to Void
+// This program should fail to compile because doSomething returns void and cannot be used in an expression
+
+fn doSomething() {
+    print("doing something");
+}
+
+fn main() {
+    let x = doSomething() + 1;
+    print(x);
+}

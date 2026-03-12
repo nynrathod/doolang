@@ -1,0 +1,17 @@
+// OUTPUT: Starting program
+// OUTPUT: x = 10
+// OUTPUT: y = 20
+// OUTPUT: sum = 30
+// OUTPUT: Done
+// Tests multi-line program with various statements
+
+fn main() {
+    print("Starting program");
+    let x = 10;
+    print("x = ${x}");
+    let y = 20;
+    print("y = ${y}");
+    let sum = x + y;
+    print("sum = ${sum}");
+    print("Done");
+}

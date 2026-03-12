@@ -1,0 +1,19 @@
+// Memory leak test: multiple error handling paths
+fn safe_divide(a: Int, b: Int) -> Int ! Str {
+    if b == 0 { Err "cannot divide by zero"; }
+    Ok a / b;
+}
+
+fn main() {
+    let r1, e1 = safe_divide(100, 10);
+    if e1 == nil { print(r1); }
+
+    let r2, e2 = safe_divide(50, 0);
+    if e2 != nil { print(e2); }
+
+    let r3, e3 = safe_divide(200, 4);
+    if e3 == nil { print(r3); }
+
+    let r4, e4 = safe_divide(0, 5);
+    if e4 == nil { print(r4); }
+}

@@ -1,0 +1,26 @@
+// OUTPUT: Result: [5, 10, 15, 20]
+// OUTPUT: Multiplier still accessible: 5
+// OUTPUT: Nums still accessible: [1, 2, 3, 4]
+// OUTPUT: Filtered: [3, 4]
+// OUTPUT: Threshold still accessible: 2
+// OUTPUT: Reduced: 110
+// OUTPUT: Initial still accessible: 100
+fn main() {
+    let multiplier = 5;
+    let nums = [1, 2, 3, 4];
+
+    let result = nums.map((x) => x * multiplier);
+    print("Result:", result);
+    print("Multiplier still accessible:", multiplier);
+    print("Nums still accessible:", nums);
+
+    let threshold = 2;
+    let filtered = nums.filter((x) => x > threshold);
+    print("Filtered:", filtered);
+    print("Threshold still accessible:", threshold);
+
+    let initial = 100;
+    let reduced = nums.reduce(initial, (acc, x) => acc + x);
+    print("Reduced:", reduced);
+    print("Initial still accessible:", initial);
+}

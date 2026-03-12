@@ -56,3 +56,25 @@ fn main() {
 
     print("\n=== All bounds tests passed ===");
 }
+
+// EXPECT: === Array Bounds Checking ===
+// EXPECT: arr: [10, 20, 30, 40, 50]
+// EXPECT: arr length: 5
+// EXPECT: Valid accesses:
+// EXPECT: arr[0]: 10
+// EXPECT: arr[2]: 30
+// EXPECT: arr[4]: 50
+// EXPECT: floats: [1.1, 2.2, 3.3]
+// EXPECT: floats length: 3
+// EXPECT: floats[0]: 1.1
+// EXPECT: floats[2]: 3.3
+// EXPECT: flags: [true, false, true, false]
+// EXPECT: flags length: 4
+// EXPECT: flags[0]: true
+// EXPECT: flags[3]: false
+// EXPECT: === Array Set Bounds Checking ===
+// EXPECT: nums before: [1, 2, 3, 4, 5]
+// EXPECT: nums after valid sets: [100, 2, 3, 4, 500]
+// EXPECT: bools before: [true, true, true]
+// EXPECT: bools after valid sets: [false, true, false]
+// EXPECT: === All bounds tests passed ===

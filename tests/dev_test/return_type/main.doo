@@ -149,3 +149,29 @@ fn main() {
     print("TEST COMPLETE");
     print("===========================================================");
 }
+
+// EXPECT:   returnInt(): 42
+// EXPECT:   returnFloat(): 3.14
+// EXPECT:   returnBool(): true
+// EXPECT:   returnStr(): Hello
+// EXPECT:   returnArrayInt(): [1, 2, 3]
+// EXPECT:   returnArrayFloat(): [1.5, 2.5, 3.5]
+// EXPECT:   returnArrayBool(): [true, false, true]
+// EXPECT:   returnArrayStr(): ["one", "two", "three"]
+// EXPECT:   returnMapStrInt(): {"a": 1, "b": 2}
+// EXPECT:   returnMapStrFloat(): {"x": 1.5, "y": 2.5}
+// EXPECT:   returnMapStrBool(): {"yes": true, "no": false}
+// EXPECT:   returnMapStrStr(): {"key": "value"}
+// EXPECT:   returnMapIntInt(): {1: 10, 2: 20}
+// EXPECT:   returnMapIntFloat(): {1: 1.5, 2: 2.5}
+// EXPECT:   returnMapIntBool(): {1: true, 2: false}
+// EXPECT:   returnMapIntStr(): {1: "one", 2: "two"}
+// EXPECT:   returnMapFloatInt(): {1.1: 100, 2.2: 200}
+// EXPECT:   returnMapFloatFloat(): {1.1: 1.11, 2.2: 2.22}
+// EXPECT:   returnMapFloatBool(): {1.1: true, 2.2: false}
+// EXPECT:   returnMapFloatStr(): {1.1: "one.one", 2.2: "two.two"}
+// EXPECT:   returnMapBoolInt(): {true: 1, false: 0}
+// EXPECT:   returnMapBoolFloat(): {true: 1.1, false: 0.0}
+// EXPECT:   returnMapBoolBool(): {true: false, false: true}
+// EXPECT:   returnMapBoolStr(): {true: "yes", false: "no"}
+// EXPECT: TEST COMPLETE

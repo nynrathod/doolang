@@ -1,0 +1,19 @@
+[package]
+name = "doo_hir"
+version.workspace = true
+edition.workspace = true
+description = "High-level Intermediate Representation for the Doo compiler"
+license = "MIT"
+
+[dependencies]
+doo_core = { path = "../doo_core" }
+doo_frontend = { path = "../doo_frontend" }
+
+# Fast hash maps
+rustc-hash = "2.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+pretty_assertions = "1.4"

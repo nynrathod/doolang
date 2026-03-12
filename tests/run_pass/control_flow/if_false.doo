@@ -1,0 +1,10 @@
+// OUTPUT: Condition is false
+// Tests if-else when condition is false
+
+fn main() {
+    if false {
+        print("This should not print");
+    } else {
+        print("Condition is false");
+    }
+}

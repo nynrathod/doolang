@@ -288,3 +288,107 @@ fn main() {
 
     testAllTypeCasts();
 }
+
+// EXPECT: === DOOLANG TYPE CAST TEST SUITE ===
+// EXPECT:
+// EXPECT: PART 1: ALLOWED CASTS
+// EXPECT: ---------------------
+// EXPECT: INT CASTS:
+// EXPECT:   Int -> Int: 42 type: Int
+// EXPECT:   Int -> Float: 42.0 type: Float
+// EXPECT:   Int -> Str: 42 type: Str
+// EXPECT:
+// EXPECT: FLOAT CASTS:
+// EXPECT:   Float -> Int: 3 type: Int
+// EXPECT:   Float -> Float: 3.14 type: Float
+// EXPECT:   Float -> Str: 3.14 type: Str
+// EXPECT:
+// EXPECT: BOOL CASTS:
+// EXPECT:   true -> Int: 1 type: Int
+// EXPECT:   false -> Int: 0 type: Int
+// EXPECT:   true -> Str: 1 type: Str
+// EXPECT:   false -> Str: 0 type: Str
+// EXPECT:
+// EXPECT: STRING CASTS:
+// EXPECT:   '123' -> Int: 123 type: Int
+// EXPECT:   '3.14' -> Float: 3.14 type: Float
+// EXPECT:   'hello' -> Str: hello type: Str
+// EXPECT:
+// EXPECT: PART 2: EDGE CASES
+// EXPECT: ------------------
+// EXPECT: ZERO VALUES:
+// EXPECT:   0 -> Float: 0.0 Float
+// EXPECT:   0 -> Str: 0 Str
+// EXPECT:   0.0 -> Int: 0 Int
+// EXPECT:   0.0 -> Str: 0.0 Str
+// EXPECT:
+// EXPECT: NEGATIVE VALUES:
+// EXPECT:   -42 -> Float: -42.0 Float
+// EXPECT:   -42 -> Str: -42 Str
+// EXPECT:   -3.14 -> Int: -3 Int
+// EXPECT:   -3.14 -> Str: -3.14 Str
+// EXPECT:
+// EXPECT: FRACTIONAL TRUNCATION:
+// EXPECT:   0.5 -> Int: 0 Int
+// EXPECT:   0.9 -> Int: 0 Int
+// EXPECT:   1.1 -> Int: 1 Int
+// EXPECT:   999.99 -> Int: 999 Int
+// EXPECT:   -0.5 -> Int: 0 Int
+// EXPECT:   -1.9 -> Int: -1 Int
+// EXPECT:
+// EXPECT: LARGE NUMBERS:
+// EXPECT:   999999 -> Float: 999999.0 Float
+// EXPECT:   999999 -> Str: 999999 Str
+// EXPECT:   999999.99 -> Int: 999999 Int
+// EXPECT:   999999.99 -> Str: 999999.99 Str
+// EXPECT:
+// EXPECT: STRING PARSING EDGE CASES:
+// EXPECT:   '007' -> Int: 7 Int
+// EXPECT:   '-123' -> Int: -123 Int
+// EXPECT:   '-3.14' -> Float: -3.14 Float
+// EXPECT:
+// EXPECT: WHITESPACE STRINGS:
+// EXPECT:   Testing whitespace handling...
+// EXPECT:
+// EXPECT: PART 3: BLOCKED CASTS (Compile-Time Errors)
+// EXPECT: ---------------------------------------------
+// EXPECT: The following should cause COMPILE ERRORS:
+// EXPECT:
+// EXPECT: INT -> BOOL:
+// EXPECT:   x, y, z blocked at compile time
+// EXPECT:
+// EXPECT: FLOAT -> BOOL:
+// EXPECT:   a, b, c blocked at compile time
+// EXPECT:
+// EXPECT: STR -> BOOL:
+// EXPECT:   d, e, f blocked at compile time
+// EXPECT:
+// EXPECT: BOOL -> FLOAT:
+// EXPECT:   g, h blocked at compile time
+// EXPECT:
+// EXPECT: ✓ All blocked casts prevented at compile time
+// EXPECT:
+// EXPECT: PART 4: RUNTIME ERRORS (String Parsing)
+// EXPECT: ----------------------------------------
+// EXPECT: The following should cause RUNTIME PANICS:
+// EXPECT:
+// EXPECT: INVALID STRING -> INT:
+// EXPECT:   Testing invalid conversions...
+// EXPECT:   (Uncomment to test panics)
+// EXPECT:
+// EXPECT: PART 5: SPECIAL FLOAT VALUES
+// EXPECT: -----------------------------
+// EXPECT: Testing infinity and division by zero:
+// EXPECT:   (Test these if your language supports infinity/NaN)
+// EXPECT:
+// EXPECT: PART 6: OVERFLOW TESTS
+// EXPECT: ----------------------
+// EXPECT: Testing very large numbers:
+// EXPECT:
+// EXPECT: === TEST COMPLETE ===
+// EXPECT:
+// EXPECT: ALLOWED CASTS: Int/Float/Bool/Str conversions ✓
+// EXPECT: BLOCKED CASTS: Checked at compile time ✓
+// EXPECT: EDGE CASES: Zero, negative, fractional ✓
+// EXPECT: ERROR CASES: Ready to test (uncomment) ✓
+// EXPECT:

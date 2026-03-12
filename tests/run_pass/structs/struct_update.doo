@@ -1,0 +1,15 @@
+// OUTPUT: 30
+// OUTPUT: 31
+// Tests updating struct fields
+
+struct Person {
+    name: Str,
+    age: Int
+}
+
+fn main() {
+    let mut p = Person { name: "Alice", age: 30 };
+    print(p.age);
+    p.age = 31;
+    print(p.age);
+}

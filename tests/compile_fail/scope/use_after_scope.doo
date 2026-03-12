@@ -1,0 +1,9 @@
+// ERROR: Undefined
+// This program should fail to compile because x is only in scope within the if block
+
+fn main() {
+    if true {
+        let x = 42;
+    }
+    print(x);
+}

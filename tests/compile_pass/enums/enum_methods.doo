@@ -1,0 +1,23 @@
+// OUTPUT: Success: 200
+// OUTPUT: Error: Timeout
+enum HttpCode {
+    Success(Int),
+    NotFound(Int),
+    ServerError(Str),
+}
+
+fn describeCode(code: HttpCode) {
+    match code {
+        HttpCode::Success(val) => print("Success:", val),
+        HttpCode::NotFound(val) => print("Not Found:", val),
+        HttpCode::ServerError(msg) => print("Error:", msg),
+    }
+}
+
+fn main() {
+    let code = HttpCode::Success(200);
+    describeCode(code);
+
+    let err = HttpCode::ServerError("Timeout");
+    describeCode(err);
+}

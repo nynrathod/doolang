@@ -126,3 +126,48 @@ fn main() {
 
     print("=== All print edge cases and type tests completed ===");
 }
+
+// EXPECT: Int: 0, NegInt: -42, BigInt: 2147483647
+// EXPECT: Float: 3.14, NegFloat: -2.718
+// EXPECT: Bool True: true, Bool False: false
+// EXPECT: Str: 'hello', EmptyStr: ''
+// EXPECT: Array of Int: [1, 2, 3]
+// EXPECT: Empty Array of Int: []
+// EXPECT: Array of Float: [1.1, 2.2, 3.3]
+// EXPECT: Array of Bool: [true, false, true]
+// EXPECT: Array of Str: ["foo", "bar"]
+// EXPECT: Empty Array of Str: []
+// EXPECT: Map {Str: Int}: {"a": 1, "b": 2}
+// EXPECT: Empty Map {Str: Int}: {}
+// EXPECT: Map {Str: Float}: {"x": 1.5, "y": 2.5}
+// EXPECT: Map {Str: Bool}: {"flag": true, "other": false}
+// EXPECT: Map {Str: Str}: {"first": "one", "second": "two"}
+// EXPECT: Map {Int: Int}: {1: 10, 2: 20}
+// EXPECT: Map {Int: Float}: {1: 1.1, 2: 2.2}
+// EXPECT: Map {Int: Bool}: {1: true, 2: false}
+// EXPECT: Map {Int: Str}: {1: "one", 2: "two"}
+// EXPECT: Map {Float: Int}: {1.1: 10, 2.2: 20}
+// EXPECT: Map {Float: Float}: {1.1: 1.11, 2.2: 2.22}
+// EXPECT: Map {Float: Bool}: {1.1: true, 2.2: false}
+// EXPECT: Map {Float: Str}: {1.1: "one", 2.2: "two"}
+// EXPECT: Map {Bool: Int}: {true: 100, false: 200}
+// EXPECT: Map {Bool: Float}: {true: 1.5, false: 2.5}
+// EXPECT: Map {Bool: Bool}: {true: false, false: true}
+// EXPECT: Map {Bool: Str}: {true: "yes", false: "no"}
+// EXPECT: Struct Point: Point { x: 10, y: 20 }
+// EXPECT: Enum Status: Status::Active
+// EXPECT: Line1
+// EXPECT: Line2	Tabbed
+// EXPECT: Emoji: 🚀
+// EXPECT: Chinese: 世界
+// EXPECT: 123
+// EXPECT: 3.1415
+// EXPECT: true
+// EXPECT: Direct string
+// EXPECT:
+// EXPECT: Complex: 150
+// EXPECT: 150
+// EXPECT: 5000
+// EXPECT: Math: 10 + 5 = 15
+// EXPECT: Math: 10 * 5 = 50
+// EXPECT: === All print edge cases and type tests completed ===

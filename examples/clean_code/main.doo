@@ -1,7 +1,7 @@
 import models::role::{Role};
 import models::address::{Address};
 
-import services::validation::{createUser};
+import services::validation::{CreateUser};
 import services::directory::{UserDirectory};
 
 fn printUser(u: User) {
@@ -26,7 +26,7 @@ fn main() {
         Zipcode: "94102",
     };
 
-    let u1, err1 = createUser(1, "Alice", "alice@company.com", 30, Role::Admin, addr);
+    let u1, err1 = CreateUser(1, "Alice", "alice@company.com", 30, Role::Admin, addr);
 
     if err1 != nil {
         print("Error:", err1.Field, "-", err1.Message);

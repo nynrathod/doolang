@@ -1,0 +1,7 @@
+
+struct Counter { val: Int }
+fn main() {
+    let mut c = Counter { val: 0 };
+    c.val = 42;
+    print(c.val);
+}

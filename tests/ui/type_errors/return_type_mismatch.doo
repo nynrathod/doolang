@@ -1,0 +1,11 @@
+// ERROR: expected Int, found Str
+// Tests that returning the wrong type from a function produces a type error
+
+fn getNumber() -> Int {
+    return "not a number";
+}
+
+fn main() {
+    let x = getNumber();
+    print(x);
+}

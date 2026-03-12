@@ -1,0 +1,16 @@
+// ERROR: UnknownStructField
+// This program should fail to compile because the User struct does not have an 'email' field
+
+struct User {
+    name: Str,
+    age: Int
+}
+
+fn main() {
+    let user = User {
+        name: "Charlie",
+        age: 30,
+        email: "charlie@example.com"
+    };
+    print(user.name);
+}

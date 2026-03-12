@@ -1,0 +1,23 @@
+// Memory leak test: deeply nested struct
+struct Inner {
+    value: Str
+}
+
+struct Middle {
+    inner: Inner,
+    label: Str
+}
+
+struct Outer {
+    middle: Middle,
+    name: Str
+}
+
+fn main() {
+    let inner = Inner { value: "deep" };
+    let middle = Middle { inner: inner, label: "mid" };
+    let outer = Outer { middle: middle, name: "top" };
+    print(outer.name);
+    print(outer.middle.label);
+    print(outer.middle.inner.value);
+}

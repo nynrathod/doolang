@@ -1,0 +1,11 @@
+// OUTPUT: Doubled: [2, 4, 6, 8, 10]
+// OUTPUT: Excited: ["hello!", "world!"]
+fn main() {
+    let nums = [1, 2, 3, 4, 5];
+    let doubled = nums.map((x) => x * 2);
+    print("Doubled:", doubled);
+
+    let strs = ["hello", "world"];
+    let excited = strs.map((s) => s + "!");
+    print("Excited:", excited);
+}

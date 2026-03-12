@@ -1,0 +1,13 @@
+// OUTPUT: 42
+// Tests Ok result variant
+
+fn succeeds() -> Int ! Str {
+    Ok 42;
+}
+
+fn main() {
+    let v, e = succeeds();
+    if e == nil {
+        print(v);
+    }
+}

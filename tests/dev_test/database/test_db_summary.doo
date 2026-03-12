@@ -1,7 +1,7 @@
 import std::Database;
 
 fn main() {
-    let db = Database::postgres()?;
+    let db = Database::Postgres()?;
 
     db.raw("DROP TABLE IF EXISTS demo_users")?;
     db.raw("CREATE TABLE demo_users (id SERIAL PRIMARY KEY, name TEXT, email TEXT, age INT)")?;

@@ -1,0 +1,27 @@
+// OUTPUT: Color name: red
+// OUTPUT: It's blue
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+fn main() {
+    let color = Color::Red;
+    let name = match color {
+        Color::Red => "red",
+        Color::Green => "green",
+        Color::Blue => "blue",
+        _ => "unknown",
+    };
+    print("Color name:", name);
+
+    let c2 = Color::Blue;
+    match c2 {
+        Color::Red => print("It's red"),
+        Color::Green => print("It's green"),
+        Color::Blue => print("It's blue"),
+        _ => print("Unknown color"),
+    }
+}
+

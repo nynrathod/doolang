@@ -1,0 +1,8 @@
+// ERROR: immutable
+// This program should fail to compile because x is not declared as mut
+
+fn main() {
+    let x = 1;
+    x += 10;
+    print(x);
+}

@@ -1,6 +1,6 @@
 import std::Http::Server;
 import std::Database;
-import std::Auth::jwt;
+import std::Auth::Jwt;
 
 struct User {
     id: Int @primary @auto,
@@ -48,7 +48,7 @@ fn GetPublicInfo() -> MessageResponse {
 }
 
 fn main() {
-    let db = Database::postgres()?;
+    let db = Database::Postgres()?;
 
     let app = Server::new(":3100");
 
@@ -56,7 +56,7 @@ fn main() {
 
     app.crud("/products", Product, db);
 
-    app.get("/profile", jwt(), GetProfile);
+    app.get("/profile", Jwt(), GetProfile);
     app.get("/public", GetPublicInfo);
 
     app.start();

@@ -1,0 +1,38 @@
+// OUTPUT: Int: 42
+// OUTPUT: Str: hello
+// OUTPUT: Bool: true
+// OUTPUT: Float: 3.14
+// OUTPUT: Zeros: 0  false 0
+struct AllTypes {
+    intField: Int,
+    strField: Str,
+    boolField: Bool,
+    floatField: Float,
+}
+
+fn main() {
+    let item = AllTypes {
+        intField: 42,
+        strField: "hello",
+        boolField: true,
+        floatField: 3.14,
+    };
+    print("Int:", item.intField);
+    print("Str:", item.strField);
+    print("Bool:", item.boolField);
+    print("Float:", item.floatField);
+
+    let item2 = AllTypes {
+        intField: 0,
+        strField: "",
+        boolField: false,
+        floatField: 0.0,
+    };
+    print(
+        "Zeros:",
+        item2.intField,
+        item2.strField,
+        item2.boolField,
+        item2.floatField,
+    );
+}

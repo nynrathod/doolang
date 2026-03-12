@@ -1,0 +1,6 @@
+
+fn main() {
+    let i = 42;
+    let f = (i as Float);
+    print(f);
+}

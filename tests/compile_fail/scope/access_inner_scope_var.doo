@@ -1,0 +1,11 @@
+// ERROR: Undefined
+// This program should fail to compile because y is only in scope within the inner block
+
+fn main() {
+    let x = 10;
+    {
+        let y = 20;
+        print(y);
+    }
+    print(y);
+}

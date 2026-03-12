@@ -1,0 +1,11 @@
+// ERROR: Mismatch
+// This program should fail to compile because the function expects Int but receives Str
+
+fn double(x: Int) -> Int {
+    return x * 2;
+}
+
+fn main() {
+    let result = double("hello");
+    print(result);
+}

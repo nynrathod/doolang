@@ -1,0 +1,566 @@
+// ============================================================================
+// HTTP Server and Routing - Doo Standard Library
+// ============================================================================
+//
+// NEW FFI DESIGN: Single @extern decorator
+// - @extern("library", "symbol") for explicit symbol
+// - @extern("library") for auto-derived symbol
+//
+// Usage:
+//   import std::Http;
+//
+//   fn getUsers(req: Request) -> Response {
+//       return Response.json("{\"users\": []}", 200);
+//   }
+//
+//   fn main() {
+//       let app = Server::new(":3000");
+//       app.get("/users", getUsers);
+//       app.start();
+//   }
+
+// ============================================================================
+// Core Types
+// ============================================================================
+
+// HTTP Error struct for error handling
+struct HttpError {
+    Status: Int,
+    Message: Str,
+}
+
+// HTTP Request struct - populated by the server for each request
+struct Request {
+    Method: Str,         // GET, POST, PUT, DELETE, PATCH
+    Path: Str,           // /users/123
+    Body: Str,           // Raw request body
+    ContentType: Str,    // Content-Type header value
+}
+
+// HTTP Response struct - return this from handlers
+struct Response {
+    Status: Int,         // HTTP status code
+    Body: Str,           // Response body
+    ContentType: Str,    // Content-Type header
+}
+
+// Next type for middleware chaining - wraps the next handler in the chain
+// NOTE: Uses two Int fields to store a 64-bit pointer on 64-bit systems
+struct Next {
+    HandlerPtrLow: Int,   // Low 32 bits of pointer
+    HandlerPtrHigh: Int,  // High 32 bits of pointer (for 64-bit systems)
+}
+
+// HTTP Server struct
+struct Server {
+    Port: Int,
+    Host: Str,
+}
+
+
+
+// === HTTP Status Codes ===
+
+fn StatusOk() -> Int { return 200; }
+fn StatusCreated() -> Int { return 201; }
+fn StatusAccepted() -> Int { return 202; }
+fn StatusNoContent() -> Int { return 204; }
+
+fn StatusMovedPermanently() -> Int { return 301; }
+fn StatusFound() -> Int { return 302; }
+fn StatusNotModified() -> Int { return 304; }
+
+fn StatusBadRequest() -> Int { return 400; }
+fn StatusUnauthorized() -> Int { return 401; }
+fn StatusForbidden() -> Int { return 403; }
+fn StatusNotFound() -> Int { return 404; }
+fn StatusMethodNotAllowed() -> Int { return 405; }
+fn StatusConflict() -> Int { return 409; }
+fn StatusUnprocessableEntity() -> Int { return 422; }
+fn StatusTooManyRequests() -> Int { return 429; }
+
+fn StatusInternalServerError() -> Int { return 500; }
+fn StatusNotImplemented() -> Int { return 501; }
+fn StatusBadGateway() -> Int { return 502; }
+fn StatusServiceUnavailable() -> Int { return 503; }
+
+// ============================================================================
+// Server - FFI Functions
+// ============================================================================
+
+// Constructor
+@extern("doo_http", "doo_http_server_new")
+fn Server.new(addr: Str) -> Server {}
+
+// Route registration with function pointer handlers
+// All handlers MUST have signature: fn(Request) -> Response
+// The FFI expects this exact signature
+@extern("doo_http", "doo_http_get_fn")
+fn Server.get(self, path: Str, handler: Fn) -> !HttpError {}
+
+@extern("doo_http", "doo_http_post_fn")
+fn Server.post(self, path: Str, handler: Fn) -> !HttpError {}
+
+@extern("doo_http", "doo_http_put_fn")
+fn Server.put(self, path: Str, handler: Fn) -> !HttpError {}
+
+@extern("doo_http", "doo_http_delete_fn")
+fn Server.delete(self, path: Str, handler: Fn) -> !HttpError {}
+
+@extern("doo_http", "doo_http_patch_fn")
+fn Server.patch(self, path: Str, handler: Fn) -> !HttpError {}
+
+// Route registration with middleware (middleware names as string, handler as function pointer)
+@extern("doo_http", "doo_http_get_with_middleware")
+fn Server.getWithMiddleware(self, path: Str, middleware: Str, handler: Fn) -> !HttpError {}
+
+@extern("doo_http", "doo_http_post_with_middleware")
+fn Server.postWithMiddleware(self, path: Str, middleware: Str, handler: Fn) -> !HttpError {}
+
+@extern("doo_http", "doo_http_put_with_middleware")
+fn Server.putWithMiddleware(self, path: Str, middleware: Str, handler: Fn) -> !HttpError {}
+
+@extern("doo_http", "doo_http_delete_with_middleware")
+fn Server.deleteWithMiddleware(self, path: Str, middleware: Str, handler: Fn) -> !HttpError {}
+
+@extern("doo_http", "doo_http_patch_with_middleware")
+fn Server.patchWithMiddleware(self, path: Str, middleware: Str, handler: Fn) -> !HttpError {}
+
+// Middleware registration (function pointer)
+@extern("doo_http", "doo_http_use")
+fn Server.use(self, middleware: Fn) -> Server {}
+
+// Route groups
+@extern("doo_http", "doo_http_group")
+fn Server.group(self, prefix: Str) -> !HttpError {}
+
+// Server lifecycle
+@extern("doo_http", "doo_http_listen")
+fn Server.start(self) -> !HttpError {}
+
+@extern("doo_http", "doo_http_listen")
+fn Server.listen(self) -> !HttpError {}
+
+// Auth and CRUD helpers
+@extern("doo_http", "doo_http_auth")
+fn Server.auth(self, signupPath: Str, loginPath: Str, userStruct: Str, db: Str) -> !HttpError {}
+
+@extern("doo_http", "doo_http_crud")
+fn Server.crud(self, basePath: Str, resourceStruct: Str, db: Str) -> !HttpError {}
+
+// CORS and rate limiting middleware
+@extern("doo_http", "doo_http_cors_custom")
+fn Server.cors(self, options: {Str: Str}?) -> Server {}
+
+@extern("doo_http", "doo_http_ratelimit_custom")
+fn Server.ratelimit(self, options: {Str: Str}?) -> Server {}
+
+// Request logger — ON by default (all levels: Info, Warn, Error)
+// Format: [Doo] HH:MM:SS | STATUS | DURATIONms | METHOD /path
+// Usage:
+//   app.logger()                                  # all levels (default)
+//   app.logger({Level: ["Error", "Warn"]})         # only errors + warnings
+//   app.cors({...}).ratelimit({...}).logger()       # chainable
+@extern("doo_http", "doo_http_logger_custom")
+fn Server.logger(self, options: {Str: Str}?) -> Server {}
+
+// Prometheus-compatible metrics endpoint at /metrics
+// Enables request counting, latency tracking, and error rate monitoring.
+// Usage: app.metrics()
+// After enabling, GET /metrics returns Prometheus text format.
+@extern("doo_http", "doo_http_metrics")
+fn Server.metrics(self) -> Server {}
+
+// ============================================================================
+// Request - FFI Functions
+// ============================================================================
+
+@extern("doo_http", "doo_http_req_query")
+fn Request.query(self, name: Str) -> Str {}
+
+@extern("doo_http", "doo_http_req_param")
+fn Request.param(self, name: Str) -> Str {}
+
+@extern("doo_http", "doo_http_req_header")
+fn Request.header(self, name: Str) -> Str {}
+
+// ============================================================================
+// Next - Middleware Chaining
+// ============================================================================
+
+@extern("doo_http", "doo_http_next_call")
+fn Next.call(self) -> Response {}
+
+// ============================================================================
+// JSON Helpers
+// ============================================================================
+
+@extern("doo_http", "doo_http_parse_json")
+fn parseJson(body: Str) -> Str {}
+
+@extern("doo_http", "doo_http_to_json")
+fn toJson(data: Str) -> Str {}
+
+// === Helper Functions ===
+
+fn JsonResponse(status: Int, body: Str) -> Response {
+    return Response {
+        Status: status,
+        Body: body,
+        ContentType: "application/json",
+    };
+}
+
+fn ErrorResponse(status: Int, message: Str) -> Response {
+    return Response {
+        Status: status,
+        Body: "{\"error\":\"" + message + "\"}",
+        ContentType: "application/json",
+    };
+}
+
+fn OkResponse(body: Str) -> Response {
+    return JsonResponse(200, body);
+}
+
+fn CreatedResponse(body: Str) -> Response {
+    return JsonResponse(201, body);
+}
+
+fn BadRequestResponse(message: Str) -> Response {
+    return ErrorResponse(400, message);
+}
+
+fn UnauthorizedResponse(message: Str) -> Response {
+    return ErrorResponse(401, message);
+}
+
+fn NotFoundResponse(message: Str) -> Response {
+    return ErrorResponse(404, message);
+}
+
+fn InternalErrorResponse(message: Str) -> Response {
+    return ErrorResponse(500, message);
+}
+
+// ============================================================================
+// RFC 7807 Error Response Helpers
+// ============================================================================
+
+@extern("doo_http", "doohttp_error_rfc7807")
+fn ErrorRfc7807(status: Int, detail: Str, instance: Str) -> Str {}
+
+@extern("doo_http", "doohttp_error_rfc7807_with_method")
+fn ErrorRfc7807WithMethod(status: Int, detail: Str, instance: Str, method: Str) -> Str {}
+
+@extern("doo_http", "doohttp_error_rfc7807_validation")
+fn ErrorRfc7807Validation(detail: Str, instance: Str, fieldsJson: Str) -> Str {}
+
+@extern("doo_http", "doohttp_error_rfc7807_bad_request_with_fields")
+fn ErrorRfc7807BadRequestWithFields(detail: Str, instance: Str, fieldsJson: Str) -> Str {}
+
+@extern("doo_http", "doohttp_error_rfc7807_method_not_allowed")
+fn ErrorRfc7807MethodNotAllowed(detail: Str, instance: Str, allowedMethods: Str) -> Str {}
+
+@extern("doo_http", "doohttp_error_rfc7807_parameter")
+fn ErrorRfc7807Parameter(detail: Str, instance: Str, name: Str, expected: Str, received: Str, message: Str) -> Str {}
+
+@extern("doo_http", "doohttp_error_rfc7807_unknown_fields")
+fn ErrorRfc7807UnknownFields(detail: Str, instance: Str, unknownFieldsCsv: Str) -> Str {}
+
+@extern("doo_http", "doohttp_error_rfc7807_content_type")
+fn ErrorRfc7807ContentType(detail: Str, instance: Str, expected: Str, received: Str) -> Str {}
+
+@extern("doo_http", "doohttp_last_error_status")
+fn LastErrorStatus() -> Int {}
+
+@extern("doo_http", "doohttp_last_error_json")
+fn LastErrorJson() -> Str {}
+
+// Convenience functions for RFC 7807 error responses
+fn BadRequestRfc7807(detail: Str, instance: Str) -> Response {
+    let json = ErrorRfc7807(400, detail, instance);
+    return Response {
+        Status: 400,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn UnauthorizedRfc7807(detail: Str, instance: Str) -> Response {
+    let json = ErrorRfc7807(401, detail, instance);
+    return Response {
+        Status: 401,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn ForbiddenRfc7807(detail: Str, instance: Str) -> Response {
+    let json = ErrorRfc7807(403, detail, instance);
+    return Response {
+        Status: 403,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn NotFoundRfc7807(detail: Str, instance: Str) -> Response {
+    let json = ErrorRfc7807(404, detail, instance);
+    return Response {
+        Status: 404,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn MethodNotAllowedRfc7807(detail: Str, instance: Str, allowedMethods: Str) -> Response {
+    let json = ErrorRfc7807MethodNotAllowed(detail, instance, allowedMethods);
+    return Response {
+        Status: 405,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn ConflictRfc7807(detail: Str, instance: Str) -> Response {
+    let json = ErrorRfc7807(409, detail, instance);
+    return Response {
+        Status: 409,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn ValidationErrorRfc7807(detail: Str, instance: Str, fieldsJson: Str) -> Response {
+    let json = ErrorRfc7807Validation(detail, instance, fieldsJson);
+    return Response {
+        Status: 422,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn BadRequestWithFieldsRfc7807(detail: Str, instance: Str, fieldsJson: Str) -> Response {
+    let json = ErrorRfc7807BadRequestWithFields(detail, instance, fieldsJson);
+    return Response {
+        Status: 400,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn TooManyRequestsRfc7807(detail: Str, instance: Str, retryAfter: Int) -> Response {
+    // Note: retry_after not yet supported in FFI, using basic error
+    let json = ErrorRfc7807(429, detail, instance);
+    return Response {
+        Status: 429,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn InternalErrorRfc7807(detail: Str, instance: Str) -> Response {
+    let json = ErrorRfc7807(500, detail, instance);
+    return Response {
+        Status: 500,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn PathParamErrorRfc7807(detail: Str, instance: Str, name: Str, expected: Str, received: Str, message: Str) -> Response {
+    let json = ErrorRfc7807Parameter(detail, instance, name, expected, received, message);
+    return Response {
+        Status: 400,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn UnknownFieldsRfc7807(detail: Str, instance: Str, unknownFieldsCsv: Str) -> Response {
+    let json = ErrorRfc7807UnknownFields(detail, instance, unknownFieldsCsv);
+    return Response {
+        Status: 400,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+fn ContentTypeRfc7807(detail: Str, instance: Str, expected: Str, received: Str) -> Response {
+    let json = ErrorRfc7807ContentType(detail, instance, expected, received);
+    return Response {
+        Status: 400,
+        Body: json,
+        ContentType: "application/json",
+    };
+}
+
+// === Response Static Methods ===
+
+// Response.json() - Create JSON response with custom status code
+fn Response.json(body: Str, status: Int) -> Response {
+    return Response {
+        Status: status,
+        Body: body,
+        ContentType: "application/json",
+    };
+}
+
+// Response.text() - Create plain text response with custom status code
+fn Response.text(body: Str, status: Int) -> Response {
+    return Response {
+        Status: status,
+        Body: body,
+        ContentType: "text/plain",
+    };
+}
+
+// Response.html() - Create HTML response with custom status code
+fn Response.html(body: Str, status: Int) -> Response {
+    return Response {
+        Status: status,
+        Body: body,
+        ContentType: "text/html",
+    };
+}
+
+// Response.Json() - Create JSON response from map/struct
+fn Response.Json(data: Str) -> Response {
+    return Response {
+        Status: 200,
+        Body: data,
+        ContentType: "application/json",
+    };
+}
+
+// ============================================================================
+// WebSocket — Built-in, no separate import needed
+// ============================================================================
+//
+// Usage:
+//   app.ws("/chat", (conn) => {
+//       conn.on("message", (msg) => {
+//           conn.emit("echo", msg)
+//       })
+//       conn.onConnect(() => { print("connected") })
+//       conn.onDisconnect(() => { print("disconnected") })
+//       conn.onError((err) => { print("error: " + err) })
+//       conn.join("room1")
+//   })
+//
+//   // Broadcast to all connections
+//   WS.broadcast("announcement", "{\"msg\": \"hello all\"}")
+//
+//   // Emit to a room
+//   WS.toRoom("room1").emit("chat", "{\"text\": \"hi room\"}")
+
+// WebSocket Connection — represents a single connected client
+struct WsConnection {
+    Id: Str,
+    Closed: Bool,
+}
+
+// WebSocket Error — represents an error on a WebSocket connection
+// Passed as a string message from the FFI layer
+struct WsError {
+    Message: Str,
+}
+
+// ============================================================================
+// Server.ws — Register a WebSocket route
+// ============================================================================
+
+@extern("doo_ws", "doo_ws_route")
+fn Server.ws(self, path: Str, handler: Fn) -> !HttpError {}
+
+// ============================================================================
+// WsConnection Methods — Instance methods on a connection
+// ============================================================================
+
+// Get the unique connection ID
+@extern("doo_ws", "doo_ws_conn_id")
+fn WsConnection.id(self) -> Str {}
+
+// Emit a JSON event to this connection
+// Event framing: { "event": "<event>", "data": <payload> }
+@extern("doo_ws", "doo_ws_conn_emit")
+fn WsConnection.emit(self, event: Str, data: Str) -> !HttpError {}
+
+// Emit raw binary data to this connection
+@extern("doo_ws", "doo_ws_conn_emit_binary")
+fn WsConnection.emitBinary(self, data: Str, len: Int) -> !HttpError {}
+
+// Join a room
+@extern("doo_ws", "doo_ws_conn_join")
+fn WsConnection.join(self, room: Str) -> !HttpError {}
+
+// Leave a room
+@extern("doo_ws", "doo_ws_conn_leave")
+fn WsConnection.leave(self, room: Str) -> !HttpError {}
+
+// Close the connection
+@extern("doo_ws", "doo_ws_conn_close")
+fn WsConnection.close(self) -> !HttpError {}
+
+// Check if connection is closed
+@extern("doo_ws", "doo_ws_conn_is_closed")
+fn WsConnection.isClosed(self) -> Bool {}
+
+// Register an event handler — handler receives (conn, data)
+@extern("doo_ws", "doo_ws_conn_on")
+fn WsConnection.on(self, event: Str, handler: Fn) -> !HttpError {}
+
+// Register lifecycle: onConnect — handler receives (conn)
+@extern("doo_ws", "doo_ws_conn_on_connect")
+fn WsConnection.onConnect(self, handler: Fn) -> !HttpError {}
+
+// Register lifecycle: onDisconnect — handler receives (conn)
+@extern("doo_ws", "doo_ws_conn_on_disconnect")
+fn WsConnection.onDisconnect(self, handler: Fn) -> !HttpError {}
+
+// Register lifecycle: onError — handler receives (conn, err)
+@extern("doo_ws", "doo_ws_conn_on_error")
+fn WsConnection.onError(self, handler: Fn) -> !HttpError {}
+
+// ============================================================================
+// Server WebSocket Instance Methods — Accessible via app.broadcast(), etc.
+// ============================================================================
+
+// Broadcast an event to ALL connected WebSocket clients
+@extern("doo_ws", "doo_ws_broadcast")
+fn Server.broadcast(self, event: Str, data: Str) -> !HttpError {}
+
+// Emit an event to all connections in a specific room
+@extern("doo_ws", "doo_ws_room_emit")
+fn Server.toRoomEmit(self, room: Str, event: Str, data: Str) -> !HttpError {}
+
+// Set WebSocket configuration (JSON string)
+@extern("doo_ws", "doo_ws_config")
+fn Server.wsConfig(self, options: Str) -> !HttpError {}
+
+// Graceful shutdown — close all WebSocket connections
+@extern("doo_ws", "doo_ws_shutdown")
+fn Server.wsShutdown(self) {}
+
+// Get count of active WebSocket connections
+@extern("doo_ws", "doo_ws_active_connections")
+fn Server.activeWsConnections(self) -> Int {}
+
+// Check if a path is a registered WebSocket route
+@extern("doo_ws", "doo_ws_is_ws_route")
+fn Server.isWsRoute(self, path: Str) -> Bool {}
+
+// ============================================================================
+// HTTP Client — Fetch() for outbound HTTP requests
+// ============================================================================
+
+// Make an outbound HTTP request.
+// url: The URL to request.
+// options: ObjectLit with method, body, timeout, headers (like CORS pattern).
+//   Example: { method: "POST", body: "...", timeout: 30, headers: ["Content-Type: application/json"] }
+//   Default: GET with no headers, 30s timeout.
+// Returns: JSON string with status, body, ok, headers.
+//   Example: '{"status":200,"body":"...","ok":true,"headers":{...}}'
+@extern("doo_http", "doo_http_fetch")
+fn Fetch(url: Str, options: {Str: Str}?) -> Str {}

@@ -1,0 +1,13 @@
+// Tests that using an undefined enum variant produces a resolution error
+// Note: compiler doesn't currently check for undefined enum variants
+
+enum Color {
+    Red,
+    Green,
+    Blue
+}
+
+fn main() {
+    let c = Color.Purple;
+    print(c);
+}

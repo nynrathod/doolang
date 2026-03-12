@@ -1,0 +1,8 @@
+// ERROR: not mutable
+// This program should fail to compile because arr is not declared as mut
+
+fn main() {
+    let arr = [1, 2, 3];
+    arr[0] = 99;
+    print(arr);
+}

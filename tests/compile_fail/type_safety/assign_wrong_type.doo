@@ -1,0 +1,8 @@
+// ERROR: expected Int, found Str
+// This program should fail to compile because x is declared as Int but is being assigned a Str
+
+fn main() {
+    let mut x: Int = 42;
+    x = "hello";
+    print(x);
+}

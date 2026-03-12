@@ -1,0 +1,11 @@
+// Memory leak test: function returning array
+fn make_names() -> [Str] {
+    return ["Alice", "Bob", "Charlie"];
+}
+
+fn main() {
+    let names = make_names();
+    for name in names {
+        print(name);
+    }
+}

@@ -1,0 +1,6 @@
+// Process::run — basic command execution
+import std::Process::{Process, ProcessError};
+fn main() {
+    let result = Process::run("echo", "[\"hello\"]")?;
+    print(result);
+}

@@ -1,0 +1,11 @@
+// ERROR: Expected identifier
+// Tests that struct declaration without name produces a syntax error
+
+struct {
+    name: Str,
+    age: Int
+}
+
+fn main() {
+    print("hello");
+}

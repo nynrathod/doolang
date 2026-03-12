@@ -1,0 +1,6 @@
+// Memory leak test: string interpolation (allocates new string)
+fn main() {
+    let name = "Alice";
+    let greeting = "Hello ${name}!";
+    print(greeting);
+}

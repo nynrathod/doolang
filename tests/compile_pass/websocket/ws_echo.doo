@@ -1,0 +1,13 @@
+// WebSocket echo handler
+import std::Http::{Server, WsConnection};
+fn onEcho(conn: WsConnection, data: Str) {
+    conn.emit("echo", data);
+}
+fn echoHandler(conn: WsConnection) {
+    conn.on("echo", onEcho);
+}
+fn main() {
+    let app = Server::new(":3000");
+    app.ws("/ws/echo", echoHandler);
+    app.start();
+}

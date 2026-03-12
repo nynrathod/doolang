@@ -1,0 +1,19 @@
+// OUTPUT: INFO
+pub enum LogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+fn main() {
+    let level = LogLevel::Info;
+    match level {
+        LogLevel::Debug => print("DEBUG"),
+        LogLevel::Info => print("INFO"),
+        LogLevel::Warn => print("WARN"),
+        LogLevel::Error => print("ERROR"),
+        _ => print("UNKNOWN"),
+    }
+}
+

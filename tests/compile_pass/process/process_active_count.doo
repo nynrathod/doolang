@@ -1,0 +1,6 @@
+// Process::activeCount
+import std::Process::{Process, ProcessError};
+fn main() {
+    let count = Process::activeCount();
+    print(count);
+}

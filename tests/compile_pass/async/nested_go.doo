@@ -1,0 +1,12 @@
+// Nested go blocks
+fn main() {
+    go {
+        go {
+            sleep(10);
+            print("inner");
+        }
+        sleep(40);
+        print("outer");
+    }
+    sleep(200);
+}

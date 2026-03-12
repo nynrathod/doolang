@@ -1,0 +1,13 @@
+// Crash test: many empty blocks
+fn test() {
+    { { { { { } } } } }
+    { { } }
+    { }
+    { { { } } }
+    { { { { { { { { { { } } } } } } } } } }
+}
+
+fn empty1() { }
+fn empty2() { { } }
+fn empty3() { { { } } }
+fn empty4() { { { { } } } }

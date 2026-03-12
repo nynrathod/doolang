@@ -1,0 +1,11 @@
+// Memory leak test: conditional string allocation
+fn main() {
+    let x = 42;
+    if x > 10 {
+        let msg = "big number";
+        print(msg);
+    } else {
+        let msg = "small number";
+        print(msg);
+    }
+}

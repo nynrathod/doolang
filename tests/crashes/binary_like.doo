@@ -1,0 +1,8 @@
+// Crash test: content that looks like binary but is ASCII
+let x = "\x00\x01\x02\x03\x04\x05\x06\x07"
+let y = "|||||||||||||||"
+let z = "000000111111000000111111"
+let w = "!@#$%^&*()_+-=[]{}|;':\",./<>?"
+let binary = "01010101010101010101010101010101"
+let hex = "DEADBEEFCAFEBABE"
+let noise = "~`!@#$%^&*()_+-={}[]|\\:;\"'<>,.?/"

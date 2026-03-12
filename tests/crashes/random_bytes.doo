@@ -1,0 +1,9 @@
+// Crash test: weird but valid UTF-8 characters
+let x = "ሴ໐ӂ⍨⚡☃"
+let y = "🔥💻🚀"
+let z = "ąčęėįšųū"
+let weird = "‽⁇‰℃℉"
+let symbols = "←↑→↓↔↕↖↗↘↙"
+let math = "∀∂∃∅∆∇∈∉∋∏∑−√∝∞∠∧∨∩∪∫≈≠≡≤≥"
+let emoji = "😀😁😂🤣😃😄😅😆😊"
+let mixed = "He͡l̷l͜o̸ ̴W̷o͝r̸l̕d"

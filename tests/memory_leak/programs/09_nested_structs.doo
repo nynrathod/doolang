@@ -1,0 +1,8 @@
+// Memory leak test: nested structs
+struct Address { city: Str }
+struct Person { name: Str, address: Address }
+fn main() {
+    let p = Person { name: "Bob", address: Address { city: "NYC" } };
+    print(p.name);
+    print(p.address.city);
+}

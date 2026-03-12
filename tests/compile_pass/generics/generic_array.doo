@@ -1,0 +1,16 @@
+// OUTPUT: Int array: [1, 2, 3]
+// OUTPUT: String array: ["a", "b", "c"]
+// OUTPUT: Float array: [1.100000, 2.200000, 3.300000]
+// OUTPUT: Nested: [[1, 2], [3, 4]]
+fn main() {
+    let ints: [Int] = [1, 2, 3];
+    let strs: [Str] = ["a", "b", "c"];
+    let floats: [Float] = [1.1, 2.2, 3.3];
+
+    print("Int array:", ints);
+    print("String array:", strs);
+    print("Float array:", floats);
+
+    let nested: [[Int]] = [[1, 2], [3, 4]];
+    print("Nested:", nested);
+}

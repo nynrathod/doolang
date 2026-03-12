@@ -1,0 +1,34 @@
+// OUTPUT: Item: 1 Doubled: 2
+// OUTPUT: Item: 2 Doubled: 4
+// OUTPUT: Item: 3 Doubled: 6
+// OUTPUT: Item: 4 Doubled: 8
+// OUTPUT: Item: 5 Doubled: 10
+// OUTPUT: Data still accessible: [1, 2, 3, 4, 5]
+// OUTPUT: Accumulated: 30
+// OUTPUT: Hello, Alice
+// OUTPUT: Hello, Bob
+// OUTPUT: Hello, Charlie
+// OUTPUT: Names still accessible: ["Alice", "Bob", "Charlie"]
+fn main() {
+    let data = [1, 2, 3, 4, 5];
+
+    for item in data {
+        let doubled = item * 2;
+        print("Item:", item, "Doubled:", doubled);
+    }
+    print("Data still accessible:", data);
+
+    let mut acc = 0;
+    for i in 0..5 {
+        let temp = i * i;
+        acc += temp;
+    }
+    print("Accumulated:", acc);
+
+    let names = ["Alice", "Bob", "Charlie"];
+    for name in names {
+        let greeting = "Hello, " + name;
+        print(greeting);
+    }
+    print("Names still accessible:", names);
+}

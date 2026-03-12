@@ -1,0 +1,7 @@
+// ERROR: InvalidArrayElement
+// This program should fail to compile because array literals must have all elements of the same type
+
+fn main() {
+    let arr = [1, "two", true];
+    print(arr);
+}

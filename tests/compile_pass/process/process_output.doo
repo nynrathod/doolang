@@ -1,0 +1,6 @@
+// Process::output — stdout capture
+import std::Process::{Process, ProcessError};
+fn main() {
+    let out = Process::output("echo", "[\"test\"]")?;
+    print(out);
+}

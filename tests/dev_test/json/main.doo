@@ -1,180 +1,326 @@
 //
-// Comprehensive JSON Parse & Stringify Test Suite
-// - Implicit and explicit type definitions
-// - Direct and variable usage of stringify/parse
-// - Covers: Int, Float, Bool, Str, [Int], [Float], [Bool], [Str],
-//           {Str: Int}, {Str: Float}, {Str: Bool}, {Str: Str},
-//           {Int: Int}, {Int: Float}, {Int: Bool}, {Int: Str},
-//           {Float: Int}, {Float: Float}, {Float: Bool}, {Float: Str},
-//           {Bool: Int}, {Bool: Float}, {Bool: Bool}, {Bool: Str}
-// - Edge cases: empty, single, negative, zero
+// Production-Grade JSON Parse & Stringify Test Suite
+// Covers ALL types + structs + enums + nested + edge cases
+// For DooCloud platform (production API workloads)
+//
+// Coverage:
+//   Primitives: Int, Float, Bool, Str (implicit + explicit)
+//   Arrays:     [Int], [Float], [Bool], [Str]
+//   Maps:       {K:V} for all 16 K×V combos (Str|Int|Float|Bool)
+//   Structs:    flat, nested, with arrays/maps/enums
+//   Enums:      unit variants, payload variants
+//   Edge cases: empty, zero, negative, large, special chars, roundtrip
 //
 
-fn main() {
-    print("=== Comprehensive JSON Parse & Stringify Tests ===\n");
+// ======== Struct & Enum Definitions ========
 
-    // ------------------------------------------------------------
-    // Primitive Types
-    print("--- Primitive Types ---");
-    // Implicit
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+struct User {
+    name: Str,
+    email: Str,
+    age: Int,
+    active: Bool,
+}
+
+struct Address {
+    street: Str,
+    city: Str,
+    zip: Int,
+}
+
+struct Profile {
+    user: User,
+    address: Address,
+    score: Float,
+}
+
+enum Status {
+    Active,
+    Inactive,
+    Pending,
+}
+
+enum ApiResult {
+    Success(Int),
+    Error(Str),
+}
+
+struct ApiResponse {
+    status: Status,
+    code: Int,
+    message: Str,
+}
+
+struct Config {
+    tags: [Str],
+    limits: [Int],
+    options: {Str: Bool},
+}
+
+fn main() {
+    print("=== Production JSON Test Suite ===\n");
+
+    // ============================================================
+    // SECTION 1: Primitive Types
+    // ============================================================
+    print("--- 1. Primitive Types ---");
+
+    // Int: implicit + explicit + variable roundtrip
     let num = 42;
-    print("Int (implicit):", JSON.stringify(num), JSON.parse(JSON.stringify(num)));
-    // Explicit
+    print("Int implicit:", JSON.stringify(num), JSON.parse(JSON.stringify(num)));
     let numEx: Int = 99;
     let jsonNumEx: Str = JSON.stringify(numEx);
     let parsedNumEx: Int = JSON.parse(jsonNumEx);
-    print("Int (explicit):", jsonNumEx, parsedNumEx);
+    print("Int explicit:", jsonNumEx, parsedNumEx);
 
+    // Float: implicit + explicit
     let pi = 3.14159;
-    print("Float (implicit):", JSON.stringify(pi), JSON.parse(JSON.stringify(pi)));
+    print("Float implicit:", JSON.stringify(pi), JSON.parse(JSON.stringify(pi)));
     let piEx: Float = 2.718;
-    print("Float (explicit):", JSON.stringify(piEx), JSON.parse(JSON.stringify(piEx)));
+    print("Float explicit:", JSON.stringify(piEx), JSON.parse(JSON.stringify(piEx)));
 
+    // Bool
     let isTrue = true;
-    print("Bool (implicit):", JSON.stringify(isTrue), JSON.parse(JSON.stringify(isTrue)));
-    let isFalseEx: Bool = false;
-    print("Bool (explicit):", JSON.stringify(isFalseEx), JSON.parse(JSON.stringify(isFalseEx)));
+    print("Bool true:", JSON.stringify(isTrue), JSON.parse(JSON.stringify(isTrue)));
+    let isFalse: Bool = false;
+    print("Bool false:", JSON.stringify(isFalse), JSON.parse(JSON.stringify(isFalse)));
 
+    // Str
     let text = "Hello JSON";
-    print("Str (implicit):", JSON.stringify(text), JSON.parse(JSON.stringify(text)));
+    print("Str implicit:", JSON.stringify(text), JSON.parse(JSON.stringify(text)));
     let textEx: Str = "Explicit String";
-    print("Str (explicit):", JSON.stringify(textEx), JSON.parse(JSON.stringify(textEx)));
+    print("Str explicit:", JSON.stringify(textEx), JSON.parse(JSON.stringify(textEx)));
 
-    // ------------------------------------------------------------
-    // Arrays
-    print("\n--- Arrays ---");
+    // ============================================================
+    // SECTION 2: Arrays
+    // ============================================================
+    print("\n--- 2. Arrays ---");
+
     let intArr = [1, 2, 3, 4, 5];
-    print("[Int] (implicit):", JSON.stringify(intArr), JSON.parse(JSON.stringify(intArr)));
+    print("[Int]:", JSON.stringify(intArr), JSON.parse(JSON.stringify(intArr)));
     let intArrEx: [Int] = [10, 20, 30];
     let jsonIntArrEx: Str = JSON.stringify(intArrEx);
-    print("[Int] (explicit):", jsonIntArrEx, JSON.parse(jsonIntArrEx));
+    print("[Int] explicit:", jsonIntArrEx, JSON.parse(jsonIntArrEx));
 
     let floatArr = [1.1, 2.2, 3.3];
-    print("[Float] (implicit):", JSON.stringify(floatArr), JSON.parse(JSON.stringify(floatArr)));
+    print("[Float]:", JSON.stringify(floatArr), JSON.parse(JSON.stringify(floatArr)));
     let floatArrEx: [Float] = [9.9, 8.8];
-    print("[Float] (explicit):", JSON.stringify(floatArrEx), JSON.parse(JSON.stringify(floatArrEx)));
+    print("[Float] explicit:", JSON.stringify(floatArrEx), JSON.parse(JSON.stringify(floatArrEx)));
 
     let boolArr = [true, false, true];
-    print("[Bool] (implicit):", JSON.stringify(boolArr), JSON.parse(JSON.stringify(boolArr)));
-    let boolArrEx: [Bool] = [false, false, true];
-    print("[Bool] (explicit):", JSON.stringify(boolArrEx), JSON.parse(JSON.stringify(boolArrEx)));
+    print("[Bool]:", JSON.stringify(boolArr), JSON.parse(JSON.stringify(boolArr)));
 
     let strArr = ["apple", "banana", "cherry"];
-    print("[Str] (implicit):", JSON.stringify(strArr), JSON.parse(JSON.stringify(strArr)));
-    let strArrEx: [Str] = ["x", "y", "z"];
-    print("[Str] (explicit):", JSON.stringify(strArrEx), JSON.parse(JSON.stringify(strArrEx)));
+    print("[Str]:", JSON.stringify(strArr), JSON.parse(JSON.stringify(strArr)));
 
-    // ------------------------------------------------------------
-    // Maps with String Keys
-    print("\n--- Maps with String Keys ---");
-    let strIntMap = {"age": 25, "year": 2024};
-    print("{Str: Int} (implicit):", JSON.stringify(strIntMap), JSON.parse(JSON.stringify(strIntMap)));
-    let strIntMapEx: {Str: Int} = {"score": 100, "level": 2};
-    let jsonStrIntMapEx: Str = JSON.stringify(strIntMapEx);
-    print("{Str: Int} (explicit):", jsonStrIntMapEx, JSON.parse(jsonStrIntMapEx));
+    // ============================================================
+    // SECTION 3: Maps (all 16 key×value combos)
+    // ============================================================
+    print("\n--- 3. Maps ---");
 
-    let strFloatMap = {"pi": 3.14, "e": 2.71};
-    print("{Str: Float} (implicit):", JSON.stringify(strFloatMap), JSON.parse(JSON.stringify(strFloatMap)));
-    let strFloatMapEx: {Str: Float} = {"gold": 1.618, "silver": 47.87};
-    print("{Str: Float} (explicit):", JSON.stringify(strFloatMapEx), JSON.parse(JSON.stringify(strFloatMapEx)));
+    // Str keys
+    print("{Str:Int}:", JSON.stringify({"age": 25, "year": 2024}), JSON.parse(JSON.stringify({"age": 25, "year": 2024})));
+    print("{Str:Float}:", JSON.stringify({"pi": 3.14, "e": 2.71}), JSON.parse(JSON.stringify({"pi": 3.14, "e": 2.71})));
+    print("{Str:Bool}:", JSON.stringify({"active": true, "done": false}), JSON.parse(JSON.stringify({"active": true, "done": false})));
+    print("{Str:Str}:", JSON.stringify({"name": "Alice", "city": "NYC"}), JSON.parse(JSON.stringify({"name": "Alice", "city": "NYC"})));
 
-    let strBoolMap = {"active": true, "verified": false};
-    print("{Str: Bool} (implicit):", JSON.stringify(strBoolMap), JSON.parse(JSON.stringify(strBoolMap)));
-    let strBoolMapEx: {Str: Bool} = {"ready": true, "done": false};
-    print("{Str: Bool} (explicit):", JSON.stringify(strBoolMapEx), JSON.parse(JSON.stringify(strBoolMapEx)));
+    // Int keys
+    print("{Int:Int}:", JSON.stringify({1: 100, 2: 200}), JSON.parse(JSON.stringify({1: 100, 2: 200})));
+    print("{Int:Float}:", JSON.stringify({1: 1.5, 2: 2.5}), JSON.parse(JSON.stringify({1: 1.5, 2: 2.5})));
+    print("{Int:Bool}:", JSON.stringify({0: false, 1: true}), JSON.parse(JSON.stringify({0: false, 1: true})));
+    print("{Int:Str}:", JSON.stringify({1: "one", 2: "two"}), JSON.parse(JSON.stringify({1: "one", 2: "two"})));
 
-    let strStrMap = {"name": "Alice", "city": "NYC"};
-    print("{Str: Str} (implicit):", JSON.stringify(strStrMap), JSON.parse(JSON.stringify(strStrMap)));
-    let strStrMapEx: {Str: Str} = {"lang": "doo", "type": "test"};
-    print("{Str: Str} (explicit):", JSON.stringify(strStrMapEx), JSON.parse(JSON.stringify(strStrMapEx)));
+    // Float keys
+    print("{Float:Int}:", JSON.stringify({1.5: 10, 2.5: 20}), JSON.parse(JSON.stringify({1.5: 10, 2.5: 20})));
+    print("{Float:Float}:", JSON.stringify({1.1: 2.2, 3.3: 4.4}), JSON.parse(JSON.stringify({1.1: 2.2, 3.3: 4.4})));
+    print("{Float:Bool}:", JSON.stringify({0.0: false, 1.0: true}), JSON.parse(JSON.stringify({0.0: false, 1.0: true})));
+    print("{Float:Str}:", JSON.stringify({1.5: "half", 2.0: "two"}), JSON.parse(JSON.stringify({1.5: "half", 2.0: "two"})));
 
-    // ------------------------------------------------------------
-    // Maps with Int Keys
-    print("\n--- Maps with Int Keys ---");
-    let intIntMap = {1: 100, 2: 200};
-    print("{Int: Int} (implicit):", JSON.stringify(intIntMap), JSON.parse(JSON.stringify(intIntMap)));
-    let intIntMapEx: {Int: Int} = {7: 77, 8: 88};
-    print("{Int: Int} (explicit):", JSON.stringify(intIntMapEx), JSON.parse(JSON.stringify(intIntMapEx)));
+    // Bool keys
+    print("{Bool:Int}:", JSON.stringify({true: 1, false: 0}), JSON.parse(JSON.stringify({true: 1, false: 0})));
+    print("{Bool:Float}:", JSON.stringify({true: 1.5, false: 0.5}), JSON.parse(JSON.stringify({true: 1.5, false: 0.5})));
+    print("{Bool:Bool}:", JSON.stringify({true: false, false: true}), JSON.parse(JSON.stringify({true: false, false: true})));
+    print("{Bool:Str}:", JSON.stringify({true: "yes", false: "no"}), JSON.parse(JSON.stringify({true: "yes", false: "no"})));
 
-    let intFloatMap = {1: 1.5, 2: 2.5};
-    print("{Int: Float} (implicit):", JSON.stringify(intFloatMap), JSON.parse(JSON.stringify(intFloatMap)));
-    let intFloatMapEx: {Int: Float} = {3: 3.3, 4: 4.4};
-    print("{Int: Float} (explicit):", JSON.stringify(intFloatMapEx), JSON.parse(JSON.stringify(intFloatMapEx)));
+    // ============================================================
+    // SECTION 4: Structs
+    // ============================================================
+    print("\n--- 4. Structs ---");
 
-    let intBoolMap = {0: false, 1: true};
-    print("{Int: Bool} (implicit):", JSON.stringify(intBoolMap), JSON.parse(JSON.stringify(intBoolMap)));
-    let intBoolMapEx: {Int: Bool} = {5: true, 6: false};
-    print("{Int: Bool} (explicit):", JSON.stringify(intBoolMapEx), JSON.parse(JSON.stringify(intBoolMapEx)));
+    // Simple struct stringify
+    let p = Point { x: 10, y: 20 };
+    print("Point stringify:", JSON.stringify(p));
 
-    let intStrMap = {1: "one", 2: "two"};
-    print("{Int: Str} (implicit):", JSON.stringify(intStrMap), JSON.parse(JSON.stringify(intStrMap)));
-    let intStrMapEx: {Int: Str} = {9: "nine", 10: "ten"};
-    print("{Int: Str} (explicit):", JSON.stringify(intStrMapEx), JSON.parse(JSON.stringify(intStrMapEx)));
+    // Struct roundtrip
+    let pJson = JSON.stringify(p);
+    let p2: Point = JSON.parse(pJson);
+    print("Point roundtrip:", p2.x, p2.y);
 
-    // ------------------------------------------------------------
-    // Maps with Float Keys
-    print("\n--- Maps with Float Keys ---");
-    let floatIntMap = {1.5: 10, 2.5: 20};
-    print("{Float: Int} (implicit):", JSON.stringify(floatIntMap), JSON.parse(JSON.stringify(floatIntMap)));
-    let floatIntMapEx: {Float: Int} = {3.3: 33, 4.4: 44};
-    print("{Float: Int} (explicit):", JSON.stringify(floatIntMapEx), JSON.parse(JSON.stringify(floatIntMapEx)));
+    // User struct (multiple field types)
+    let user = User { name: "Alice", email: "alice@doo.dev", age: 30, active: true };
+    print("User stringify:", JSON.stringify(user));
+    let userJson = JSON.stringify(user);
+    let user2: User = JSON.parse(userJson);
+    print("User roundtrip:", user2.name, user2.email, user2.age, user2.active);
 
-    let floatFloatMap = {1.1: 2.2, 3.3: 4.4};
-    print("{Float: Float} (implicit):", JSON.stringify(floatFloatMap), JSON.parse(JSON.stringify(floatFloatMap)));
-    let floatFloatMapEx: {Float: Float} = {5.5: 5.5, 6.6: 6.6};
-    print("{Float: Float} (explicit):", JSON.stringify(floatFloatMapEx), JSON.parse(JSON.stringify(floatFloatMapEx)));
+    // Zero/default values struct
+    let zeroPoint = Point { x: 0, y: 0 };
+    print("Zero point:", JSON.stringify(zeroPoint));
+    let zp: Point = JSON.parse(JSON.stringify(zeroPoint));
+    print("Zero point roundtrip:", zp.x, zp.y);
 
-    let floatBoolMap = {0.0: false, 1.0: true};
-    print("{Float: Bool} (implicit):", JSON.stringify(floatBoolMap), JSON.parse(JSON.stringify(floatBoolMap)));
-    let floatBoolMapEx: {Float: Bool} = {7.7: true, 8.8: false};
-    print("{Float: Bool} (explicit):", JSON.stringify(floatBoolMapEx), JSON.parse(JSON.stringify(floatBoolMapEx)));
+    // Negative values struct
+    let negPoint = Point { x: -100, y: -200 };
+    print("Neg point:", JSON.stringify(negPoint));
+    let np: Point = JSON.parse(JSON.stringify(negPoint));
+    print("Neg point roundtrip:", np.x, np.y);
 
-    let floatStrMap = {1.5: "half", 2.0: "two"};
-    print("{Float: Str} (implicit):", JSON.stringify(floatStrMap), JSON.parse(JSON.stringify(floatStrMap)));
-    let floatStrMapEx: {Float: Str} = {9.9: "nine", 10.1: "ten"};
-    print("{Float: Str} (explicit):", JSON.stringify(floatStrMapEx), JSON.parse(JSON.stringify(floatStrMapEx)));
+    // ============================================================
+    // SECTION 5: Nested Structs
+    // ============================================================
+    print("\n--- 5. Nested Structs ---");
 
-    // ------------------------------------------------------------
-    // Maps with Bool Keys
-    print("\n--- Maps with Bool Keys ---");
-    let boolIntMap = {true: 1, false: 0};
-    print("{Bool: Int} (implicit):", JSON.stringify(boolIntMap), JSON.parse(JSON.stringify(boolIntMap)));
-    let boolIntMapEx: {Bool: Int} = {true: 2, false: 3};
-    print("{Bool: Int} (explicit):", JSON.stringify(boolIntMapEx), JSON.parse(JSON.stringify(boolIntMapEx)));
+    let addr = Address { street: "123 Main St", city: "Portland", zip: 97201 };
+    let profile = Profile {
+        user: User { name: "Bob", email: "bob@doo.dev", age: 25, active: false },
+        address: addr,
+        score: 95.5,
+    };
+    print("Profile stringify:", JSON.stringify(profile));
 
-    let boolFloatMap = {true: 1.5, false: 0.5};
-    print("{Bool: Float} (implicit):", JSON.stringify(boolFloatMap), JSON.parse(JSON.stringify(boolFloatMap)));
-    let boolFloatMapEx: {Bool: Float} = {true: 2.2, false: 3.3};
-    print("{Bool: Float} (explicit):", JSON.stringify(boolFloatMapEx), JSON.parse(JSON.stringify(boolFloatMapEx)));
+    let profileJson = JSON.stringify(profile);
+    let profile2: Profile = JSON.parse(profileJson);
+    print("Profile roundtrip name:", profile2.user.name);
+    print("Profile roundtrip email:", profile2.user.email);
+    print("Profile roundtrip age:", profile2.user.age);
+    print("Profile roundtrip active:", profile2.user.active);
+    print("Profile roundtrip city:", profile2.address.city);
+    print("Profile roundtrip zip:", profile2.address.zip);
+    print("Profile roundtrip score:", profile2.score);
 
-    let boolBoolMap = {true: false, false: true};
-    print("{Bool: Bool} (implicit):", JSON.stringify(boolBoolMap), JSON.parse(JSON.stringify(boolBoolMap)));
-    let boolBoolMapEx: {Bool: Bool} = {true: true, false: false};
-    print("{Bool: Bool} (explicit):", JSON.stringify(boolBoolMapEx), JSON.parse(JSON.stringify(boolBoolMapEx)));
+    // ============================================================
+    // SECTION 6: Enums
+    // ============================================================
+    print("\n--- 6. Enums ---");
 
-    let boolStrMap = {true: "yes", false: "no"};
-    print("{Bool: Str} (implicit):", JSON.stringify(boolStrMap), JSON.parse(JSON.stringify(boolStrMap)));
-    let boolStrMapEx: {Bool: Str} = {true: "true", false: "false"};
-    print("{Bool: Str} (explicit):", JSON.stringify(boolStrMapEx), JSON.parse(JSON.stringify(boolStrMapEx)));
+    // Unit enum stringify
+    print("Enum Active:", JSON.stringify(Status::Active));
+    print("Enum Inactive:", JSON.stringify(Status::Inactive));
+    print("Enum Pending:", JSON.stringify(Status::Pending));
 
-    // ------------------------------------------------------------
-    // Edge Cases
-    print("\n--- Edge Cases ---");
+    // Unit enum roundtrip
+    let s: Status = JSON.parse(JSON.stringify(Status::Active));
+    print("Enum roundtrip Active:", JSON.stringify(s));
+
+    // Payload enum stringify
+    print("Result Success:", JSON.stringify(ApiResult::Success(200)));
+    print("Result Error:", JSON.stringify(ApiResult::Error("not found")));
+
+    // Payload enum roundtrip
+    let r1: ApiResult = JSON.parse(JSON.stringify(ApiResult::Success(42)));
+    print("Result Success roundtrip:", JSON.stringify(r1));
+    let r2: ApiResult = JSON.parse(JSON.stringify(ApiResult::Error("fail")));
+    print("Result Error roundtrip:", JSON.stringify(r2));
+
+    // ============================================================
+    // SECTION 7: Struct with Enum field
+    // ============================================================
+    print("\n--- 7. Struct + Enum ---");
+
+    let resp = ApiResponse { status: Status::Active, code: 200, message: "OK" };
+    print("ApiResponse stringify:", JSON.stringify(resp));
+    let respJson = JSON.stringify(resp);
+    let resp2: ApiResponse = JSON.parse(respJson);
+    print("ApiResponse roundtrip code:", resp2.code);
+    print("ApiResponse roundtrip msg:", resp2.message);
+    print("ApiResponse roundtrip status:", JSON.stringify(resp2.status));
+
+    // ============================================================
+    // SECTION 8: Struct with arrays and maps
+    // ============================================================
+    print("\n--- 8. Struct + Arrays/Maps ---");
+
+    let cfg = Config {
+        tags: ["api", "prod", "v2"],
+        limits: [100, 200, 500],
+        options: {"verbose": true, "debug": false},
+    };
+    print("Config stringify:", JSON.stringify(cfg));
+    let cfgJson = JSON.stringify(cfg);
+    let cfg2: Config = JSON.parse(cfgJson);
+    print("Config roundtrip tags:", cfg2.tags);
+    print("Config roundtrip limits:", cfg2.limits);
+    print("Config roundtrip options:", cfg2.options);
+
+    // ============================================================
+    // SECTION 9: Edge Cases
+    // ============================================================
+    print("\n--- 9. Edge Cases ---");
+
+    // Empty collections
     let mut emptyArr: [Int] = [];
-    print("Empty array (explicit):", JSON.stringify(emptyArr), JSON.parse(JSON.stringify(emptyArr)));
-    print("Empty array (direct):", JSON.stringify([]), JSON.parse(JSON.stringify([])));
+    print("Empty [Int]:", JSON.stringify(emptyArr), JSON.parse(JSON.stringify(emptyArr)));
+    print("Empty direct:", JSON.stringify([]), JSON.parse(JSON.stringify([])));
 
+    // Single element
     let singleArr: [Int] = [999];
-    print("Single element array (explicit):", JSON.stringify(singleArr), JSON.parse(JSON.stringify(singleArr)));
-    print("Single element array (direct):", JSON.stringify([123]), JSON.parse(JSON.stringify([123])));
+    print("Single [Int]:", JSON.stringify(singleArr), JSON.parse(JSON.stringify(singleArr)));
 
+    // Negative numbers
     let negArr: [Int] = [-1, -2, -3];
-    print("Negative numbers (explicit):", JSON.stringify(negArr), JSON.parse(JSON.stringify(negArr)));
-    print("Negative numbers (direct):", JSON.stringify([-7, -8]), JSON.parse(JSON.stringify([-7, -8])));
+    print("Negative:", JSON.stringify(negArr), JSON.parse(JSON.stringify(negArr)));
 
-    let zero: Int = 0;
-    print("Zero (explicit):", JSON.stringify(zero), JSON.parse(JSON.stringify(zero)));
-    print("Zero (direct):", JSON.stringify(0), JSON.parse(JSON.stringify(0)));
+    // Zero
+    print("Zero int:", JSON.stringify(0), JSON.parse(JSON.stringify(0)));
+    print("Zero float:", JSON.stringify(0.0), JSON.parse(JSON.stringify(0.0)));
 
-    print("\n=== All JSON Parse & Stringify Tests Complete ===");
+    // Large numbers
+    print("Large int:", JSON.stringify(999999999), JSON.parse(JSON.stringify(999999999)));
+    print("Neg large:", JSON.stringify(-999999999), JSON.parse(JSON.stringify(-999999999)));
+    print("Small float:", JSON.stringify(0.000001), JSON.parse(JSON.stringify(0.000001)));
+    print("Large float:", JSON.stringify(99999.99999), JSON.parse(JSON.stringify(99999.99999)));
+
+    // Special strings
+    print("Empty str:", JSON.stringify(""), JSON.parse(JSON.stringify("")));
+    print("Spaces:", JSON.stringify("  hello  "), JSON.parse(JSON.stringify("  hello  ")));
+    print("Newline:", JSON.stringify("line1\nline2"), JSON.parse(JSON.stringify("line1\nline2")));
+    print("Tab:", JSON.stringify("col1\tcol2"), JSON.parse(JSON.stringify("col1\tcol2")));
+    print("Quotes:", JSON.stringify("say \"hi\""), JSON.parse(JSON.stringify("say \"hi\"")));
+    print("Backslash:", JSON.stringify("path\\to\\file"), JSON.parse(JSON.stringify("path\\to\\file")));
+    print("Unicode:", JSON.stringify("Hello World"), JSON.parse(JSON.stringify("Hello World")));
+
+    // Long string
+    let longStr = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    print("Long str:", JSON.stringify(longStr), JSON.parse(JSON.stringify(longStr)));
+
+    // ============================================================
+    // SECTION 10: Variable roundtrip (typed parse into var)
+    // ============================================================
+    print("\n--- 10. Variable Roundtrip ---");
+
+    let iVal: Int = JSON.parse(JSON.stringify(12345));
+    print("Int var:", iVal);
+    let fVal: Float = JSON.parse(JSON.stringify(1.23456));
+    print("Float var:", fVal);
+    let bVal: Bool = JSON.parse(JSON.stringify(true));
+    print("Bool var:", bVal);
+    let sVal: Str = JSON.parse(JSON.stringify("roundtrip"));
+    print("Str var:", sVal);
+
+    let arrVal: [Int] = JSON.parse(JSON.stringify([10, 20, 30]));
+    print("[Int] var:", arrVal);
+    let mapVal: {Str: Int} = JSON.parse(JSON.stringify({"a": 1, "b": 2}));
+    print("{Str:Int} var:", mapVal);
+
+    let ptVal: Point = JSON.parse(JSON.stringify(Point { x: 7, y: 8 }));
+    print("Point var:", ptVal.x, ptVal.y);
+
+    let statusVal: Status = JSON.parse(JSON.stringify(Status::Pending));
+    print("Status var:", JSON.stringify(statusVal));
+
+    print("\n=== All Tests Complete ===");
 }

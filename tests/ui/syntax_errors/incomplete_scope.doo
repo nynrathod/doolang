@@ -1,0 +1,5 @@
+// ERROR: parse
+// Incomplete scope block
+fn main() {
+    scope;
+}

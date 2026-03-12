@@ -1,0 +1,14 @@
+// OUTPUT: true
+// OUTPUT: false
+// OUTPUT: true
+// OUTPUT: false
+// Tests boolean operations
+
+fn main() {
+    let t = true;
+    let f = false;
+    print(t);
+    print(f);
+    print(t && t || f);
+    print(t && f);
+}

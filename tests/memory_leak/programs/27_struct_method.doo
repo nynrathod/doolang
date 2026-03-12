@@ -1,0 +1,14 @@
+// Memory leak test: struct method with string return
+struct Greeter {
+    prefix: Str
+}
+
+fn Greeter.greet(self, name: Str) -> Str {
+    return "${self.prefix} ${name}!";
+}
+
+fn main() {
+    let g = Greeter { prefix: "Hello" };
+    let msg = g.greet("World");
+    print(msg);
+}

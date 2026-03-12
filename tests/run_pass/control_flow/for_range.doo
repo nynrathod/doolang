@@ -1,0 +1,11 @@
+// OUTPUT: 1
+// OUTPUT: 2
+// OUTPUT: 3
+// OUTPUT: 4
+// Tests for loop with range
+
+fn main() {
+    for i in 1..5 {
+        print(i);
+    }
+}

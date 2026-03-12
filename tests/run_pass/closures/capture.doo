@@ -1,0 +1,6 @@
+
+fn main() {
+    let nums = [10, 20, 30];
+    let result = nums.map((x) => x * 2);
+    print(result[1]);
+}

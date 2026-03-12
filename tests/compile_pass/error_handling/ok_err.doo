@@ -1,0 +1,35 @@
+// OUTPUT: Result: valid
+// OUTPUT: Error: negative not allowed
+// OUTPUT: Error: too large
+fn validate(x: Int) -> Str ! Str {
+    if x < 0 {
+        Err "negative not allowed";
+    }
+    if x > 100 {
+        Err "too large";
+    }
+    Ok "valid";
+}
+
+fn main() {
+    let r1, e1 = validate(50);
+    if e1 != nil {
+        print("Error:", e1);
+    } else {
+        print("Result:", r1);
+    }
+
+    let r2, e2 = validate(-5);
+    if e2 != nil {
+        print("Error:", e2);
+    } else {
+        print("Result:", r2);
+    }
+
+    let r3, e3 = validate(200);
+    if e3 != nil {
+        print("Error:", e3);
+    } else {
+        print("Result:", r3);
+    }
+}

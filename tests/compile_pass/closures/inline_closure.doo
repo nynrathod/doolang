@@ -1,0 +1,13 @@
+// OUTPUT: Inline map: [10, 20, 30]
+// OUTPUT: Inline filter: [15, 20]
+// OUTPUT: Inline reduce: 10
+fn main() {
+    let result = [1, 2, 3].map((x) => x * 10);
+    print("Inline map:", result);
+
+    let filtered = [5, 10, 15, 20].filter((x) => x > 10);
+    print("Inline filter:", filtered);
+
+    let sum = [1, 2, 3, 4].reduce(0, (a, b) => a + b);
+    print("Inline reduce:", sum);
+}

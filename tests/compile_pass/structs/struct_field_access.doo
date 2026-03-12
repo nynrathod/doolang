@@ -1,0 +1,38 @@
+// OUTPUT: Name: Alice
+// OUTPUT: Email: alice@example.com
+// OUTPUT: Age: 30
+// OUTPUT: Active: true
+// OUTPUT: Direct access: Alice alice@example.com 30 true
+struct User {
+    name: Str,
+    email: Str,
+    age: Int,
+    active: Bool,
+}
+
+fn main() {
+    let user = User {
+        name: "Alice",
+        email: "alice@example.com",
+        age: 30,
+        active: true,
+    };
+
+    let n = user.name;
+    let e = user.email;
+    let a = user.age;
+    let act = user.active;
+
+    print("Name:", n);
+    print("Email:", e);
+    print("Age:", a);
+    print("Active:", act);
+
+    print(
+        "Direct access:",
+        user.name,
+        user.email,
+        user.age,
+        user.active,
+    );
+}

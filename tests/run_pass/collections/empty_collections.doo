@@ -1,0 +1,10 @@
+// OUTPUT: []
+// OUTPUT: {}
+// Tests empty array and map
+
+fn main() {
+    let arr: [Int] = [];
+    let m: {Str: Str} = {};
+    print(arr);
+    print(m);
+}

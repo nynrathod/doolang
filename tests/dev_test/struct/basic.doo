@@ -84,3 +84,24 @@ fn main() {
     print("");
     print("=== All nested struct tests complete ===");
 }
+
+// EXPECT: === Testing Nested Structs ===
+// EXPECT:
+// EXPECT: Test 1: Creating nested struct...
+// EXPECT:   Address created:
+// EXPECT:   User created: John Doe john@example.com
+// EXPECT:
+// EXPECT: Test 2: Accessing nested fields...
+// EXPECT:   User's street: 123 Main St
+// EXPECT:   User's city: Springfield
+// EXPECT:   User's zipcode: 12345
+// EXPECT:
+// EXPECT: Test 3: Creating inline nested struct...
+// EXPECT:   User2 created: Jane Smith
+// EXPECT:   User2's address: 456 Oak Ave Portland
+// EXPECT:
+// EXPECT: Test 4: Creating another nested struct...
+// EXPECT:   User3 created: Bob Wilson
+// EXPECT:   User3's city: Seattle
+// EXPECT:
+// EXPECT: === All nested struct tests complete ===

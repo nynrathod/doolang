@@ -1,0 +1,14 @@
+// ERROR: duplicate field
+// This program should fail to compile because the User struct has two fields named 'name'
+
+struct User {
+    name: Str,
+    name: Int
+}
+
+fn main() {
+    let user = User {
+        name: "Alice"
+    };
+    print(user.name);
+}

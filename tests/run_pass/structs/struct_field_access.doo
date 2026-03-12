@@ -1,0 +1,17 @@
+// OUTPUT: Engineering
+// Tests chained field access on structs
+
+struct Department {
+    name: Str
+}
+
+struct Employee {
+    name: Str,
+    dept: Department
+}
+
+fn main() {
+    let d = Department { name: "Engineering" };
+    let e = Employee { name: "Alice", dept: d };
+    print(e.dept.name);
+}

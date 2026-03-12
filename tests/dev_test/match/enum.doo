@@ -118,3 +118,26 @@ fn main() {
     print("ALL ENUM MATCHING TESTS COMPLETED");
     print("========================================");
 }
+
+// EXPECT: ========================================
+// EXPECT: ENUM VARIANT AND PAYLOAD MATCHING TESTS
+// EXPECT: ========================================
+// EXPECT: [Status Enum]
+// EXPECT: Status: Active
+// EXPECT: Status: Inactive
+// EXPECT: Message: pending
+// EXPECT: [HttpCode Enum - Int Payload]
+// EXPECT: Success code: 200
+// EXPECT: Not found code: 404
+// EXPECT: [HttpCode Enum - Str Payload]
+// EXPECT: Server error: Timeout
+// EXPECT: [Flag Enum - Bool Payload]
+// EXPECT: Flag is On: true
+// EXPECT: Flag is Off: false
+// EXPECT: [Value Enum - Float Payload]
+// EXPECT: Float value: 3.14
+// EXPECT: [Value Enum - Str Payload]
+// EXPECT: Text value: Hello
+// EXPECT: ========================================
+// EXPECT: ALL ENUM MATCHING TESTS COMPLETED
+// EXPECT: ========================================

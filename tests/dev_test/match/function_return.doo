@@ -1,3 +1,4 @@
+//
 // Test Match on Function Return Values
 // This tests matching on values returned by functions
 
@@ -82,3 +83,11 @@ fn main() {
     print("ALL FUNCTION RETURN TESTS PASSED");
     print("========================================");
 }
+
+// EXPECT: OK
+// EXPECT: Error: Not Found
+// EXPECT: Message: Everything OK
+// EXPECT: Value is true
+// EXPECT: Got Pi
+// EXPECT: Status: Active
+// EXPECT: ALL FUNCTION RETURN TESTS PASSED

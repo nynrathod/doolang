@@ -1,0 +1,13 @@
+// OUTPUT: 42
+// OUTPUT: 42.0
+// OUTPUT: 3
+// Tests type conversion between Int, Float, and Str
+
+fn main() {
+    let i = 42;
+    let f = 42.0;
+    let s = 3;
+    print(i);
+    print(f);
+    print(s);
+}

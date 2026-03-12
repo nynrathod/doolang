@@ -1,0 +1,10 @@
+// Tests that trailing commas are allowed by the compiler
+
+fn main() {
+    let x = foo(1, 2,);
+    print(x);
+}
+
+fn foo(a: Int, b: Int) -> Int {
+    return a + b;
+}

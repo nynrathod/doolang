@@ -1,0 +1,19 @@
+// OUTPUT: Direction: Direction::North
+// OUTPUT: Direction::South Direction::East Direction::West
+enum Direction {
+    North,
+    South,
+    East,
+    West,
+}
+
+fn main() {
+    let d = Direction::North;
+    print("Direction:", d);
+
+    let d2 = Direction::South;
+    let d3 = Direction::East;
+    let d4 = Direction::West;
+    print(d2, d3, d4);
+}
+

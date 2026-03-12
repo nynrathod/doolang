@@ -1,0 +1,42 @@
+// OUTPUT: Initial: 10
+// OUTPUT: After += 5: 15
+// OUTPUT: After -= 3: 12
+// OUTPUT: After *= 2: 24
+// OUTPUT: After /= 4: 6
+// OUTPUT: After %= 3: 0
+// OUTPUT: Float += 2.5: 12.500000
+// OUTPUT: Float -= 1.0: 11.500000
+// OUTPUT: Float *= 3.0: 34.500000
+// OUTPUT: Float /= 2.0: 17.250000
+fn main() {
+    let mut i: Int = 10;
+    print("Initial:", i);
+
+    i += 5;
+    print("After += 5:", i);
+
+    i -= 3;
+    print("After -= 3:", i);
+
+    i *= 2;
+    print("After *= 2:", i);
+
+    i /= 4;
+    print("After /= 4:", i);
+
+    i %= 3;
+    print("After %= 3:", i);
+
+    let mut f: Float = 10.0;
+    f += 2.5;
+    print("Float += 2.5:", f);
+
+    f -= 1.0;
+    print("Float -= 1.0:", f);
+
+    f *= 3.0;
+    print("Float *= 3.0:", f);
+
+    f /= 2.0;
+    print("Float /= 2.0:", f);
+}

@@ -108,3 +108,13 @@ fn main() {
 
     print("=== All struct matching patterns tested ===");
 }
+
+// EXPECT: === Struct Matching Patterns Demo ===
+// EXPECT: X is 10
+// EXPECT: Special Point
+// EXPECT: Matched full Point
+// EXPECT: Other user
+// EXPECT: Profile is active
+// EXPECT: Location is Earth
+// EXPECT: Event is active
+// EXPECT: === All struct matching patterns tested ===

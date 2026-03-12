@@ -5,7 +5,7 @@ fn getUserHandler() -> Str {
 }
 
 fn main() {
-    let app = Server::new(":3101");
+    let app = Server::new(":3101").logger();
 
     app.get("/users", getUserHandler);
 

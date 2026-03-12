@@ -1,0 +1,9 @@
+// ERROR: Expected
+// Tests that Map<K,V> syntax produces a parse error
+// Note: Map<K,V> syntax not supported by compiler
+
+fn main() {
+    let mut scores: Map<Str, Int> = Map.new();
+    scores.set("alice", "one hundred");
+    print(scores);
+}

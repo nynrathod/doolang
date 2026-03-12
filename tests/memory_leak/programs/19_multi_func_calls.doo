@@ -1,0 +1,12 @@
+// Memory leak test: multiple function calls
+fn make_msg(n: Int) -> Str {
+    return "message ${n}";
+}
+fn main() {
+    let a = make_msg(1);
+    let b = make_msg(2);
+    let c = make_msg(3);
+    print(a);
+    print(b);
+    print(c);
+}

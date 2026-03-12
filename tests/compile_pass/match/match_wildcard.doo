@@ -1,0 +1,26 @@
+// OUTPUT: Result: default value
+// OUTPUT: Message: matches everything
+// OUTPUT: anything else
+fn main() {
+    let y = 5;
+    let result = match y {
+        10 => "ten",
+        20 => "twenty",
+        _ => "default value",
+    };
+    print("Result:", result);
+
+    let z = 42;
+    let msg = match z {
+        _ => "matches everything",
+    };
+    print("Message:", msg);
+
+    let x = 99;
+    match x {
+        1 => print("one"),
+        2 => print("two"),
+        3 => print("three"),
+        _ => print("anything else"),
+    }
+}

@@ -1,0 +1,25 @@
+// OUTPUT: Matrix: [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+// OUTPUT: Row 0: [1, 2, 3]
+// OUTPUT: Row 1: [4, 5, 6]
+// OUTPUT: Row 2: [7, 8, 9]
+// OUTPUT: matrix[1][2]: 6
+// OUTPUT: String arrays: [["a", "b"], ["c", "d"]]
+// OUTPUT: First inner: ["a", "b"]
+fn main() {
+    let matrix = [[1, 2, 3], [4, 5, 6], [7, 8, 9]];
+    print("Matrix:", matrix);
+
+    let row0 = matrix[0];
+    let row1 = matrix[1];
+    let row2 = matrix[2];
+    print("Row 0:", row0);
+    print("Row 1:", row1);
+    print("Row 2:", row2);
+
+    let element = matrix[1][2];
+    print("matrix[1][2]:", element);
+
+    let strArrays = [["a", "b"], ["c", "d"]];
+    print("String arrays:", strArrays);
+    print("First inner:", strArrays[0]);
+}

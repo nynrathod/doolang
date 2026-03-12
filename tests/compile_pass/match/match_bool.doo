@@ -1,0 +1,24 @@
+// OUTPUT: Status: Active
+// OUTPUT: Value: 100
+// OUTPUT: No errors
+fn main() {
+    let isActive = true;
+    let status = match isActive {
+        true => "Active",
+        false => "Inactive",
+    };
+    print("Status:", status);
+
+    let condition = true;
+    let value = match condition {
+        true => 100,
+        false => 0,
+    };
+    print("Value:", value);
+
+    let hasError = false;
+    match hasError {
+        true => print("Error detected"),
+        false => print("No errors"),
+    }
+}

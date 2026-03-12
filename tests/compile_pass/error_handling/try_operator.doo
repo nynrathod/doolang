@@ -1,0 +1,46 @@
+// OUTPUT: Doubled: 84
+// OUTPUT: Error: invalid number
+// OUTPUT: Chain result: 42
+fn parseNumber(s: Str) -> Int ! Str {
+    if s == "42" {
+        Ok 42;
+    }
+    if s == "0" {
+        Ok 0;
+    }
+    Err "invalid number";
+}
+
+fn doubleNumber(s: Str) -> Int ! Str {
+    let n = parseNumber(s)?;
+    Ok n * 2;
+}
+
+fn processChain() -> Int ! Str {
+    let a = parseNumber("42")?;
+    let b = parseNumber("0")?;
+    Ok a + b;
+}
+
+fn main() {
+    let r1, e1 = doubleNumber("42");
+    if e1 != nil {
+        print("Error:", e1);
+    } else {
+        print("Doubled:", r1);
+    }
+
+    let r2, e2 = doubleNumber("bad");
+    if e2 != nil {
+        print("Error:", e2);
+    } else {
+        print("Doubled:", r2);
+    }
+
+    let r3, e3 = processChain();
+    if e3 != nil {
+        print("Error:", e3);
+    } else {
+        print("Chain result:", r3);
+    }
+}

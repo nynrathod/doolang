@@ -1,0 +1,36 @@
+// OUTPUT: Red: 255 0 0
+// OUTPUT: Green: 0 255 0
+// OUTPUT: Blue: 0 0 255
+// OUTPUT: White: 255 255 255
+// OUTPUT: Black: 0 0 0
+struct Color {
+    r: Int,
+    g: Int,
+    b: Int,
+}
+
+fn createRed() -> Color {
+    return Color { r: 255, g: 0, b: 0 };
+}
+
+fn createGreen() -> Color {
+    return Color { r: 0, g: 255, b: 0 };
+}
+
+fn main() {
+    let red = createRed();
+    let green = createGreen();
+    let blue = Color { r: 0, g: 0, b: 255 };
+    let white = Color {
+        r: 255,
+        g: 255,
+        b: 255,
+    };
+    let black = Color { r: 0, g: 0, b: 0 };
+
+    print("Red:", red.r, red.g, red.b);
+    print("Green:", green.r, green.g, green.b);
+    print("Blue:", blue.r, blue.g, blue.b);
+    print("White:", white.r, white.g, white.b);
+    print("Black:", black.r, black.g, black.b);
+}

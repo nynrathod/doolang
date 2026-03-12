@@ -98,4 +98,31 @@ fn main() {
     }
 
     print("\n=== All Array Find Tests Passed! ===");
+
+    // EXPECT: === Find Operator Test for Arrays (Implicit & Explicit Types) ===
+    // EXPECT: --- Int Array (Implicit) ---
+    // EXPECT: ✓ 3 found
+    // EXPECT: ✓ 10 not found
+    // EXPECT: --- Int Array (Explicit) ---
+    // EXPECT: ✓ 4 found
+    // EXPECT: ✓ 0 not found
+    // EXPECT: --- Float Array (Implicit) ---
+    // EXPECT: ✓ 2.2 found
+    // EXPECT: ✓ 5.5 not found
+    // EXPECT: --- Float Array (Explicit) ---
+    // EXPECT: ✓ 3.3 found
+    // EXPECT: ✓ 0.0 not found
+    // EXPECT: --- Bool Array (Implicit) ---
+    // EXPECT: ✓ true found
+    // EXPECT: ✓ false found
+    // EXPECT: --- Bool Array (Explicit) ---
+    // EXPECT: ✓ true found
+    // EXPECT: ✓ false found
+    // EXPECT: --- Str Array (Implicit) ---
+    // EXPECT: ✓ banana found
+    // EXPECT: ✓ date not found
+    // EXPECT: --- Str Array (Explicit) ---
+    // EXPECT: ✓ cherry found
+    // EXPECT: ✓ fig not found
+    // EXPECT: === All Array Find Tests Passed! ===
 }

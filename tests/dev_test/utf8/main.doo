@@ -32,3 +32,15 @@ fn main() {
     print("Launching ${rocket} to the stars!");
     print("");
 }
+
+// EXPECT: Chinese:
+// EXPECT: 你好世界
+// EXPECT: Japanese:
+// EXPECT: こんにちは
+// EXPECT: Korean:
+// EXPECT: 안녕하세요
+// EXPECT: Emojis:
+// EXPECT: 🚀 🎉 ❤️ 😊 🔥
+// EXPECT: Arabic:
+// EXPECT: مرحبا
+// EXPECT: Launching 🚀 to the stars!

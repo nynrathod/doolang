@@ -1,0 +1,20 @@
+// OUTPUT: 42
+// Tests ? operator with Ok result
+
+fn getNumber() -> Int ! Str {
+    Ok 42;
+}
+
+fn processNumber() -> Int ! Str {
+    let n = getNumber()?;
+    Ok n;
+}
+
+fn main() {
+    let v, e = processNumber();
+    if e == nil {
+        print(v);
+    } else {
+        print("Error:", e);
+    }
+}

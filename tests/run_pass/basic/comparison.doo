@@ -1,0 +1,16 @@
+// OUTPUT: true
+// OUTPUT: false
+// OUTPUT: true
+// OUTPUT: false
+// OUTPUT: true
+// OUTPUT: true
+// Tests comparison operators
+
+fn main() {
+    print(5 > 3);
+    print(5 < 3);
+    print(5 >= 5);
+    print(5 != 5);
+    print(5 == 5);
+    print(10 <= 20);
+}

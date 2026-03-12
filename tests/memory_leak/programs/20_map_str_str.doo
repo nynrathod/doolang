@@ -1,0 +1,5 @@
+// Memory leak test: map creation and access
+fn main() {
+    let m = {"name": "Alice", "city": "NYC"};
+    print(m);
+}

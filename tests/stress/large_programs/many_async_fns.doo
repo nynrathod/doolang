@@ -1,0 +1,43 @@
+// Stress test: many async functions and concurrent tasks
+async fn fetch0() -> Str { sleep(10); return "r0"; }
+async fn fetch1() -> Str { sleep(10); return "r1"; }
+async fn fetch2() -> Str { sleep(10); return "r2"; }
+async fn fetch3() -> Str { sleep(10); return "r3"; }
+async fn fetch4() -> Str { sleep(10); return "r4"; }
+async fn fetch5() -> Str { sleep(10); return "r5"; }
+async fn fetch6() -> Str { sleep(10); return "r6"; }
+async fn fetch7() -> Str { sleep(10); return "r7"; }
+async fn fetch8() -> Str { sleep(10); return "r8"; }
+async fn fetch9() -> Str { sleep(10); return "r9"; }
+
+fn main() {
+    scope {
+        go {
+            let r = await fetch0();
+            print(r);
+        }
+        go {
+            let r = await fetch1();
+            print(r);
+        }
+        go {
+            let r = await fetch2();
+            print(r);
+        }
+        go {
+            let r = await fetch3();
+            print(r);
+        }
+        go {
+            let r = await fetch4();
+            print(r);
+        }
+    }
+
+    let r5 = await fetch5();
+    let r6 = await fetch6();
+    let r7 = await fetch7();
+    let r8 = await fetch8();
+    let r9 = await fetch9();
+    print(r5, r6, r7, r8, r9);
+}

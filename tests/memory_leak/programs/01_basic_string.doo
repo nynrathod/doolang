@@ -1,0 +1,5 @@
+// Memory leak test: basic string allocation and print
+fn main() {
+    let s = "hello world";
+    print(s);
+}

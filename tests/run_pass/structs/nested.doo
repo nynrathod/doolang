@@ -1,0 +1,7 @@
+
+struct Address { city: Str }
+struct User { name: Str, address: Address }
+fn main() {
+    let u = User { name: "Alice", address: Address { city: "NYC" } };
+    print(u.address.city);
+}

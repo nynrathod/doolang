@@ -1,0 +1,12 @@
+[package]
+name = "doo_ffi_file"
+version.workspace = true
+edition.workspace = true
+description = "Production-grade file system FFI for Doo programming language"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+libc = "0.2"
+doo_ffi_core = { path = "../doo_ffi_core" }

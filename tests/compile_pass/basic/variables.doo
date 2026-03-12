@@ -1,0 +1,31 @@
+// OUTPUT: 42 3.140000 hello true
+// OUTPUT: -100 -2.718000 0 0.000000
+// OUTPUT:  false 2147483647 0.000100
+// OUTPUT: 20 second false 2.000000
+fn main() {
+    let intVal: Int = 42;
+    let floatVal: Float = 3.14;
+    let strVal: Str = "hello";
+    let boolVal: Bool = true;
+    let negInt: Int = -100;
+    let negFloat: Float = -2.718;
+    let zeroInt: Int = 0;
+    let zeroFloat: Float = 0.0;
+    let emptyStr: Str = "";
+    let falseVal: Bool = false;
+    let bigInt: Int = 2147483647;
+    let smallFloat: Float = 0.0001;
+    let mut mutableInt: Int = 10;
+    mutableInt = 20;
+    let mut mutableStr: Str = "first";
+    mutableStr = "second";
+    let mut mutableBool: Bool = true;
+    mutableBool = false;
+    let mut mutableFloat: Float = 1.0;
+    mutableFloat = 2.0;
+    print(intVal, floatVal, strVal, boolVal);
+    print(negInt, negFloat, zeroInt, zeroFloat);
+    print(emptyStr, falseVal, bigInt, smallFloat);
+    print(mutableInt, mutableStr, mutableBool, mutableFloat);
+}
+

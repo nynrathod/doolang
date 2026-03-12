@@ -1,0 +1,27 @@
+// Test Config module — reads environment variables
+import std::Config;
+
+fn main() {
+    // Test Config::get with default fallback
+    let port = Config::getOr("PORT", "3100");
+    print("Port: " + port);
+
+    // Test Config::has
+    let hasPort = Config::has("PORT");
+    print("Has PORT: " + hasPort);
+
+    // Test Config::set + get roundtrip
+    Config::set("MY_TEST_KEY", "hello_doo");
+    let val = Config::get("MY_TEST_KEY")?;
+    print("MY_TEST_KEY: " + val);
+
+    // Test Config::getInt with default
+    let workers = Config::getInt("DOO_WORKERS", 4);
+    print("Workers: " + workers);
+
+    // Test Config::getBool with default
+    let debug = Config::getBool("DOO_DEBUG", false);
+    print("Debug: " + debug);
+
+    print("All Config tests passed!");
+}

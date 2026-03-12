@@ -1,0 +1,19 @@
+// OUTPUT: Theme: dark true
+// OUTPUT: Notifications: all false
+struct Settings {
+    value: Str,
+    enabled: Bool,
+}
+
+fn main() {
+    let config = {
+        "theme": Settings { value: "dark", enabled: true },
+        "notifications": Settings { value: "all", enabled: false },
+    };
+
+    let theme = config["theme"];
+    print("Theme:", theme.value, theme.enabled);
+
+    let notif = config["notifications"];
+    print("Notifications:", notif.value, notif.enabled);
+}

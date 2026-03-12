@@ -1,0 +1,16 @@
+// OUTPUT: Alice
+// OUTPUT: Bob
+// Tests array of structs
+
+struct Person {
+    name: Str
+}
+
+fn main() {
+    let people = [
+        Person { name: "Alice" },
+        Person { name: "Bob" }
+    ];
+    print(people[0].name);
+    print(people[1].name);
+}

@@ -1,0 +1,8 @@
+// OUTPUT: Condition is true
+// Tests if condition when true
+
+fn main() {
+    if true {
+        print("Condition is true");
+    }
+}

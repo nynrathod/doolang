@@ -1,0 +1,9 @@
+// ERROR: Redeclaration
+// This program should fail to compile because x is redeclared in the same scope without shadowing
+
+fn main() {
+    let x = 10;
+    print(x);
+    let x = 20;
+    print(x);
+}

@@ -1,0 +1,15 @@
+// OUTPUT: 42
+// Tests unwrapping Ok value from Result
+
+fn getAnswer() -> Int ! Str {
+    Ok 42;
+}
+
+fn main() {
+    let v, e = getAnswer();
+    if e == nil {
+        print(v);
+    } else {
+        print("Error");
+    }
+}

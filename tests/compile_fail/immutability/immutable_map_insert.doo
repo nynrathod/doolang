@@ -1,0 +1,8 @@
+// ERROR: expected
+// This program should fail to compile because map is not declared as mut
+
+fn main() {
+    let map = Map<Str, Int>{};
+    map.insert("key", 42);
+    print(map);
+}

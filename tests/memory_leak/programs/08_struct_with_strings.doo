@@ -1,0 +1,7 @@
+// Memory leak test: struct with string fields
+struct User { name: Str, email: Str }
+fn main() {
+    let u = User { name: "Alice", email: "alice@example.com" };
+    print(u.name);
+    print(u.email);
+}

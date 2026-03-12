@@ -1,0 +1,19 @@
+import std::Http::{Server, Request, Fetch};
+
+fn dataHandler(req: Request) -> Str {
+    return "Sa";
+}
+
+// Test: Simplest possible Fetch with ObjectLit
+fn testFetch(req: Request) -> Str {
+    let res = Fetch("http://127.0.0.1:3191/data", {
+        method: "GET"
+    });
+    return res;
+}
+
+fn main() {
+    let app = Server::new(":3191");
+    app.get("/data", dataHandler);
+    app.start();
+}

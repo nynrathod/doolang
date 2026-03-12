@@ -1,0 +1,56 @@
+import std::Http::{Server, Request, Response};
+import std::Auth::{Jwt};
+
+struct MessageResponse {
+    message: Str,
+}
+
+struct ProfileResponse {
+    id: Int,
+    email: Str,
+    name: Str,
+}
+
+fn GetPublicInfo() -> MessageResponse {
+    print("📍 Handler: GetPublicInfo (public, no auth)");
+    return MessageResponse {
+        message: "Public information",
+    };
+}
+
+fn GetProfile(req: Request) -> ProfileResponse {
+    print("📍 Handler: GetProfile (JWT protected)");
+    return ProfileResponse {
+        id: 1,
+        email: "user@example.com",
+        name: "OAuth User",
+    };
+}
+
+fn GetStatus() -> MessageResponse {
+    print("📍 Handler: GetStatus (public)");
+    return MessageResponse {
+        message: "Server is running with OAuth",
+    };
+}
+
+fn main() {
+    let app = Server::new(":3120");
+
+    // Setup OAuth login with Google and GitHub providers
+    // This auto-registers routes:
+    //   GET /auth/google          → redirect to Google OAuth
+    //   GET /auth/google/callback → exchange code → JWT session
+    //   GET /auth/github          → redirect to GitHub OAuth
+    //   GET /auth/github/callback → exchange code → JWT session
+    app.oauth({Providers: ["Google", "GitHub"]});
+
+    // Public routes (no auth needed)
+    app.get("/public", GetPublicInfo);
+    app.get("/status", GetStatus);
+
+    // JWT-protected route (works with OAuth sessions too)
+    app.get("/profile", Jwt(), GetProfile);
+
+    app.start();
+}

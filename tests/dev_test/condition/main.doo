@@ -121,3 +121,31 @@ fn main() {
 
     print("=== All Tests Completed ===");
 }
+
+// EXPECT: === Inline If-Else with Statements Test ===
+// EXPECT: Test 1: Simple inline if-else
+// EXPECT: result1: big
+// EXPECT:
+// EXPECT: Test 2: If-else with let statement in then branch
+// EXPECT: status: adult
+// EXPECT:
+// EXPECT: Test 3: Multiple statements in both branches
+// EXPECT: grade: B
+// EXPECT:
+// EXPECT: Test 4: Nested if-else with statements
+// EXPECT: category: low
+// EXPECT:
+// EXPECT: Test 5: If-else-if with compound conditions
+// EXPECT: status2: adult_verified
+// EXPECT:
+// EXPECT: Test 6: Computed values in block
+// EXPECT: max_val: 20
+// EXPECT:
+// EXPECT: Test 7: Block with side effects
+// EXPECT:   Inside true branch
+// EXPECT: output: yes
+// EXPECT:
+// EXPECT: Test 8: Single expression (no semicolon)
+// EXPECT: parity: even
+// EXPECT:
+// EXPECT: === All Tests Completed ===

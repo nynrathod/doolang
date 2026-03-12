@@ -1,0 +1,99 @@
+import std::Http::{Server, Request, Fetch};
+
+// A simple data endpoint that Fetch will call
+fn dataHandler(req: Request) -> Str {
+    return "{\"name\":\"Doo\",\"version\":\"1.0\",\"lang\":\"compiled\"}";
+}
+
+// Echo endpoint — returns whatever body was sent
+fn echoHandler(req: Request) -> Str {
+    return req.Body;
+}
+
+// Test 1: Fetch GET to local /data endpoint
+fn testFetchGet(req: Request) -> Str {
+    let res = Fetch("http://127.0.0.1:3190/data");
+    return res;
+}
+
+// Test 2: Fetch POST with body to local /echo endpoint
+fn testFetchPost(req: Request) -> Str {
+    let res = Fetch("http://127.0.0.1:3190/echo", {
+        method: "POST",
+        body: "hello-world",
+        headers: ["Content-Type: application/json"]
+    });
+    return res;
+}
+
+// Test 3: Fetch with custom headers
+fn testFetchHeaders(req: Request) -> Str {
+    let res = Fetch("http://127.0.0.1:3190/echo", {
+        method: "GET",
+        headers: ["X-Custom: DooTest", "Accept: text/plain"]
+    });
+    return res;
+}
+
+// Test 4: Fetch with timeout (should succeed since local is fast)
+fn testFetchTimeout(req: Request) -> Str {
+    let res = Fetch("http://127.0.0.1:3190/data", {
+        method: "GET",
+        timeout: 5
+    });
+    return res;
+}
+
+// Test 5: Fetch to non-existent host (should return error)
+fn testFetchError(req: Request) -> Str {
+    let res = Fetch("http://127.0.0.1:19999/nope", {
+        method: "GET",
+        timeout: 2
+    });
+    return res;
+}
+
+// Test 6: Fetch with PUT method
+fn testFetchPut(req: Request) -> Str {
+    let res = Fetch("http://127.0.0.1:3190/echo", {
+        method: "PUT",
+        body: "updated-data"
+    });
+    return res;
+}
+
+// Test 7: Fetch with DELETE method
+fn testFetchDelete(req: Request) -> Str {
+    let res = Fetch("http://127.0.0.1:3190/data", {
+        method: "DELETE"
+    });
+    return res;
+}
+
+// Test 8: fetch with defaults (simple GET, no options)
+fn testFetchDefaults(req: Request) -> Str {
+    let res = Fetch("http://127.0.0.1:3190/data");
+    return res;
+}
+
+fn main() {
+    let app = Server::new(":3190");
+
+    // Data endpoints (targets for Fetch)
+    app.get("/data", dataHandler);
+    app.post("/echo", echoHandler);
+    app.get("/echo", echoHandler);
+    app.put("/echo", echoHandler);
+
+    // Test endpoints (use Fetch internally)
+    app.get("/test-fetch-get", testFetchGet);
+    app.get("/test-fetch-post", testFetchPost);
+    app.get("/test-fetch-headers", testFetchHeaders);
+    app.get("/test-fetch-timeout", testFetchTimeout);
+    app.get("/test-fetch-error", testFetchError);
+    app.get("/test-fetch-put", testFetchPut);
+    app.get("/test-fetch-delete", testFetchDelete);
+    app.get("/test-fetch-defaults", testFetchDefaults);
+
+    app.start();
+}

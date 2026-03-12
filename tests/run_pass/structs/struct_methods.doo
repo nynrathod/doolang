@@ -1,0 +1,15 @@
+// OUTPUT: Hello, my name is Alice
+// Tests calling methods on a struct
+
+struct Person {
+    name: Str
+}
+
+fn Person.greet(self) {
+    print("Hello, my name is ${self.name}");
+}
+
+fn main() {
+    let p = Person { name: "Alice" };
+    p.greet();
+}

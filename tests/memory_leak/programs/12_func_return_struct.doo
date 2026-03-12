@@ -1,0 +1,9 @@
+// Memory leak test: function returning struct
+struct Point { x: Int, y: Int }
+fn create_point(x: Int, y: Int) -> Point {
+    return Point { x: x, y: y };
+}
+fn main() {
+    let p = create_point(10, 20);
+    print(p.x);
+}

@@ -1,0 +1,10 @@
+// ERROR: expected
+// Tests that missing closing brace produces a syntax error
+
+fn foo() {
+    let x = 42;
+    print(x);
+
+fn main() {
+    foo();
+}

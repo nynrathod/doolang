@@ -1,0 +1,7 @@
+// ERROR: expected Int, found Str
+// This program should fail to compile because a string literal cannot be assigned to an Int variable
+
+fn main() {
+    let x: Int = "hello";
+    print(x);
+}

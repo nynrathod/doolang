@@ -1,0 +1,7 @@
+// ERROR: Incompatible
+// Tests that comparing incompatible types produces a type error
+
+fn main() {
+    let x = "hello" > 42;
+    print(x);
+}

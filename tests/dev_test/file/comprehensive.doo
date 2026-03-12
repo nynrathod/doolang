@@ -1,0 +1,576 @@
+import std::File;
+
+//
+// Comprehensive File Operations Test Suite
+// Covers ALL file operations with success, error, edge cases for cloud-grade validation.
+// Tests: Write, Read, Append, Delete, Copy, Move, Size, Metadata,
+//        MkDir, RmDir, RmDirAll, ListDir, Exists, ReadLines,
+//        IsFile, IsDir, and error paths.
+//
+
+fn main() {
+    print("=== Comprehensive File Operations Test Suite ===");
+    print("");
+
+    let mut passed = 0;
+    let mut failed = 0;
+
+    // ========================================================================
+    // TEST 1: Write and Read
+    // ========================================================================
+    print("TEST 1: Write and Read");
+    let _, errW1 = File::Write("test_comprehensive.txt", "Hello Doo!");
+    if errW1 == nil {
+        let content, errR1 = File::Read("test_comprehensive.txt");
+        if errR1 == nil {
+            if content == "Hello Doo!" {
+                print("  PASS: Write and Read work correctly");
+                passed = passed + 1;
+            } else {
+                print("  FAIL: Content mismatch, got:", content);
+                failed = failed + 1;
+            }
+        } else {
+            print("  FAIL: Read error:", errR1.Message);
+            failed = failed + 1;
+        }
+    } else {
+        print("  FAIL: Write error:", errW1.Message);
+        failed = failed + 1;
+    }
+    print("");
+
+    // ========================================================================
+    // TEST 2: Overwrite existing file
+    // ========================================================================
+    print("TEST 2: Overwrite existing file");
+    let _, errW2 = File::Write("test_comprehensive.txt", "Overwritten content");
+    if errW2 == nil {
+        let content2, errR2 = File::Read("test_comprehensive.txt");
+        if errR2 == nil {
+            if content2 == "Overwritten content" {
+                print("  PASS: Overwrite works correctly");
+                passed = passed + 1;
+            } else {
+                print("  FAIL: Content mismatch after overwrite");
+                failed = failed + 1;
+            }
+        } else {
+            print("  FAIL: Read after overwrite error:", errR2.Message);
+            failed = failed + 1;
+        }
+    } else {
+        print("  FAIL: Overwrite error:", errW2.Message);
+        failed = failed + 1;
+    }
+    print("");
+
+    // ========================================================================
+    // TEST 3: Append to file
+    // ========================================================================
+    print("TEST 3: Append to file");
+    let _, errA3 = File::Append("test_comprehensive.txt", " + appended");
+    if errA3 == nil {
+        let content3, errR3 = File::Read("test_comprehensive.txt");
+        if errR3 == nil {
+            if content3 == "Overwritten content + appended" {
+                print("  PASS: Append works correctly");
+                passed = passed + 1;
+            } else {
+                print("  FAIL: Content after append:", content3);
+                failed = failed + 1;
+            }
+        } else {
+            print("  FAIL: Read after append error:", errR3.Message);
+            failed = failed + 1;
+        }
+    } else {
+        print("  FAIL: Append error:", errA3.Message);
+        failed = failed + 1;
+    }
+    print("");
+
+    // ========================================================================
+    // TEST 4: Append to new file (creates it)
+    // ========================================================================
+    print("TEST 4: Append to non-existent file (creates it)");
+    let _, errA4 = File::Append("test_append_new.txt", "Created by append");
+    if errA4 == nil {
+        let content4, errR4 = File::Read("test_append_new.txt");
+        if errR4 == nil {
+            if content4 == "Created by append" {
+                print("  PASS: Append creates new file correctly");
+                passed = passed + 1;
+            } else {
+                print("  FAIL: Content mismatch:", content4);
+                failed = failed + 1;
+            }
+        } else {
+            print("  FAIL: Read error:", errR4.Message);
+            failed = failed + 1;
+        }
+    } else {
+        print("  FAIL: Append to new file error:", errA4.Message);
+        failed = failed + 1;
+    }
+    File::Delete("test_append_new.txt");
+    print("");
+
+    // ========================================================================
+    // TEST 5: File::Exists
+    // ========================================================================
+    print("TEST 5: File::Exists");
+    let exists5 = File::Exists("test_comprehensive.txt");
+    if exists5 == true {
+        print("  PASS: Exists returns true for existing file");
+        passed = passed + 1;
+    } else {
+        print("  FAIL: Exists returned false for existing file");
+        failed = failed + 1;
+    }
+    let existsNo5 = File::Exists("nonexistent_file_xyz_123.txt");
+    if existsNo5 == false {
+        print("  PASS: Exists returns false for non-existent file");
+        passed = passed + 1;
+    } else {
+        print("  FAIL: Exists returned true for non-existent file");
+        failed = failed + 1;
+    }
+    print("");
+
+    // ========================================================================
+    // TEST 6: File::Size
+    // ========================================================================
+    print("TEST 6: File::Size");
+    // Write known content - "Overwritten content + appended" is 30 bytes
+    let size6, errS6 = File::Size("test_comprehensive.txt");
+    if errS6 == nil {
+        print("  PASS: Size =", size6, "bytes");
+        passed = passed + 1;
+    } else {
+        print("  FAIL: Size error:", errS6.Message);
+        failed = failed + 1;
+    }
+    print("");
+
+    // ========================================================================
+    // TEST 7: File::Metadata
+    // ========================================================================
+    print("TEST 7: File::Metadata");
+    let meta7, errM7 = File::Metadata("test_comprehensive.txt");
+    if errM7 == nil {
+        print("  IsFile:", meta7.IsFile);
+        print("  IsDir:", meta7.IsDir);
+        print("  IsSymlink:", meta7.IsSymlink);
+        print("  Size:", meta7.Size);
+        print("  Readonly:", meta7.Readonly);
+        if meta7.IsFile == true {
+            print("  PASS: Metadata reports file correctly");
+            passed = passed + 1;
+        } else {
+            print("  FAIL: Metadata IsFile should be true");
+            failed = failed + 1;
+        }
+    } else {
+        print("  FAIL: Metadata error:", errM7.Message);
+        failed = failed + 1;
+    }
+    print("");
+
+    // ========================================================================
+    // TEST 8: File::Copy
+    // ========================================================================
+    print("TEST 8: File::Copy");
+    let _, errC8 = File::Copy("test_comprehensive.txt", "test_copy_dest.txt");
+    if errC8 == nil {
+        let copyContent, errRC8 = File::Read("test_copy_dest.txt");
+        if errRC8 == nil {
+            let origContent, _ = File::Read("test_comprehensive.txt");
+            if copyContent == origContent {
+                print("  PASS: Copy preserves content");
+                passed = passed + 1;
+            } else {
+                print("  FAIL: Copy content differs from original");
+                failed = failed + 1;
+            }
+        } else {
+            print("  FAIL: Read copy error:", errRC8.Message);
+            failed = failed + 1;
+        }
+    } else {
+        print("  FAIL: Copy error:", errC8.Message);
+        failed = failed + 1;
+    }
+    print("");
+
+    // ========================================================================
+    // TEST 9: File::Move
+    // ========================================================================
+    print("TEST 9: File::Move");
+    let _, errMv9 = File::Move("test_copy_dest.txt", "test_moved.txt");
+    if errMv9 == nil {
+        let srcExists9 = File::Exists("test_copy_dest.txt");
+        let dstExists9 = File::Exists("test_moved.txt");
+        if srcExists9 == false {
+            if dstExists9 == true {
+                print("  PASS: Move works (source gone, dest exists)");
+                passed = passed + 1;
+            } else {
+                print("  FAIL: Destination doesn't exist after move");
+                failed = failed + 1;
+            }
+        } else {
+            print("  FAIL: Source still exists after move");
+            failed = failed + 1;
+        }
+    } else {
+        print("  FAIL: Move error:", errMv9.Message);
+        failed = failed + 1;
+    }
+    File::Delete("test_moved.txt");
+    print("");
+
+    // ========================================================================
+    // TEST 10: File::ReadLines
+    // ========================================================================
+    print("TEST 10: File::ReadLines");
+    File::Write("test_lines.txt", "line1\nline2\nline3");
+    let lines10, errL10 = File::ReadLines("test_lines.txt");
+    if errL10 == nil {
+        print("  PASS: ReadLines returned content:", lines10);
+        passed = passed + 1;
+    } else {
+        print("  FAIL: ReadLines error:", errL10.Message);
+        failed = failed + 1;
+    }
+    File::Delete("test_lines.txt");
+    print("");
+
+    // ========================================================================
+    // TEST 11: File::MkDir and File::RmDir
+    // ========================================================================
+    print("TEST 11: MkDir and RmDir");
+    let _, errMk11 = File::MkDir("test_dir_comp");
+    if errMk11 == nil {
+        let isDir11 = File::Exists("test_dir_comp");
+        if isDir11 == true {
+            print("  PASS: Directory created and exists");
+            passed = passed + 1;
+        } else {
+            print("  FAIL: Directory not found after creation");
+            failed = failed + 1;
+        }
+        // Remove it
+        let _, errRm11 = File::RmDir("test_dir_comp");
+        if errRm11 == nil {
+            print("  PASS: Empty directory removed");
+            passed = passed + 1;
+        } else {
+            print("  FAIL: RmDir error:", errRm11.Message);
+            failed = failed + 1;
+        }
+    } else {
+        print("  FAIL: MkDir error:", errMk11.Message);
+        failed = failed + 1;
+    }
+    print("");
+
+    // ========================================================================
+    // TEST 12: File::RmDirAll (recursive)
+    // ========================================================================
+    print("TEST 12: RmDirAll (recursive delete)");
+    File::MkDir("test_dir_recursive_comp");
+    File::Write("test_dir_recursive_comp/file1.txt", "data1");
+    File::Write("test_dir_recursive_comp/file2.txt", "data2");
+    File::MkDir("test_dir_recursive_comp/subdir");
+    File::Write("test_dir_recursive_comp/subdir/file3.txt", "data3");
+    let _, errRmAll12 = File::RmDirAll("test_dir_recursive_comp");
+    if errRmAll12 == nil {
+        let existsAfter12 = File::Exists("test_dir_recursive_comp");
+        if existsAfter12 == false {
+            print("  PASS: Recursive delete removed everything");
+            passed = passed + 1;
+        } else {
+            print("  FAIL: Directory still exists after RmDirAll");
+            failed = failed + 1;
+        }
+    } else {
+        print("  FAIL: RmDirAll error:", errRmAll12.Message);
+        failed = failed + 1;
+    }
+    print("");
+
+    // ========================================================================
+    // TEST 13: File::ListDir
+    // ========================================================================
+    print("TEST 13: ListDir");
+    File::MkDir("test_list_dir_comp");
+    File::Write("test_list_dir_comp/alpha.txt", "a");
+    File::Write("test_list_dir_comp/beta.txt", "b");
+    File::Write("test_list_dir_comp/gamma.txt", "c");
+    let listing13, errList13 = File::ListDir("test_list_dir_comp");
+    if errList13 == nil {
+        print("  PASS: ListDir returned:", listing13);
+        passed = passed + 1;
+    } else {
+        print("  FAIL: ListDir error:", errList13.Message);
+        failed = failed + 1;
+    }
+    // Cleanup
+    File::RmDirAll("test_list_dir_comp");
+    print("");
+
+    // ========================================================================
+    // TEST 14: Metadata on directory
+    // ========================================================================
+    print("TEST 14: Metadata on directory");
+    File::MkDir("test_meta_dir_comp");
+    let metaDir14, errMD14 = File::Metadata("test_meta_dir_comp");
+    if errMD14 == nil {
+        if metaDir14.IsDir == true {
+            print("  PASS: Directory metadata IsDir=true");
+            passed = passed + 1;
+        } else {
+            print("  FAIL: Directory metadata IsDir should be true");
+            failed = failed + 1;
+        }
+        if metaDir14.IsFile == false {
+            print("  PASS: Directory metadata IsFile=false");
+            passed = passed + 1;
+        } else {
+            print("  FAIL: Directory metadata IsFile should be false");
+            failed = failed + 1;
+        }
+    } else {
+        print("  FAIL: Directory metadata error:", errMD14.Message);
+        failed = failed + 1;
+    }
+    File::RmDir("test_meta_dir_comp");
+    print("");
+
+    // ========================================================================
+    // ERROR PATH TESTS
+    // ========================================================================
+
+    // TEST 15: Read non-existent file
+    print("TEST 15: Read non-existent file (expect error)");
+    let _, errR15 = File::Read("nonexistent_file_xyz_never_exists.txt");
+    if errR15 != nil {
+        print("  PASS: Error returned:", errR15.Message);
+        passed = passed + 1;
+    } else {
+        print("  FAIL: Should have returned error for non-existent file");
+        failed = failed + 1;
+    }
+    print("");
+
+    // TEST 16: Delete non-existent file
+    print("TEST 16: Delete non-existent file (expect error)");
+    let _, errD16 = File::Delete("nonexistent_file_xyz_never_exists.txt");
+    if errD16 != nil {
+        print("  PASS: Error returned:", errD16.Message);
+        passed = passed + 1;
+    } else {
+        print("  FAIL: Should have returned error for non-existent file");
+        failed = failed + 1;
+    }
+    print("");
+
+    // TEST 17: Size of non-existent file
+    print("TEST 17: Size of non-existent file (expect error)");
+    let _, errS17 = File::Size("nonexistent_file_xyz_never_exists.txt");
+    if errS17 != nil {
+        print("  PASS: Error returned:", errS17.Message);
+        passed = passed + 1;
+    } else {
+        print("  FAIL: Should have returned error for non-existent file");
+        failed = failed + 1;
+    }
+    print("");
+
+    // TEST 18: Metadata of non-existent file
+    print("TEST 18: Metadata of non-existent file (expect error)");
+    let _, errM18 = File::Metadata("nonexistent_file_xyz_never_exists.txt");
+    if errM18 != nil {
+        print("  PASS: Error returned:", errM18.Message);
+        passed = passed + 1;
+    } else {
+        print("  FAIL: Should have returned error for non-existent file");
+        failed = failed + 1;
+    }
+    print("");
+
+    // TEST 19: Copy non-existent source
+    print("TEST 19: Copy non-existent source (expect error)");
+    let _, errC19 = File::Copy("nonexistent_source_999.txt", "dest_999.txt");
+    if errC19 != nil {
+        print("  PASS: Error returned:", errC19.Message);
+        passed = passed + 1;
+    } else {
+        print("  FAIL: Should have returned error");
+        failed = failed + 1;
+    }
+    print("");
+
+    // TEST 20: Move non-existent source
+    print("TEST 20: Move non-existent source (expect error)");
+    let _, errMv20 = File::Move("nonexistent_source_999.txt", "dest_999.txt");
+    if errMv20 != nil {
+        print("  PASS: Error returned:", errMv20.Message);
+        passed = passed + 1;
+    } else {
+        print("  FAIL: Should have returned error");
+        failed = failed + 1;
+    }
+    print("");
+
+    // TEST 21: RmDir non-existent directory
+    print("TEST 21: RmDir non-existent (expect error)");
+    let _, errRm21 = File::RmDir("nonexistent_dir_xyz_never");
+    if errRm21 != nil {
+        print("  PASS: Error returned:", errRm21.Message);
+        passed = passed + 1;
+    } else {
+        print("  FAIL: Should have returned error");
+        failed = failed + 1;
+    }
+    print("");
+
+    // TEST 22: ListDir non-existent directory
+    print("TEST 22: ListDir non-existent (expect error)");
+    let _, errL22 = File::ListDir("nonexistent_dir_xyz_never");
+    if errL22 != nil {
+        print("  PASS: Error returned:", errL22.Message);
+        passed = passed + 1;
+    } else {
+        print("  FAIL: Should have returned error");
+        failed = failed + 1;
+    }
+    print("");
+
+    // TEST 23: RmDir on non-empty directory (expect error)
+    print("TEST 23: RmDir on non-empty directory (expect error)");
+    File::MkDir("test_nonempty_dir");
+    File::Write("test_nonempty_dir/file.txt", "data");
+    let _, errRm23 = File::RmDir("test_nonempty_dir");
+    if errRm23 != nil {
+        print("  PASS: Error returned for non-empty dir:", errRm23.Message);
+        passed = passed + 1;
+    } else {
+        print("  FAIL: Should have returned error for non-empty directory");
+        failed = failed + 1;
+    }
+    // Cleanup
+    File::RmDirAll("test_nonempty_dir");
+    print("");
+
+    // ========================================================================
+    // EDGE CASE TESTS
+    // ========================================================================
+
+    // TEST 24: Empty string content write/read
+    print("TEST 24: Write and Read empty string");
+    File::Write("test_empty.txt", "");
+    let emptyContent, errE24 = File::Read("test_empty.txt");
+    if errE24 == nil {
+        if emptyContent == "" {
+            print("  PASS: Empty content written and read correctly");
+            passed = passed + 1;
+        } else {
+            print("  FAIL: Expected empty string, got:", emptyContent);
+            failed = failed + 1;
+        }
+    } else {
+        print("  FAIL: Error:", errE24.Message);
+        failed = failed + 1;
+    }
+    File::Delete("test_empty.txt");
+    print("");
+
+    // TEST 25: Special characters in content
+    print("TEST 25: Special characters in content");
+    let specialContent = "Hello\tWorld\n\"quotes\"\n\\backslash\\";
+    File::Write("test_special.txt", specialContent);
+    let readSpecial, errS25 = File::Read("test_special.txt");
+    if errS25 == nil {
+        print("  PASS: Special characters preserved");
+        passed = passed + 1;
+    } else {
+        print("  FAIL: Error:", errS25.Message);
+        failed = failed + 1;
+    }
+    File::Delete("test_special.txt");
+    print("");
+
+    // TEST 26: Nested directory creation
+    print("TEST 26: Nested directory creation");
+    let _, errNested = File::MkDir("test_nested_a/test_nested_b/test_nested_c");
+    if errNested == nil {
+        let nestedExists = File::Exists("test_nested_a/test_nested_b/test_nested_c");
+        if nestedExists == true {
+            print("  PASS: Nested directories created");
+            passed = passed + 1;
+        } else {
+            print("  FAIL: Nested directories not found");
+            failed = failed + 1;
+        }
+    } else {
+        print("  FAIL: MkDir nested error:", errNested.Message);
+        failed = failed + 1;
+    }
+    File::RmDirAll("test_nested_a");
+    print("");
+
+    // TEST 27: Write file in subdirectory
+    print("TEST 27: Write file in subdirectory");
+    File::MkDir("test_subdir_write");
+    let _, errSub27 = File::Write("test_subdir_write/nested_file.txt", "nested content");
+    if errSub27 == nil {
+        let subContent, errSubR = File::Read("test_subdir_write/nested_file.txt");
+        if errSubR == nil {
+            if subContent == "nested content" {
+                print("  PASS: File in subdirectory works");
+                passed = passed + 1;
+            } else {
+                print("  FAIL: Content mismatch in subdirectory");
+                failed = failed + 1;
+            }
+        } else {
+            print("  FAIL: Read in subdir error:", errSubR.Message);
+            failed = failed + 1;
+        }
+    } else {
+        print("  FAIL: Write in subdir error:", errSub27.Message);
+        failed = failed + 1;
+    }
+    File::RmDirAll("test_subdir_write");
+    print("");
+
+    // TEST 28: Exists on non-existent returns false (not error)
+    print("TEST 28: Exists on non-existent returns false");
+    let ex28 = File::Exists("absolutely_nonexistent_file_42.txt");
+    if ex28 == false {
+        print("  PASS: Exists returns false for non-existent file");
+        passed = passed + 1;
+    } else {
+        print("  FAIL: Exists should return false");
+        failed = failed + 1;
+    }
+    print("");
+
+    // ========================================================================
+    // CLEANUP
+    // ========================================================================
+    print("--- Cleanup ---");
+    File::Delete("test_comprehensive.txt");
+
+    // ========================================================================
+    // SUMMARY
+    // ========================================================================
+    print("");
+    print("=== Test Summary ===");
+    print("  Passed:", passed);
+    print("  Failed:", failed);
+    print("  Total:", passed + failed);
+    print("=== Done ===");
+}

@@ -1,0 +1,41 @@
+// OUTPUT: Level 0: 1
+// OUTPUT: Level 1: 1 2
+// OUTPUT: Level 2: 1 2 3
+// OUTPUT: Level 3: 1 2 3 4
+// OUTPUT: Back to level 2: 3
+// OUTPUT: Back to level 1: 2
+// OUTPUT: Back to level 0: 1
+// OUTPUT: Counter after loop: 30
+fn main() {
+    let x = 1;
+    print("Level 0:", x);
+
+    if true {
+        let y = 2;
+        print("Level 1:", x, y);
+
+        if true {
+            let z = 3;
+            print("Level 2:", x, y, z);
+
+            if true {
+                let w = 4;
+                print("Level 3:", x, y, z, w);
+            }
+
+            print("Back to level 2:", z);
+        }
+
+        print("Back to level 1:", y);
+    }
+
+    print("Back to level 0:", x);
+
+    let mut counter = 0;
+    for i in 0..3 {
+        let local = i * 10;
+        counter += local;
+    }
+    print("Counter after loop:", counter);
+}
+

@@ -1,0 +1,132 @@
+// =============================================================================
+// Git Module — Native git operations via libgit2 (zero subprocess overhead)
+// =============================================================================
+//
+// All operations are in-process via git2-rs (same library Cargo uses).
+// No subprocess spawning, no shell escaping, no fork overhead.
+//
+// Usage:
+//   import std::Git::{Git, GitError};
+//
+//   // Initialize a repo:
+//   Git::init("/path/to/project")?;
+//
+//   // Clone from remote:
+//   Git::clone("https://github.com/user/repo", "/path/to/project")?;
+//
+//   // Add all + commit + get short hash:
+//   let hash = Git::commitAll("/path", "feat: add login", "Dev", "dev@example.com")?;
+//
+//   // Push to remote:
+//   Git::push("/path", "origin", "main")?;
+//
+//   // Check if dirty:
+//   if Git::isDirty("/path") { ... }
+//
+//   // Stash / stash pop:
+//   Git::stash("/path")?;
+//   Git::stashPop("/path")?;
+
+// Marker struct for namespace — Git::init(), Git::commit(), etc.
+struct Git {}
+
+// Error type for git operations
+struct GitError {
+    Message: Str,
+}
+
+// ============================================================================
+// Repository Operations
+// ============================================================================
+
+// Initialize a new git repository at the given path.
+// Creates directories as needed.
+@extern("doo_git", "doo_git_init")
+fn Git.init(path: Str) -> Void ! GitError {}
+
+// Initialize a bare git repository at the given path.
+// Bare repos have no working directory — used as remotes for push/pull.
+@extern("doo_git", "doo_git_init_bare")
+fn Git.initBare(path: Str) -> Void ! GitError {}
+
+// Clone a remote repository from url into path.
+@extern("doo_git", "doo_git_clone")
+fn Git.clone(url: Str, path: Str) -> Void ! GitError {}
+
+// ============================================================================
+// Commit Operations
+// ============================================================================
+
+// Stage all changes (git add -A), commit with message and author, return short hash.
+// This is the primary high-level function: one call = add + commit + hash.
+@extern("doo_git", "doo_git_commit_all")
+fn Git.commitAll(path: Str, message: Str, authorName: Str, authorEmail: Str) -> Str ! GitError {}
+
+// ============================================================================
+// Remote Operations
+// ============================================================================
+
+// Push current branch to the specified remote and branch.
+@extern("doo_git", "doo_git_push")
+fn Git.push(path: Str, remote: Str, branch: Str) -> Void ! GitError {}
+
+// Force push current branch (overwrites remote history).
+// Needed when local and remote histories diverge.
+@extern("doo_git", "doo_git_force_push")
+fn Git.forcePush(path: Str, remote: Str, branch: Str) -> Void ! GitError {}
+
+// Push current branch with token-based authentication (for HTTPS remotes).
+// For GitHub: username = "x-access-token", token = OAuth/PAT token.
+@extern("doo_git", "doo_git_push_with_token")
+fn Git.pushWithToken(path: Str, remote: Str, branch: Str, username: Str, token: Str) -> Void ! GitError {}
+
+// Fetch from origin and fast-forward merge (like git pull --ff-only).
+@extern("doo_git", "doo_git_pull")
+fn Git.pull(path: Str) -> Void ! GitError {}
+
+// Check if any remote is configured.
+@extern("doo_git", "doo_git_has_remote")
+fn Git.hasRemote(path: Str) -> Bool {}
+
+// Add a named remote to the repository (or update URL if it already exists).
+@extern("doo_git", "doo_git_add_remote")
+fn Git.addRemote(path: Str, name: Str, url: Str) -> Void ! GitError {}
+
+// ============================================================================
+// Status Operations
+// ============================================================================
+
+// Check if the working directory has uncommitted changes.
+@extern("doo_git", "doo_git_is_dirty")
+fn Git.isDirty(path: Str) -> Bool {}
+
+// Get the short (7 char) HEAD commit hash.
+@extern("doo_git", "doo_git_head_short")
+fn Git.headShort(path: Str) -> Str ! GitError {}
+
+// Get the current branch name (e.g. "main" or "master").
+@extern("doo_git", "doo_git_current_branch")
+fn Git.currentBranch(path: Str) -> Str ! GitError {}
+
+// ============================================================================
+// Stash Operations
+// ============================================================================
+
+// Stash all uncommitted changes (including untracked files).
+@extern("doo_git", "doo_git_stash")
+fn Git.stash(path: Str) -> Void ! GitError {}
+
+// Pop the most recent stash, restoring changes.
+@extern("doo_git", "doo_git_stash_pop")
+fn Git.stashPop(path: Str) -> Void ! GitError {}
+
+// ============================================================================
+// Background Operations (non-blocking)
+// ============================================================================
+
+// Stage all changes + commit + push in a BACKGROUND THREAD.
+// Returns immediately with a reference hash (7 chars).
+// The actual git commit + push runs asynchronously — caller doesn't wait.
+// Push only happens if pushRemote is non-empty. No race condition.
+@extern("doo_git", "doo_git_commit_all_bg")
+fn Git.commitAllAsync(path: Str, message: Str, authorName: Str, authorEmail: Str, pushRemote: Str, pushBranch: Str) -> Str ! GitError {}

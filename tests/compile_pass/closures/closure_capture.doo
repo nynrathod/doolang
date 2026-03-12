@@ -1,0 +1,19 @@
+// OUTPUT: Scaled by 3 : [3, 6, 9, 12, 15]
+// OUTPUT: Above 3 : [4, 5]
+// OUTPUT: Prefixed: ["item_a", "item_b", "item_c"]
+fn main() {
+    let multiplier = 3;
+    let nums = [1, 2, 3, 4, 5];
+
+    let scaled = nums.map((x) => x * multiplier);
+    print("Scaled by", multiplier, ":", scaled);
+
+    let threshold = 3;
+    let above = nums.filter((x) => x > threshold);
+    print("Above", threshold, ":", above);
+
+    let prefix = "item_";
+    let strs = ["a", "b", "c"];
+    let prefixed = strs.map((s) => prefix + s);
+    print("Prefixed:", prefixed);
+}

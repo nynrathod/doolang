@@ -1,0 +1,8 @@
+// Memory leak test: array push in loop
+fn main() {
+    let mut arr: [Int] = [];
+    for i in 0..10 {
+        arr.push(i);
+    }
+    print(arr.len());
+}

@@ -402,3 +402,230 @@ fn main() {
     print("");
 
 }
+
+/*
+EXPECT: >>> STRING METHODS <<<
+EXPECT:
+EXPECT: len('hello world'):
+EXPECT: 11
+EXPECT: charAt(0):
+EXPECT: h
+EXPECT: charAt(5):
+EXPECT:
+EXPECT: substring(0, 5):
+EXPECT: hello
+EXPECT: substring(6, 11):
+EXPECT: world
+EXPECT: concat('!'):
+EXPECT: hello world!
+EXPECT: concat(' string'):
+EXPECT: test string
+EXPECT: indexOf('world'):
+EXPECT: 6
+EXPECT: indexOf('hello'):
+EXPECT: 0
+EXPECT: indexOf('notfound'):
+EXPECT: -1
+EXPECT: toUpper('hello'):
+EXPECT: HELLO
+EXPECT: toUpper('test123'):
+EXPECT: TEST123
+EXPECT: toLower('WORLD'):
+EXPECT: world
+EXPECT: toLower('HELLO123'):
+EXPECT: hello123
+EXPECT: replace('l', 'x'):
+EXPECT: hexxo
+EXPECT: replace('a', 'b') in 'aaa':
+EXPECT: bbb
+EXPECT: trim('  spaces  '):
+EXPECT: spaces
+EXPECT: trim('test'):
+EXPECT: test
+EXPECT: reverse('hello'):
+EXPECT: olleh
+EXPECT: reverse('abc'):
+EXPECT: cba
+EXPECT: contains('ll'):
+EXPECT: true
+EXPECT: contains('x'):
+EXPECT: false
+EXPECT: startsWith('he'):
+EXPECT: true
+EXPECT: startsWith('lo'):
+EXPECT: false
+EXPECT: endsWith('lo'):
+EXPECT: true
+EXPECT: endsWith('he'):
+EXPECT: false
+EXPECT: repeat('ab', 3):
+EXPECT: ababab
+EXPECT: repeat('x', 5):
+EXPECT: xxxxx
+EXPECT: charCodeA 65
+EXPECT: charCodeAInline 65
+EXPECT: countSubstr('aaa', 'aa'):
+EXPECT: 1
+EXPECT: ✓ String methods PASS
+EXPECT:
+EXPECT: >>> ARRAY METHODS - INT <<<
+EXPECT:
+EXPECT: get(0):
+EXPECT: 10
+EXPECT: get(2):
+EXPECT: 30
+EXPECT: get(4):
+EXPECT: 50
+EXPECT: len():
+EXPECT: 5
+EXPECT: first():
+EXPECT: 10
+EXPECT: last():
+EXPECT: 50
+EXPECT: isEmpty():
+EXPECT: false
+EXPECT: After push(4):
+EXPECT: [1, 2, 3, 4]
+EXPECT: After push(5):
+EXPECT: [1, 2, 3, 4, 5]
+EXPECT: After push(6):
+EXPECT: [1, 2, 3, 4, 5, 6]
+EXPECT: pop():
+EXPECT: 6
+EXPECT: After pop:
+EXPECT: [1, 2, 3, 4, 5]
+EXPECT: After [1] = 999:
+EXPECT: [111, 999, 300]
+EXPECT: After [0] = 111:
+EXPECT: [111, 999, 300]
+EXPECT: After [2] = 333:
+EXPECT: [111, 999, 333]
+EXPECT: contains(30):
+EXPECT: true
+EXPECT: contains(99):
+EXPECT: false
+EXPECT: indexOf(30):
+EXPECT: 2
+EXPECT: indexOf(10):
+EXPECT: 0
+EXPECT: indexOf(50):
+EXPECT: 4
+EXPECT: indexOf(99):
+EXPECT: -1
+EXPECT: Before sort:
+EXPECT: [5, 2, 8, 1, 9]
+EXPECT: After sort:
+EXPECT: [1, 2, 5, 8, 9]
+EXPECT: Before reverse:
+EXPECT: [5, 4, 3, 2, 1]
+EXPECT: After reverse:
+EXPECT: [1, 2, 3, 4, 5]
+EXPECT: slice(1, 4):
+EXPECT: [20, 30, 40]
+EXPECT: slice(0, 2):
+EXPECT: [10, 20]
+EXPECT: After clear:
+EXPECT: []
+EXPECT: strArr join(', '):
+EXPECT: one, two, three
+EXPECT: emptyStrArr join(', '):
+EXPECT:
+EXPECT: intArr join('-'):
+EXPECT: 1-2-3
+EXPECT: ✓ Array INT methods PASS
+EXPECT:
+EXPECT: >>> ARRAY MAP METHODS <<<
+EXPECT:
+EXPECT: Original int array:
+EXPECT: [1, 2, 3, 4, 5]
+EXPECT: Original string array:
+EXPECT: [apple, banana, cherry]
+EXPECT: Original bool array:
+EXPECT: [true, false, true]
+EXPECT: ✓ Array MAP methods PASS
+EXPECT:
+EXPECT: >>> MAP METHODS - INT:INT <<<
+EXPECT:
+EXPECT: Created map:
+EXPECT: {1: 10, 2: 20, 3: 30}
+EXPECT: After set(4, 40):
+EXPECT: {1: 10, 2: 20, 3: 30, 4: 40}
+EXPECT: After set(5, 50):
+EXPECT: {1: 10, 2: 20, 3: 30, 4: 40, 5: 50}
+EXPECT: After set(1, 100):
+EXPECT: {1: 100, 2: 20, 3: 30, 4: 40, 5: 50}
+EXPECT: has(1):
+EXPECT: true
+EXPECT: has(9):
+EXPECT: false
+EXPECT: size():
+EXPECT: 5
+EXPECT: isEmpty():
+EXPECT: false
+EXPECT: ✓ Map INT:INT methods PASS
+EXPECT:
+EXPECT: >>> MAP METHODS - STR:INT <<<
+EXPECT:
+EXPECT: Created map:
+EXPECT: {apple: 10, banana: 20, cherry: 30}
+EXPECT: After set('date', 40):
+EXPECT: {apple: 10, banana: 20, cherry: 30, date: 40}
+EXPECT: After set('elderberry', 50):
+EXPECT: {apple: 10, banana: 20, cherry: 30, date: 40, elderberry: 50}
+EXPECT: After set('apple', 100):
+EXPECT: {apple: 100, banana: 20, cherry: 30, date: 40, elderberry: 50}
+EXPECT: has('apple'):
+EXPECT: true
+EXPECT: has('zebra'):
+EXPECT: false
+EXPECT: keys():
+EXPECT: [apple, banana, cherry, date, elderberry]
+EXPECT: values():
+EXPECT: [100, 20, 30, 40, 50]
+EXPECT: size():
+EXPECT: 5
+EXPECT: isEmpty() on non-empty:
+EXPECT: false
+EXPECT: isEmpty() on empty:
+EXPECT: true
+EXPECT: size() on empty:
+EXPECT: 0
+EXPECT: keys() on empty:
+EXPECT: []
+EXPECT: values() on empty:
+EXPECT: []
+EXPECT: Before remove:
+EXPECT: {x: 100, y: 200, z: 300}
+EXPECT: After remove('y'):
+EXPECT: {x: 100, z: 300}
+EXPECT: After remove('x'):
+EXPECT: {z: 300}
+EXPECT: After remove('z'):
+EXPECT: {}
+EXPECT: Before clear:
+EXPECT: {a: 1, b: 2, c: 3}
+EXPECT: After clear:
+EXPECT: {}
+EXPECT: Size after clear:
+EXPECT: 0
+EXPECT: isEmpty() after clear:
+EXPECT: true
+EXPECT: ✓ Map STR:INT methods PASS
+EXPECT:
+EXPECT: >>> MAP METHODS - STR:STR <<<
+EXPECT:
+EXPECT: Created map:
+EXPECT: {key1: value1, key2: value2, key3: value3}
+EXPECT: After set('key4', 'value4'):
+EXPECT: {key1: value1, key2: value2, key3: value3, key4: value4}
+EXPECT: After set('key1', 'updated'):
+EXPECT: {key1: updated, key2: value2, key3: value3, key4: value4}
+EXPECT: has('key1'):
+EXPECT: true
+EXPECT: has('none'):
+EXPECT: false
+EXPECT: size():
+EXPECT: 4
+EXPECT: ✓ Map STR:STR methods PASS
+EXPECT:
+*/

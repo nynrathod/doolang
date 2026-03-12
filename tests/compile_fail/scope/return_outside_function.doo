@@ -1,0 +1,4 @@
+// ERROR: can only be used inside a function
+// This program should fail to compile because return can only be used inside a function
+
+return 42;

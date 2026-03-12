@@ -1,0 +1,7 @@
+
+struct User { name: Str, age: Int }
+fn User.greet(self) -> Str => "Hi, I'm ${self.name}";
+fn main() {
+    let u = User { name: "Bob", age: 30 };
+    print(u.greet());
+}

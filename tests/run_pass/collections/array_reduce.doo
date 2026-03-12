@@ -1,0 +1,5 @@
+
+fn main() {
+    let sum = [1, 2, 3, 4, 5].reduce(0, (a, b) => a + b);
+    print(sum);
+}

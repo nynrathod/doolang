@@ -1,0 +1,8 @@
+
+fn process(arr: [Int]) { print(arr.len()); }
+fn main() {
+    let data = [1, 2, 3];
+    process(data);
+    process(data);
+    print(data[0]);
+}

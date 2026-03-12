@@ -1,0 +1,16 @@
+// OUTPUT: Count: 0
+// OUTPUT: Count: 1
+// OUTPUT: Count: 2
+// OUTPUT: Count: 3
+// OUTPUT: Count: 4
+// OUTPUT: Final: 5
+// Simple counter program demonstrating mutable state
+
+fn main() {
+    let mut count = 0;
+    for _ in 0..5 {
+        print("Count: ${count}");
+        count = count + 1;
+    }
+    print("Final: ${count}");
+}

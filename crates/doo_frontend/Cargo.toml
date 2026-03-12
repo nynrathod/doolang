@@ -1,0 +1,25 @@
+[package]
+name = "doo_frontend"
+version.workspace = true
+edition.workspace = true
+description = "Lexer, parser, and AST for the Doo compiler"
+license = "MIT"
+
+[dependencies]
+doo_core = { path = "../doo_core" }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+
+# Efficient arena allocation for tokens
+bumpalo = "3.16"
+
+# Fast hash maps
+rustc-hash = "1.1"
+
+[dev-dependencies]
+pretty_assertions = "1.4"
+
+[features]
+default = []
+debug = []

@@ -1,0 +1,31 @@
+// OUTPUT: Nested result: x=1, y=2
+// OUTPUT: outer 3
+fn main() {
+    let x = 1;
+    let y = 2;
+
+    let result = match x {
+        1 => match y {
+            1 => "x=1, y=1",
+            2 => "x=1, y=2",
+            _ => "x=1, y=other",
+        },
+        2 => match y {
+            1 => "x=2, y=1",
+            2 => "x=2, y=2",
+            _ => "x=2, y=other",
+        },
+        _ => "x=other",
+    };
+    print("Nested result:", result);
+
+    let a = 3;
+    match a {
+        1 => match a {
+            1 => print("inner 1"),
+            _ => print("inner other"),
+        },
+        3 => print("outer 3"),
+        _ => print("outer other"),
+    }
+}

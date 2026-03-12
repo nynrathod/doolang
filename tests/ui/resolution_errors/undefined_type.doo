@@ -1,0 +1,7 @@
+// ERROR: Undefined
+// Tests that using an undefined type produces a resolution error
+
+fn main() {
+    let x: Foo = 42;
+    print(x);
+}

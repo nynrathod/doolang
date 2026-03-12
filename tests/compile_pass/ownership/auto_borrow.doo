@@ -1,0 +1,28 @@
+// OUTPUT: After borrow: 10 -> 11
+// OUTPUT: After borrow: hello -> hello!
+// OUTPUT: After borrow: [1, 2, 3] -> 1
+fn readInt(x: Int) -> Int {
+    return x + 1;
+}
+
+fn readStr(s: Str) -> Str {
+    return s + "!";
+}
+
+fn readArr(arr: [Int]) -> Int {
+    return arr[0];
+}
+
+fn main() {
+    let num = 10;
+    let result = readInt(num);
+    print("After borrow:", num, "->", result);
+
+    let text = "hello";
+    let result2 = readStr(text);
+    print("After borrow:", text, "->", result2);
+
+    let arr = [1, 2, 3];
+    let first = readArr(arr);
+    print("After borrow:", arr, "->", first);
+}

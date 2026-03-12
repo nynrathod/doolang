@@ -9,7 +9,7 @@ import std::Math::Abs;
 // Single symbol WITH braces (same as without, just different syntax)
 import std::Math::{Pow};
 
-// Single symbol alias WITHOUT braces  
+// Single symbol alias WITHOUT braces
 import std::Math::Floor as Fl;
 
 // Single symbol alias WITH braces
@@ -36,34 +36,47 @@ import std::Array as A;
 
 fn main() {
     print("=== Import Variations Test ===");
-    
+
     // 1. Single symbol without braces
     print("Abs(-5):", Abs(-5));
-    
+
     // 2. Single symbol with braces
     print("Pow(2, 3):", Pow(2, 3));
-    
+
     // 3. Single symbol alias without braces
     print("Fl(3.7) [Floor]:", Fl(3.7));
-    
+
     // 4. Single symbol alias with braces
     print("Ce(3.2) [Ceil]:", Ce(3.2));
-    
+
     // 5. Multiple symbols with braces
     print("Min(5, 10):", Min(5, 10), "Max(5, 10):", Max(5, 10));
-    
+
     // 6. Multiple symbols with alias
     print("Sq(25) [Sqrt]:", Sq(25), "Rn(3.6) [Round]:", Rn(3.6));
-    
+
     // 7. Wildcard import
     print("Sum([1,2,3]):", Sum([1, 2, 3]));
     print("Unique([1,1,2,2,3]):", Unique([1, 1, 2, 2, 3]));
-    
+
     // 8. Namespace import
     print("File::Read test: namespace works");
-    
+
     // 9. Namespace alias
     print("A::Sum([4,5,6]):", A::Sum([4, 5, 6]));
-    
+
     print("=== All tests passed! ===");
 }
+
+// Expect: === Import Variations Test ===
+// Expect: Abs(-5): 5
+// Expect: Pow(2, 3): 8
+// Expect: Fl(3.7) [Floor]: 3
+// Expect: Ce(3.2) [Ceil]: 4
+// Expect: Min(5, 10): 5 Max(5, 10): 10
+// Expect: Sq(25) [Sqrt]: 5 Rn(3.6) [Round]: 4
+// Expect: Sum([1,2,3]): 6
+// Expect: Unique([1,1,2,2,3]): [1,2,3]
+// Expect: File::Read test: namespace works
+// Expect: A::Sum([4,5,6]): 15
+// Expect: === All tests passed! ===

@@ -1,0 +1,696 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "Doo",
+    "scopeName": "source.doo",
+    "fileTypes": [
+        "doo"
+    ],
+    "patterns": [
+        {
+            "include": "#comments"
+        },
+        {
+            "include": "#strings"
+        },
+        {
+            "include": "#decorators"
+        },
+        {
+            "include": "#struct-declaration"
+        },
+        {
+            "include": "#enum-declaration-inline"
+        },
+        {
+            "include": "#enum-declaration-block"
+        },
+        {
+            "include": "#function-declaration-method"
+        },
+        {
+            "include": "#function-declaration-async"
+        },
+        {
+            "include": "#function-declaration"
+        },
+        {
+            "include": "#import-statement"
+        },
+        {
+            "include": "#match-expression"
+        },
+        {
+            "include": "#for-loop"
+        },
+        {
+            "include": "#go-scope-blocks"
+        },
+        {
+            "include": "#keywords"
+        },
+        {
+            "include": "#result-keywords"
+        },
+        {
+            "include": "#constants"
+        },
+        {
+            "include": "#types"
+        },
+        {
+            "include": "#type-annotations"
+        },
+        {
+            "include": "#function-call"
+        },
+        {
+            "include": "#method-call"
+        },
+        {
+            "include": "#operators"
+        },
+        {
+            "include": "#numbers"
+        },
+        {
+            "include": "#punctuation"
+        },
+        {
+            "include": "#variables"
+        }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [
+                {
+                    "name": "comment.line.double-slash.doo",
+                    "match": "//.*$"
+                }
+            ]
+        },
+        "strings": {
+            "patterns": [
+                {
+                    "name": "string.quoted.double.doo",
+                    "begin": "\"",
+                    "end": "\"",
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.doo",
+                            "match": "\\\\[\\\\\"nrt0]"
+                        },
+                        {
+                            "name": "meta.interpolation.doo",
+                            "begin": "\\$\\{",
+                            "end": "\\}",
+                            "beginCaptures": {
+                                "0": {
+                                    "name": "punctuation.definition.interpolation.begin.doo"
+                                }
+                            },
+                            "endCaptures": {
+                                "0": {
+                                    "name": "punctuation.definition.interpolation.end.doo"
+                                }
+                            },
+                            "patterns": [
+                                {
+                                    "include": "source.doo"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+        "decorators": {
+            "patterns": [
+                {
+                    "name": "meta.attribute.doo",
+                    "match": "(@)(\\w+)(\\([^)]*\\))?",
+                    "captures": {
+                        "1": {
+                            "name": "punctuation.definition.attribute.doo"
+                        },
+                        "2": {
+                            "name": "entity.other.attribute-name.doo"
+                        },
+                        "3": {
+                            "name": "meta.attribute.arguments.doo"
+                        }
+                    }
+                }
+            ]
+        },
+        "struct-declaration": {
+            "patterns": [
+                {
+                    "match": "\\b(struct)\\s+([A-Z]\\w*)",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.declaration.struct.doo storage.type.struct.doo"
+                        },
+                        "2": {
+                            "name": "entity.name.type.struct.doo"
+                        }
+                    }
+                }
+            ]
+        },
+        "enum-declaration-inline": {
+            "patterns": [
+                {
+                    "match": "\\b(enum)\\s+([A-Z]\\w*)\\s*:(.+);",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.declaration.enum.doo storage.type.enum.doo"
+                        },
+                        "2": {
+                            "name": "entity.name.type.enum.doo"
+                        },
+                        "3": {
+                            "patterns": [
+                                {
+                                    "match": "\\b([A-Z]\\w*)\\b",
+                                    "name": "entity.name.type.variant.doo"
+                                },
+                                {
+                                    "match": "\\|",
+                                    "name": "keyword.operator.or.doo"
+                                }
+                            ]
+                        }
+                    }
+                }
+            ]
+        },
+        "enum-declaration-block": {
+            "patterns": [
+                {
+                    "match": "\\b(enum)\\s+([A-Z]\\w*)",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.declaration.enum.doo storage.type.enum.doo"
+                        },
+                        "2": {
+                            "name": "entity.name.type.enum.doo"
+                        }
+                    }
+                }
+            ]
+        },
+        "function-declaration-method": {
+            "patterns": [
+                {
+                    "match": "\\b(fn)\\s+([A-Z]\\w*)\\.([a-zA-Z_]\\w*)\\s*\\(",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.other.fn.doo"
+                        },
+                        "2": {
+                            "name": "entity.name.type.struct.doo"
+                        },
+                        "3": {
+                            "name": "entity.name.function.doo"
+                        }
+                    }
+                }
+            ]
+        },
+        "function-declaration-async": {
+            "patterns": [
+                {
+                    "match": "\\b(async)\\s+(fn)\\s+([a-zA-Z_]\\w*)\\s*\\(",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.control.async.doo storage.modifier.async.doo"
+                        },
+                        "2": {
+                            "name": "keyword.other.fn.doo"
+                        },
+                        "3": {
+                            "name": "entity.name.function.doo"
+                        }
+                    }
+                }
+            ]
+        },
+        "function-declaration": {
+            "patterns": [
+                {
+                    "match": "\\b(fn)\\s+([a-zA-Z_]\\w*)\\s*\\(",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.other.fn.doo"
+                        },
+                        "2": {
+                            "name": "entity.name.function.doo"
+                        }
+                    }
+                }
+            ]
+        },
+        "import-statement": {
+            "patterns": [
+                {
+                    "match": "\\b(import)\\s+",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.control.import.doo"
+                        }
+                    }
+                },
+                {
+                    "match": "\\b(as)\\b",
+                    "name": "keyword.control.as.doo"
+                },
+                {
+                    "match": "(std)(::)",
+                    "captures": {
+                        "1": {
+                            "name": "entity.name.namespace.doo"
+                        },
+                        "2": {
+                            "name": "keyword.operator.namespace.doo punctuation.separator.namespace.doo"
+                        }
+                    }
+                }
+            ]
+        },
+        "match-expression": {
+            "patterns": [
+                {
+                    "match": "=>",
+                    "name": "keyword.operator.arrow.fat.doo"
+                }
+            ]
+        },
+        "for-loop": {
+            "patterns": [
+                {
+                    "match": "\\b(for)\\s+(\\w+)(?:\\s*,\\s*(\\w+))?\\s+(in)\\b",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.control.for.doo"
+                        },
+                        "2": {
+                            "name": "variable.other.doo"
+                        },
+                        "3": {
+                            "name": "variable.other.doo"
+                        },
+                        "4": {
+                            "name": "keyword.control.in.doo"
+                        }
+                    }
+                }
+            ]
+        },
+        "go-scope-blocks": {
+            "patterns": [
+                {
+                    "match": "\\b(go)\\b",
+                    "name": "keyword.control.go.doo"
+                },
+                {
+                    "match": "\\b(scope)\\b",
+                    "name": "keyword.control.scope.doo"
+                }
+            ]
+        },
+        "keywords": {
+            "patterns": [
+                {
+                    "match": "\\b(fn)\\b",
+                    "name": "keyword.other.fn.doo"
+                },
+                {
+                    "match": "\\b(let)\\b",
+                    "name": "keyword.other.let.doo storage.type.let.doo"
+                },
+                {
+                    "match": "\\b(mut)\\b",
+                    "name": "storage.modifier.mut.doo"
+                },
+                {
+                    "match": "\\b(if|else|match)\\b",
+                    "name": "keyword.control.conditional.doo"
+                },
+                {
+                    "match": "\\b(for|in|while|loop)\\b",
+                    "name": "keyword.control.loop.doo"
+                },
+                {
+                    "match": "\\b(return)\\b",
+                    "name": "keyword.control.return.doo"
+                },
+                {
+                    "match": "\\b(import)\\b",
+                    "name": "keyword.control.import.doo"
+                },
+                {
+                    "match": "\\b(as)\\b",
+                    "name": "keyword.control.as.doo keyword.operator.as.doo"
+                },
+                {
+                    "match": "\\b(async)\\b",
+                    "name": "keyword.control.async.doo storage.modifier.async.doo"
+                },
+                {
+                    "match": "\\b(await)\\b",
+                    "name": "keyword.control.await.doo"
+                },
+                {
+                    "match": "\\b(go)\\b",
+                    "name": "keyword.control.go.doo"
+                },
+                {
+                    "match": "\\b(scope)\\b",
+                    "name": "keyword.control.scope.doo"
+                },
+                {
+                    "match": "\\b(sleep)\\b",
+                    "name": "support.function.sleep.doo"
+                },
+                {
+                    "match": "\\b(struct)\\b",
+                    "name": "keyword.declaration.struct.doo storage.type.struct.doo"
+                },
+                {
+                    "match": "\\b(enum)\\b",
+                    "name": "keyword.declaration.enum.doo storage.type.enum.doo"
+                },
+                {
+                    "match": "\\b(print)\\s*\\(",
+                    "captures": {
+                        "1": {
+                            "name": "support.function.print.doo"
+                        }
+                    }
+                },
+                {
+                    "match": "\\b(self)\\b",
+                    "name": "variable.language.self.doo"
+                },
+                {
+                    "match": "\\b(pub)\\b",
+                    "name": "keyword.other.visibility.pub.doo"
+                }
+            ]
+        },
+        "result-keywords": {
+            "patterns": [
+                {
+                    "match": "\\b(Ok)\\b",
+                    "name": "keyword.control.ok.doo"
+                },
+                {
+                    "match": "\\b(Err)\\b",
+                    "name": "keyword.control.err.doo"
+                }
+            ]
+        },
+        "constants": {
+            "patterns": [
+                {
+                    "match": "\\b(true|false)\\b",
+                    "name": "constant.language.boolean.doo"
+                },
+                {
+                    "match": "\\b_\\b",
+                    "name": "variable.language.wildcard.doo"
+                }
+            ]
+        },
+        "types": {
+            "patterns": [
+                {
+                    "match": "\\b(Int|Str|Float|Bool|Void)\\b",
+                    "name": "entity.name.type.primitive.doo support.type.primitive.doo"
+                },
+                {
+                    "match": "\\b(Request|Response|Next|Server|WsConnection|WsError|DatabaseError)\\b",
+                    "name": "entity.name.type.doo support.type.doo"
+                }
+            ]
+        },
+        "type-annotations": {
+            "patterns": [
+                {
+                    "match": ":\\s*(\\[)([A-Z]\\w*)(\\])",
+                    "captures": {
+                        "1": {
+                            "name": "punctuation.bracket.square.doo"
+                        },
+                        "2": {
+                            "name": "entity.name.type.doo support.type.doo"
+                        },
+                        "3": {
+                            "name": "punctuation.bracket.square.doo"
+                        }
+                    }
+                },
+                {
+                    "match": ":\\s*(\\{)([A-Z]\\w*)\\s*:\\s*([A-Z]\\w*)(\\})",
+                    "captures": {
+                        "1": {
+                            "name": "punctuation.bracket.curly.doo"
+                        },
+                        "2": {
+                            "name": "entity.name.type.doo support.type.doo"
+                        },
+                        "3": {
+                            "name": "entity.name.type.doo support.type.doo"
+                        },
+                        "4": {
+                            "name": "punctuation.bracket.curly.doo"
+                        }
+                    }
+                },
+                {
+                    "match": "->\\s*(!\\s*)?([A-Z]\\w*)",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.operator.error.doo"
+                        },
+                        "2": {
+                            "name": "entity.name.type.doo support.type.doo"
+                        }
+                    }
+                },
+                {
+                    "match": "->\\s*(\\[)([A-Z]\\w*)(\\])\\s*(!\\s*([A-Z]\\w*))?",
+                    "captures": {
+                        "1": {
+                            "name": "punctuation.bracket.square.doo"
+                        },
+                        "2": {
+                            "name": "entity.name.type.doo support.type.doo"
+                        },
+                        "3": {
+                            "name": "punctuation.bracket.square.doo"
+                        },
+                        "4": {
+                            "name": "keyword.operator.error.doo"
+                        },
+                        "5": {
+                            "name": "entity.name.type.doo support.type.doo"
+                        }
+                    }
+                },
+                {
+                    "match": "!\\s*([A-Z]\\w*)\\b",
+                    "captures": {
+                        "1": {
+                            "name": "entity.name.type.error.doo support.type.doo"
+                        }
+                    }
+                },
+                {
+                    "match": "(\\?):?\\s*",
+                    "captures": {
+                        "1": {
+                            "name": "keyword.operator.optional.doo"
+                        }
+                    }
+                }
+            ]
+        },
+        "function-call": {
+            "patterns": [
+                {
+                    "match": "([A-Z]\\w*)(::)([a-zA-Z_]\\w*)\\s*\\(",
+                    "captures": {
+                        "1": {
+                            "name": "entity.name.type.doo support.type.doo"
+                        },
+                        "2": {
+                            "name": "keyword.operator.namespace.doo punctuation.separator.namespace.doo"
+                        },
+                        "3": {
+                            "name": "entity.name.function.doo"
+                        }
+                    }
+                },
+                {
+                    "match": "([A-Z]\\w*)(::)([A-Z]\\w*)(::)([a-zA-Z_]\\w*)\\s*\\(",
+                    "captures": {
+                        "1": {
+                            "name": "entity.name.type.doo support.type.doo"
+                        },
+                        "2": {
+                            "name": "keyword.operator.namespace.doo punctuation.separator.namespace.doo"
+                        },
+                        "3": {
+                            "name": "entity.name.type.doo support.type.doo"
+                        },
+                        "4": {
+                            "name": "keyword.operator.namespace.doo punctuation.separator.namespace.doo"
+                        },
+                        "5": {
+                            "name": "entity.name.function.doo"
+                        }
+                    }
+                },
+                {
+                    "match": "([A-Z]\\w*)(::)([A-Z]\\w*)\\b(?!\\s*\\()",
+                    "captures": {
+                        "1": {
+                            "name": "entity.name.type.enum.doo"
+                        },
+                        "2": {
+                            "name": "keyword.operator.namespace.doo punctuation.separator.namespace.doo"
+                        },
+                        "3": {
+                            "name": "entity.name.type.variant.doo variable.other.enummember.doo"
+                        }
+                    }
+                },
+                {
+                    "match": "\\b([a-z_]\\w*)\\s*\\(",
+                    "captures": {
+                        "1": {
+                            "name": "entity.name.function.call.doo"
+                        }
+                    }
+                }
+            ]
+        },
+        "method-call": {
+            "patterns": [
+                {
+                    "match": "\\.(\\w+)\\s*\\(",
+                    "captures": {
+                        "1": {
+                            "name": "entity.name.function.method.doo"
+                        }
+                    }
+                },
+                {
+                    "match": "\\.([a-z_]\\w*)\\b(?!\\s*\\()",
+                    "captures": {
+                        "1": {
+                            "name": "variable.other.property.doo"
+                        }
+                    }
+                },
+                {
+                    "match": "\\.([A-Z]\\w*)\\b(?!\\s*\\()",
+                    "captures": {
+                        "1": {
+                            "name": "variable.other.property.doo"
+                        }
+                    }
+                }
+            ]
+        },
+        "operators": {
+            "patterns": [
+                {
+                    "match": "->",
+                    "name": "keyword.operator.arrow.doo punctuation.separator.arrow.doo"
+                },
+                {
+                    "match": "=>",
+                    "name": "keyword.operator.arrow.fat.doo"
+                },
+                {
+                    "match": "::",
+                    "name": "keyword.operator.namespace.doo punctuation.separator.namespace.doo"
+                },
+                {
+                    "match": "\\.\\.=",
+                    "name": "keyword.operator.range.inclusive.doo"
+                },
+                {
+                    "match": "\\.\\.",
+                    "name": "keyword.operator.range.doo"
+                },
+                {
+                    "match": "\\.\\.\\.",
+                    "name": "keyword.operator.spread.doo"
+                },
+                {
+                    "match": "\\?",
+                    "name": "keyword.operator.try.doo"
+                },
+                {
+                    "match": "!(?!=)",
+                    "name": "keyword.operator.error-type.doo"
+                },
+                {
+                    "match": "==|!=|<=|>=|<|>",
+                    "name": "keyword.operator.comparison.doo"
+                },
+                {
+                    "match": "&&|\\|\\|",
+                    "name": "keyword.operator.logical.doo"
+                },
+                {
+                    "match": "\\+|-|\\*|/|%",
+                    "name": "keyword.operator.arithmetic.doo"
+                },
+                {
+                    "match": "=(?!=)",
+                    "name": "keyword.operator.assignment.doo"
+                }
+            ]
+        },
+        "numbers": {
+            "patterns": [
+                {
+                    "match": "\\b\\d+\\.\\d+\\b",
+                    "name": "constant.numeric.float.doo"
+                },
+                {
+                    "match": "\\b\\d+\\b",
+                    "name": "constant.numeric.integer.doo"
+                }
+            ]
+        },
+        "punctuation": {
+            "patterns": [
+                {
+                    "match": ";",
+                    "name": "punctuation.terminator.semicolon.doo"
+                },
+                {
+                    "match": ",",
+                    "name": "punctuation.separator.comma.doo"
+                },
+                {
+                    "match": ":",
+                    "name": "punctuation.separator.colon.doo"
+                }
+            ]
+        },
+        "variables": {
+            "patterns": [
+                {
+                    "match": "\\b[A-Z]\\w*\\b",
+                    "name": "entity.name.type.doo"
+                }
+            ]
+        }
+    }
+}

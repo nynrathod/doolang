@@ -1,0 +1,35 @@
+// OUTPUT: Results: two three five
+// OUTPUT: x is 2
+fn main() {
+    let x = 2;
+    let y = 3;
+    let z = 5;
+
+    let result1 = match x {
+        1 => "one",
+        2 => "two",
+        _ => "other",
+    };
+
+    let result2 = match y {
+        1 => "one",
+        2 => "two",
+        3 => "three",
+        _ => "other",
+    };
+
+    let result3 = match z {
+        1 => "one",
+        5 => "five",
+        10 => "ten",
+        _ => "other",
+    };
+
+    print("Results:", result1, result2, result3);
+
+    match x {
+        1 => print("x is 1"),
+        2 => print("x is 2"),
+        _ => print("x is other"),
+    }
+}

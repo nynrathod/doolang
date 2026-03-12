@@ -1,139 +1,105 @@
 #!/bin/bash
-# =============================================================================
-# Tasks API Test Script
-# =============================================================================
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../../tests/dev_test/common.sh"
 
 PORT=3000
-BASE="http://127.0.0.1:$PORT"
 TS=$(date +%s)
 EMAIL="test${TS}@tasks.com"
 
-CURL_MAX_TIME="${CURL_MAX_TIME:-8}"
-CURL_CONNECT_TIMEOUT="${CURL_CONNECT_TIMEOUT:-2}"
-
-req() { curl -s --max-time "$CURL_MAX_TIME" --connect-timeout "$CURL_CONNECT_TIMEOUT" "$@"; }
-show() { echo "$1" | "$SCRIPT_DIR/../../tests/dev_test/pretty.sh"; echo ""; }
-
-kill_port $PORT
 cd "$SCRIPT_DIR"
+kill_port $PORT
 start_server main.doo $PORT || exit 1
 setup_trap
 
+# --- Test 1: Signup ---
 echo ""
-
-# Test 1: Signup
-echo "═══════════════════════════════════════════════════════════════"
 echo "Test 1: Signup"
-echo "═══════════════════════════════════════════════════════════════"
-RESP=$(req -X POST "$BASE/api/auth/signup" -H "Content-Type: application/json" \
-    -d "{\"Email\":\"$EMAIL\",\"Password\":\"password123\",\"Name\":\"Test User\",\"Role\":\"user\"}")
-show "$RESP"
+RESPONSE=$(http_post "/api/auth/signup" "{\"Email\":\"$EMAIL\",\"Password\":\"password123\",\"Name\":\"Test User\",\"Role\":\"user\"}")
+assert_status "$RESPONSE" 200 "signup"
+assert_json_not_has "$RESPONSE" "Password" "password hidden"
 
-# Test 2: Login
-echo "═══════════════════════════════════════════════════════════════"
+# --- Test 2: Login ---
+echo ""
 echo "Test 2: Login"
-echo "═══════════════════════════════════════════════════════════════"
-RESP=$(req -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" \
-    -d "{\"Email\":\"$EMAIL\",\"Password\":\"password123\"}")
-show "$RESP"
-TOKEN=$(echo "$RESP" | jq -r '.data.token // empty' 2>/dev/null)
-[ -z "$TOKEN" ] && TOKEN=$(echo "$RESP" | grep -o '"token":"[^"]*' | sed 's/"token":"//')
+RESPONSE=$(http_post "/api/auth/login" "{\"Email\":\"$EMAIL\",\"Password\":\"password123\"}")
+assert_status "$RESPONSE" 200 "login"
+assert_json_exists "$RESPONSE" ".data.token" "has token"
+TOKEN=$(extract_json "$RESPONSE" ".data.token")
 AUTH="Authorization: Bearer $TOKEN"
 
-# Test 3: Create Task
-echo "═══════════════════════════════════════════════════════════════"
+# --- Test 3: Create Task ---
+echo ""
 echo "Test 3: Create Task"
-echo "═══════════════════════════════════════════════════════════════"
-RESP=$(req -X POST "$BASE/tasks" -H "Content-Type: application/json" -H "$AUTH" \
-    -d '{"Title":"Test Task","Priority":"High","Status":"Todo"}')
-show "$RESP"
-TASK_ID=$(echo "$RESP" | jq -r '.data.id // empty' 2>/dev/null)
-[ -z "$TASK_ID" ] && TASK_ID=$(echo "$RESP" | grep -o '"id":[0-9]*' | head -1 | sed 's/"id"://')
+RESPONSE=$(http_post "/tasks" '{"Title":"Test Task","Priority":"High","Status":"Todo"}' "$AUTH")
+assert_status "$RESPONSE" 200 "create task"
+assert_json_exists "$RESPONSE" ".data.id" "task has id"
+TASK_ID=$(extract_json "$RESPONSE" ".data.id")
 
-# Test 4: Create Second Task (Done)
-echo "═══════════════════════════════════════════════════════════════"
+# --- Test 4: Create Second Task (Done) ---
+echo ""
 echo "Test 4: Create Second Task (Done)"
-echo "═══════════════════════════════════════════════════════════════"
-RESP=$(req -X POST "$BASE/tasks" -H "Content-Type: application/json" -H "$AUTH" \
-    -d '{"Title":"Completed Task","Priority":"Low","Status":"Done"}')
-show "$RESP"
+RESPONSE=$(http_post "/tasks" '{"Title":"Completed Task","Priority":"Low","Status":"Done"}' "$AUTH")
+assert_status "$RESPONSE" 200 "create done task"
 
-# Test 4b: Create Urgent Task (High priority, not done)
-echo "═══════════════════════════════════════════════════════════════"
+# --- Test 4b: Create Urgent Task ---
+echo ""
 echo "Test 4b: Create Urgent Task"
-echo "═══════════════════════════════════════════════════════════════"
-RESP=$(req -X POST "$BASE/tasks" -H "Content-Type: application/json" -H "$AUTH" \
-    -d '{"Title":"Urgent Task","Priority":"High","Status":"Todo"}')
-show "$RESP"
+RESPONSE=$(http_post "/tasks" '{"Title":"Urgent Task","Priority":"High","Status":"Todo"}' "$AUTH")
+assert_status "$RESPONSE" 200 "create urgent task"
 
-# Test 5: List Tasks
-echo "═══════════════════════════════════════════════════════════════"
+# --- Test 5: List Tasks ---
+echo ""
 echo "Test 5: List Tasks"
-echo "═══════════════════════════════════════════════════════════════"
-RESP=$(req "$BASE/tasks" -H "$AUTH")
-show "$RESP"
+RESPONSE=$(http_get "/tasks" "$AUTH")
+assert_status "$RESPONSE" 200 "list tasks"
+assert_json_type "$RESPONSE" ".data" "array" "data is array"
 
-# Test 6: Get Task by ID
-echo "═══════════════════════════════════════════════════════════════"
+# --- Test 6: Get Task by ID ---
+echo ""
 echo "Test 6: Get Task by ID"
-echo "═══════════════════════════════════════════════════════════════"
-RESP=$(req "$BASE/tasks/$TASK_ID" -H "$AUTH")
-show "$RESP"
+RESPONSE=$(http_get "/tasks/$TASK_ID" "$AUTH")
+assert_status "$RESPONSE" 200 "get task"
 
-# Test 7: Update Task
-echo "═══════════════════════════════════════════════════════════════"
+# --- Test 7: Update Task ---
+echo ""
 echo "Test 7: Update Task"
-echo "═══════════════════════════════════════════════════════════════"
-RESP=$(req -X PUT "$BASE/tasks/$TASK_ID" -H "Content-Type: application/json" -H "$AUTH" \
-    -d '{"Title":"Updated Task","Priority":"Medium","Status":"InProgress"}')
-show "$RESP"
+RESPONSE=$(http_put "/tasks/$TASK_ID" '{"Title":"Updated Task","Priority":"Medium","Status":"InProgress"}' "$AUTH")
+assert_status "$RESPONSE" 200 "update task"
 
-# Test 8: Get Done Tasks
-echo "═══════════════════════════════════════════════════════════════"
+# --- Test 8: Get Done Tasks ---
+echo ""
 echo "Test 8: Get Done Tasks"
-echo "═══════════════════════════════════════════════════════════════"
-RESP=$(req "$BASE/tasks/done" -H "$AUTH")
-show "$RESP"
+RESPONSE=$(http_get "/tasks/done" "$AUTH")
+assert_status "$RESPONSE" 200 "done tasks"
 
-# Test 9: Get Urgent Tasks
-echo "═══════════════════════════════════════════════════════════════"
+# --- Test 9: Get Urgent Tasks ---
+echo ""
 echo "Test 9: Get Urgent Tasks"
-echo "═══════════════════════════════════════════════════════════════"
-RESP=$(req "$BASE/tasks/urgent" -H "$AUTH")
-show "$RESP"
+RESPONSE=$(http_get "/tasks/urgent" "$AUTH")
+assert_status "$RESPONSE" 200 "urgent tasks"
 
-# Test 10: Get Pending Tasks
-echo "═══════════════════════════════════════════════════════════════"
+# --- Test 10: Get Pending Tasks ---
+echo ""
 echo "Test 10: Get Pending Tasks"
-echo "═══════════════════════════════════════════════════════════════"
-RESP=$(req "$BASE/tasks/pending" -H "$AUTH")
-show "$RESP"
+RESPONSE=$(http_get "/tasks/pending" "$AUTH")
+assert_status "$RESPONSE" 200 "pending tasks"
 
-# Test 11: Get Stats
-echo "═══════════════════════════════════════════════════════════════"
+# --- Test 11: Get Stats ---
+echo ""
 echo "Test 11: Get Stats"
-echo "═══════════════════════════════════════════════════════════════"
-RESP=$(req "$BASE/tasks/stats" -H "$AUTH")
-show "$RESP"
+RESPONSE=$(http_get "/tasks/stats" "$AUTH")
+assert_status "$RESPONSE" 200 "stats"
 
-# Test 12: Delete Task
-echo "═══════════════════════════════════════════════════════════════"
+# --- Test 12: Delete Task ---
+echo ""
 echo "Test 12: Delete Task"
-echo "═══════════════════════════════════════════════════════════════"
-RESP=$(req -X DELETE "$BASE/tasks/$TASK_ID" -H "$AUTH")
-show "$RESP"
+RESPONSE=$(http_delete "/tasks/$TASK_ID" "$AUTH")
+assert_status "$RESPONSE" 200 "delete task"
 
-# Test 13: List Tasks After Delete
-echo "═══════════════════════════════════════════════════════════════"
+# --- Test 13: List Tasks After Delete ---
+echo ""
 echo "Test 13: List Tasks After Delete"
-echo "═══════════════════════════════════════════════════════════════"
-RESP=$(req "$BASE/tasks" -H "$AUTH")
-show "$RESP"
+RESPONSE=$(http_get "/tasks" "$AUTH")
+assert_status "$RESPONSE" 200 "list after delete"
 
-cleanup_server
-rm -f server.log
-echo "✅ All Tasks API tests completed!"
-exit 0
+print_http_summary

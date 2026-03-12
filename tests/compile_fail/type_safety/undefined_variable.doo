@@ -1,0 +1,6 @@
+// ERROR: Undefined
+// This program should fail to compile because 'undeclared' was never declared
+
+fn main() {
+    print(undeclared);
+}

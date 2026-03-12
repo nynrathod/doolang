@@ -1,0 +1,11 @@
+// OUTPUT: apple
+// OUTPUT: banana
+// OUTPUT: cherry
+// Tests iterating over array elements
+
+fn main() {
+    let fruits = ["apple", "banana", "cherry"];
+    for fruit in fruits {
+        print(fruit);
+    }
+}

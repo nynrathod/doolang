@@ -1,0 +1,53 @@
+[package]
+name = "doo_ffi_http"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[features]
+default = []
+mimalloc-allocator = ["mimalloc"]
+
+[dependencies]
+tokio = { version = "1.0", features = ["full"] }
+hyper = { version = "1.8.1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+matchit = "0.9.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+libc = "0.2"
+chrono = "0.4"
+urlencoding = "2"
+doo_ffi_core = { path = "../doo_ffi_core" }
+doo_ffi_json = { path = "../doo_ffi_json" }
+doo_ffi_runtime = { path = "../doo_ffi_runtime" }
+itoa = "1"
+ryu = "1"
+bcrypt = "0.18"
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+libloading = "0.8"
+base64 = "0.22"
+
+# Performance: mimalloc reduces allocation contention under high concurrency.
+# Optional to avoid C symbol conflicts with other vendored C libraries (libgit2)
+# when linked via /FORCE:MULTIPLE. Enable with: features = ["mimalloc-allocator"]
+mimalloc = { version = "0.1.48", default-features = false, optional = true }
+
+# WebSocket support
+tokio-tungstenite = "0.26"
+dashmap = "6.1.0"
+uuid = { version = "1.20.0", features = ["v4"] }
+futures-util = { version = "0.3.31", features = ["sink"] }
+
+# HTTP client for fetch()
+reqwest = { version = "0.12", default-features = false, features = [
+	"rustls-tls",
+	"json",
+] }
+
+# SO_REUSEPORT for Linux multi-listener performance
+[target.'cfg(target_os = "linux")'.dependencies]
+socket2 = { version = "0.5", features = ["all"] }

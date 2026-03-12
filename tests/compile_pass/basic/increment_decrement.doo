@@ -1,0 +1,25 @@
+// OUTPUT: Initial: 0
+// OUTPUT: After ++: 1
+// OUTPUT: After ++: 2
+// OUTPUT: After --: 1
+// OUTPUT: Loop count: 5
+fn main() {
+    let mut i: Int = 0;
+    print("Initial:", i);
+    i++;
+    print("After ++:", i);
+    i++;
+    print("After ++:", i);
+    i--;
+    print("After --:", i);
+
+    let mut count: Int = 0;
+    for {
+        if count >= 5 {
+            break;
+        }
+        count++;
+    }
+    print("Loop count:", count);
+}
+

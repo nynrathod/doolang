@@ -1,0 +1,15 @@
+// ERROR: expected Int, found Str
+// This program should fail to compile because the age field expects Int but receives Str
+
+struct User {
+    name: Str,
+    age: Int
+}
+
+fn main() {
+    let user = User {
+        name: "Alice",
+        age: "twenty-five"
+    };
+    print(user.name);
+}

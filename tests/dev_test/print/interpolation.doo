@@ -61,3 +61,13 @@ fn main() {
 
     print("=== All interpolation tests completed ===");
 }
+
+// EXPECT: Hello Alice!
+// EXPECT: Bob Smith
+// EXPECT: I am 25 years old
+// EXPECT: 10 + 5 = 15
+// EXPECT: Launch 🚀 to the moon!
+// EXPECT: 你好 世界!
+// EXPECT: Welcome Charlie to Doo language!
+// EXPECT: Result: 150
+// EXPECT: === All interpolation tests completed ===

@@ -1,0 +1,19 @@
+
+enum Status { Pending, Done }
+struct Todo { title: Str, status: Status }
+fn Todo.isDone(self) -> Bool {
+    return match self.status {
+        Status::Done => true,
+        _ => false,
+    };
+}
+fn main() {
+    let todos = [
+        Todo { title: "Buy milk", status: Status::Done },
+        Todo { title: "Write code", status: Status::Pending },
+    ];
+    for todo in todos {
+        if todo.isDone() { print("DONE: ${todo.title}"); }
+        else { print("TODO: ${todo.title}"); }
+    }
+}

@@ -1,0 +1,18 @@
+// OUTPUT: 42
+// OUTPUT: 10
+// This is a single-line comment
+
+// Another comment
+
+fn main() {
+    // Comment inside function
+    let x = 42; // Trailing comment
+    print(x);
+
+    // Multiple
+    // lines
+    // of comments
+
+    let y = 10; // Comment after statement
+    print(y);
+}

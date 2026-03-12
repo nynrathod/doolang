@@ -1,0 +1,13 @@
+// OUTPUT: 1
+// OUTPUT: 2
+// OUTPUT: 3
+// Tests break statement in loop
+
+fn main() {
+    for i in 1..10 {
+        if i > 3 {
+            break;
+        }
+        print(i);
+    }
+}

@@ -1,0 +1,40 @@
+// OUTPUT: Initial: [1, 2, 3]
+// OUTPUT: Length: 3
+// OUTPUT: After push: [1, 2, 3, 4]
+// OUTPUT: Popped: 4
+// OUTPUT: After pop: [1, 2, 3]
+// OUTPUT: First: 1
+// OUTPUT: Last: 3
+// OUTPUT: After set: [1, 99, 3]
+// OUTPUT: Mapped: [2, 198, 6]
+// OUTPUT: Filtered: [99, 3]
+// OUTPUT: Sum: 103
+fn main() {
+    let mut arr: [Int] = [1, 2, 3];
+    print("Initial:", arr);
+    print("Length:", arr.len());
+
+    arr.push(4);
+    print("After push:", arr);
+
+    let popped = arr.pop();
+    print("Popped:", popped);
+    print("After pop:", arr);
+
+    let first = arr[0];
+    let last = arr[arr.len() - 1];
+    print("First:", first);
+    print("Last:", last);
+
+    arr[1] = 99;
+    print("After set:", arr);
+
+    let mapped = arr.map((x) => x * 2);
+    print("Mapped:", mapped);
+
+    let filtered = arr.filter((x) => x > 2);
+    print("Filtered:", filtered);
+
+    let sum = arr.reduce(0, (a, b) => a + b);
+    print("Sum:", sum);
+}

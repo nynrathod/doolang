@@ -1,0 +1,8 @@
+// Memory leak test: loop with string allocation
+fn main() {
+    let mut i = 0;
+    for i in 1..=5 {
+        let msg = "iteration ${i}";
+        print(msg);
+    }
+}

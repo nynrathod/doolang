@@ -1,0 +1,8 @@
+// ERROR: expected Int, found Str
+// Tests that assigning wrong type to a typed variable produces a type error
+
+fn main() {
+    let mut x: Int = 10;
+    x = "hello";
+    print(x);
+}

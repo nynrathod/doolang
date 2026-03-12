@@ -1,0 +1,34 @@
+// OUTPUT: Int arithmetic: 13 7 30 3 1
+// OUTPUT: Float arithmetic: 13.700000 7.300000 33.600000 3.281250
+// OUTPUT: Negation: -10
+// OUTPUT: Mixed: 91
+// OUTPUT: Zero plus one: 1
+fn main() {
+    let a: Int = 10;
+    let b: Int = 3;
+    let sum = a + b;
+    let diff = a - b;
+    let prod = a * b;
+    let quot = a / b;
+    let rem = a % b;
+    print("Int arithmetic:", sum, diff, prod, quot, rem);
+
+    let x: Float = 10.5;
+    let y: Float = 3.2;
+    let fsum = x + y;
+    let fdiff = x - y;
+    let fprod = x * y;
+    let fquot = x / y;
+    print("Float arithmetic:", fsum, fdiff, fprod, fquot);
+
+    let neg = -a;
+    print("Negation:", neg);
+
+    let mixed = (a + b) * (a - b);
+    print("Mixed:", mixed);
+
+    let zero = 0;
+    let result = zero + 1;
+    print("Zero plus one:", result);
+}
+

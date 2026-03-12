@@ -1,0 +1,7 @@
+// ERROR: expected expression
+// Tests that invalid double operator produces a syntax error
+
+fn main() {
+    let x = 1 ++ 2;
+    print(x);
+}

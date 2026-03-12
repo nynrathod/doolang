@@ -1,0 +1,40 @@
+// OUTPUT: 10 / 2 = 5
+// OUTPUT: Error: division by zero
+// OUTPUT: 5 * 2 = 10
+fn divide(a: Int, b: Int) -> Int ! Str {
+    if b == 0 {
+        Err "division by zero";
+    }
+    Ok a / b;
+}
+
+fn safeDouble(x: Int) -> Int ! Str {
+    if x > 1000000 {
+        Err "overflow risk";
+    }
+    Ok x * 2;
+}
+
+fn main() {
+    let result, err = divide(10, 2);
+    if err != nil {
+        print("Error:", err);
+    } else {
+        print("10 / 2 =", result);
+    }
+
+    let result2, err2 = divide(10, 0);
+    if err2 != nil {
+        print("Error:", err2);
+    } else {
+        print("Result:", result2);
+    }
+
+    let result3, err3 = safeDouble(5);
+    if err3 != nil {
+        print("Error:", err3);
+    } else {
+        print("5 * 2 =", result3);
+    }
+}
+

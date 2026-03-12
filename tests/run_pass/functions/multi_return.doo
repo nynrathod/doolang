@@ -1,0 +1,9 @@
+
+fn classify(x: Int) -> Str {
+    if x > 100 { return "big"; }
+    if x > 10 { return "medium"; }
+    return "small";
+}
+fn main() {
+    print(classify(50));
+}

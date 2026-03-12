@@ -1,0 +1,12 @@
+// Crash test: mixed tabs and spaces
+fn test() -> Int {
+	let x = 1
+    let y = 2
+		let z = 3
+  let w = 4
+	    let a = 5
+    	let b = 6
+		    let c = 7
+  	  let d = 8
+	return x + y + z + w + a + b + c + d
+}

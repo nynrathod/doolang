@@ -16,3 +16,8 @@ fn main() {
     print("d", d);
     // print("e", e);
 }
+
+// Expect: a 5
+// Expect: b 4
+// Expect: c 8
+// Expect: d 6

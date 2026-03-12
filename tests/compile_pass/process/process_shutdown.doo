@@ -1,0 +1,7 @@
+// Process::shutdown
+import std::Process::{Process, ProcessError};
+fn main() {
+    let h = Process::spawn("ping", "[\"127.0.0.1\"]")?;
+    Process::shutdown();
+    print("cleaned up");
+}

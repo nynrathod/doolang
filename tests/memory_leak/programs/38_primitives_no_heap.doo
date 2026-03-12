@@ -1,0 +1,11 @@
+// Memory leak test: boolean and float types (no heap alloc expected)
+fn main() {
+    let a = true;
+    let b = false;
+    let c = 3.14;
+    let d = 2.718;
+    let result = c + d;
+    print(a);
+    print(b);
+    print(result);
+}

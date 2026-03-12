@@ -1,0 +1,20 @@
+[package]
+name = "doo_analysis"
+version.workspace = true
+edition.workspace = true
+description = "Semantic analysis for the Doo compiler (ownership, borrowing, types)"
+license = "MIT"
+
+[dependencies]
+doo_core = { path = "../doo_core" }
+doo_hir = { path = "../doo_hir" }
+doo_frontend = { path = "../doo_frontend" }
+
+# Data structures
+rustc-hash = "1.1"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+pretty_assertions = "1.4"

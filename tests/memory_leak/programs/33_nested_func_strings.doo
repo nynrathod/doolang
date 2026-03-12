@@ -1,0 +1,18 @@
+// Memory leak test: nested function calls with strings
+fn prefix(s: Str) -> Str {
+    return ">> ${s}";
+}
+
+fn format_line(n: Int) -> Str {
+    let base = "line ${n}";
+    return prefix(base);
+}
+
+fn main() {
+    let a = format_line(1);
+    let b = format_line(2);
+    let c = format_line(3);
+    print(a);
+    print(b);
+    print(c);
+}

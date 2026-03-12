@@ -1,0 +1,6 @@
+
+fn main() {
+    let nums = [1, 2, 3];
+    let doubled = nums.map((x) => x * 2);
+    for item in doubled { print(item); }
+}

@@ -1,0 +1,35 @@
+// OUTPUT: Value: 42
+// OUTPUT: Value: 42
+// OUTPUT: Still accessible: 42
+// OUTPUT: hello
+// OUTPUT: hello
+// OUTPUT: Original: hello
+// OUTPUT: Copy: hello
+// OUTPUT: [1, 2, 3]
+// OUTPUT: [1, 2, 3]
+// OUTPUT: Original arr: [1, 2, 3]
+// OUTPUT: Copy arr: [1, 2, 3]
+fn printVal(x: Int) {
+    print("Value:", x);
+}
+
+fn main() {
+    let x = 42;
+    printVal(x);
+    printVal(x);
+    print("Still accessible:", x);
+
+    let s = "hello";
+    print(s);
+    print(s);
+    let s2 = s;
+    print("Original:", s);
+    print("Copy:", s2);
+
+    let arr = [1, 2, 3];
+    print(arr);
+    print(arr);
+    let arr2 = arr;
+    print("Original arr:", arr);
+    print("Copy arr:", arr2);
+}

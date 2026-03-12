@@ -1,0 +1,30 @@
+// OUTPUT: Action: wait
+// OUTPUT: Stop
+enum TrafficLight {
+    Red,
+    Yellow,
+    Green,
+}
+
+enum Status {
+    Active,
+    Inactive,
+    Pending,
+}
+
+fn main() {
+    let s = Status::Pending;
+    let action = match s {
+        Status::Active => "process",
+        Status::Inactive => "skip",
+        Status::Pending => "wait",
+    };
+    print("Action:", action);
+
+    let light = TrafficLight::Red;
+    match light {
+        TrafficLight::Red => print("Stop"),
+        TrafficLight::Yellow => print("Slow down"),
+        TrafficLight::Green => print("Go"),
+    }
+}

@@ -1,6 +1,6 @@
 import std::Http::{Server, Request, Response};
-import std::Database::{postgres};
-import std::Auth::{jwt};
+import std::Database::{Postgres};
+import std::Auth::{Jwt};
 
 struct User {
     id: Int @primary @auto,
@@ -67,15 +67,15 @@ fn GetPublicInfo() -> MessageResponse {
 }
 
 fn main() {
-    let db = postgres()?;
+    let db = Database::Postgres()?;
 
     let app = Server::new(":3108");
 
     app.auth("/signup", "/login", User, db);
     app.get("/public", GetPublicInfo);
-    app.get("/profile", jwt(), GetProfile);
-    app.post("/profile", jwt(), PostUpdateProfile);
-    app.group("/api", jwt(), {
+    app.get("/profile", Jwt(), GetProfile);
+    app.post("/profile", Jwt(), PostUpdateProfile);
+    app.group("/api", Jwt(), {
         get("/profile", GetApiProfile),
         post("/create", PostApiCreate),
         get("/list", GetApiList),

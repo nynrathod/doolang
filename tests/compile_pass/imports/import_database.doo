@@ -1,0 +1,6 @@
+// OUTPUT: Database import test
+import database { DB, Query }
+
+fn main() {
+    print("Database import test");
+}

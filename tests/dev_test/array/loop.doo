@@ -64,3 +64,51 @@ fn main() {
     //     }
     // }
 }
+
+// EXPECT: Range: 0..10 (exclusive)
+// EXPECT: i: 0
+// EXPECT: i: 1
+// EXPECT: i: 2
+// EXPECT: i: 3
+// EXPECT: i: 4
+// EXPECT: i: 5
+// EXPECT: i: 6
+// EXPECT: i: 7
+// EXPECT: i: 8
+// EXPECT: i: 9
+// EXPECT: Range: 0..=10 (inclusive)
+// EXPECT: i: 0
+// EXPECT: i: 1
+// EXPECT: i: 2
+// EXPECT: i: 3
+// EXPECT: i: 4
+// EXPECT: i: 5
+// EXPECT: i: 6
+// EXPECT: i: 7
+// EXPECT: i: 8
+// EXPECT: i: 9
+// EXPECT: i: 10
+// EXPECT: Range: start...end (variable-based)
+// EXPECT: i: 3
+// EXPECT: i: 4
+// EXPECT: i: 5
+// EXPECT: i: 6
+// EXPECT: Index: 0 Value: 10
+// EXPECT: Index: 1 Value: 20
+// EXPECT: Index: 2 Value: 30
+// EXPECT: Array with index (Str)
+// EXPECT: Position: 0 Name: Alice
+// EXPECT: Position: 1 Name: Bob
+// EXPECT: Position: 2 Name: Charlie
+// EXPECT: Array with index (Float)
+// EXPECT: Index: 0 Value: 1.5
+// EXPECT: Index: 1 Value: 2.5
+// EXPECT: Index: 2 Value: 3.5
+// EXPECT: Array with index (Bool)
+// EXPECT: Index: 0 Value: true
+// EXPECT: Index: 1 Value: false
+// EXPECT: Index: 2 Value: true
+// EXPECT: Regular array iteration
+// EXPECT: Item: 100
+// EXPECT: Item: 200
+// EXPECT: Item: 300

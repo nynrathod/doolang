@@ -1,0 +1,13 @@
+// OUTPUT: error message
+// Tests Err result variant
+
+fn failsAlways() -> Int ! Str {
+    Err "error message";
+}
+
+fn main() {
+    let _, e = failsAlways();
+    if e != nil {
+        print(e);
+    }
+}

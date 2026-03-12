@@ -1,0 +1,6 @@
+// ERROR: Undefined
+// Tests that calling an undefined function produces a resolution error
+
+fn main() {
+    foo();
+}

@@ -1,0 +1,10 @@
+// OUTPUT: Point: 10 20
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+fn main() {
+    let p = Point { x: 10, y: 20 };
+    print("Point:", p.x, p.y);
+}

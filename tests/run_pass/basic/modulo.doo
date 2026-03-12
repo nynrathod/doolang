@@ -1,0 +1,10 @@
+// OUTPUT: 1
+// OUTPUT: 0
+// OUTPUT: 2
+// Tests modulo operator
+
+fn main() {
+    print(10 % 3);
+    print(10 % 5);
+    print(17 % 5);
+}

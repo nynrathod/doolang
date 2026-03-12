@@ -7,34 +7,41 @@
 // @enum
 
 enum UserRole {
-    Admin,
-    User,
-    Guest,
+   Admin,
+   User,
+   Guest,
 }
 
 struct User {
-    Email: Str @email,
-    Username: Str @min(3) @max(20),
-    Password: Str @min(8) @max(100),
-    Role: UserRole,
-    Age: Int @min(0) @max(150),
+   Email: Str @email,
+   Username: Str @min(3) @max(20),
+   Password: Str @min(8) @max(100),
+   Role: UserRole,
+   Age: Int @min(0) @max(150),
 }
 
 fn main() {
-    print("Testing comprehensive decorator validation...");
+   print("Testing comprehensive decorator validation...");
 
-    let user = User {
-        Email: "john@example.com",
-        Username: "john_doe",
-        Password: "securepass123",
-        Role: UserRole::User,
-        Age: 30,
-    };
+   let user = User {
+       Email: "john@example.com",
+       Username: "john_doe",
+       Password: "securepass123",
+       Role: UserRole::User,
+       Age: 30,
+   };
 
-    print("User created successfully!");
-    print("Email:", user.Email);
-    print("Username:", user.Username);
-    print("Role:", user.Role);
+   print("User created successfully!");
+   print("Email:", user.Email);
+   print("Username:", user.Username);
+   print("Role:", user.Role);
 
-    print("All decorator validation tests passed!");
+   print("All decorator validation tests passed!");
 }
+
+// Expect: Testing comprehensive decorator validation...
+// Expect: User created successfully!
+// Expect: Email: john@example.com
+// Expect: Username: john_doe
+// Expect: Role: User
+// Expect: All decorator validation tests passed!

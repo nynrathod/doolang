@@ -1,0 +1,11 @@
+// Memory leak test: range loop with string creation
+fn make_label(n: Int) -> Str {
+    return "item-${n}";
+}
+
+fn main() {
+    for i in 0..10 {
+        let label = make_label(i);
+        print(label);
+    }
+}

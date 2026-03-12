@@ -1,0 +1,11 @@
+// OUTPUT: x is two
+// Tests basic match expression
+
+fn main() {
+    let x = 2;
+    match x {
+        1 => print("x is one"),
+        2 => print("x is two"),
+        _ => print("x is something else"),
+    }
+}

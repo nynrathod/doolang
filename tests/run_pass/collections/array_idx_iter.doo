@@ -1,0 +1,7 @@
+
+fn main() {
+    let arr = ["a", "b", "c"];
+    for idx, val in arr {
+        print("${idx}:${val}");
+    }
+}

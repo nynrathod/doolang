@@ -1,0 +1,38 @@
+// OUTPUT: Area: 50
+// OUTPUT: Perimeter: 30
+// OUTPUT: Is square: false
+// OUTPUT: Description: Rectangle(10x5)
+// OUTPUT: Square area: 49
+// OUTPUT: Is square: true
+struct Rectangle {
+    width: Int,
+    height: Int,
+}
+
+fn Rectangle.area(self) -> Int {
+    return self.width * self.height;
+}
+
+fn Rectangle.perimeter(self) -> Int {
+    return 2 * (self.width + self.height);
+}
+
+fn Rectangle.isSquare(self) -> Bool {
+    return self.width == self.height;
+}
+
+fn Rectangle.describe(self) -> Str {
+    return "Rectangle(${self.width}x${self.height})";
+}
+
+fn main() {
+    let rect = Rectangle { width: 10, height: 5 };
+    print("Area:", rect.area());
+    print("Perimeter:", rect.perimeter());
+    print("Is square:", rect.isSquare());
+    print("Description:", rect.describe());
+
+    let square = Rectangle { width: 7, height: 7 };
+    print("Square area:", square.area());
+    print("Is square:", square.isSquare());
+}

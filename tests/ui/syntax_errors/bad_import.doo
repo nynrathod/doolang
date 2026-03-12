@@ -1,0 +1,8 @@
+// ERROR: Expected identifier
+// Tests that incomplete import statement produces a syntax error
+
+import
+
+fn main() {
+    print("hello");
+}

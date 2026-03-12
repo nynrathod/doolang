@@ -1,0 +1,29 @@
+// OUTPUT: Inner value: 42
+// OUTPUT: Raw: 99
+enum Inner {
+    Value(Int),
+    Text(Str),
+}
+
+enum Outer {
+    Wrapped(Inner),
+    Raw(Int),
+}
+
+fn describeOuter(o: Outer) {
+    match o {
+        Outer::Wrapped(inner) => match inner {
+            Inner::Value(v) => print("Inner value:", v),
+            Inner::Text(t) => print("Inner text:", t),
+        },
+        Outer::Raw(n) => print("Raw:", n),
+    }
+}
+
+fn main() {
+    let o = Outer::Wrapped(Inner::Value(42));
+    describeOuter(o);
+
+    let o2 = Outer::Raw(99);
+    describeOuter(o2);
+}

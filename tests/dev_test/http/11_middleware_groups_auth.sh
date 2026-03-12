@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# Source common utilities
+# Source common utilities (includes assertion framework)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../common.sh"
 
@@ -9,92 +9,78 @@ PORT=3112
 FILE="11_middleware_groups_auth.doo"
 
 echo "Starting server on port $PORT..."
-
-# Start server and set up cleanup
 start_server "$FILE" "$PORT" || exit 1
 setup_trap
 
-# --------------------------------------------------
-# PUBLIC ROUTES
-# --------------------------------------------------
-
-echo "Test 1: GET /status (public)"
-curl -s http://127.0.0.1:$PORT/status | pretty_json
+# --- PUBLIC ---
 echo ""
+echo "Test 1: GET /status (public -> 200)"
+RESPONSE=$(http_get "/status")
+assert_status "$RESPONSE" 200 "GET /status"
+assert_json "$RESPONSE" ".Status" "ok" ".Status=ok"
 
-# --------------------------------------------------
-# API GROUP — AUTH REQUIRED
-# --------------------------------------------------
-
-echo "Test 3: GET /api/profile (no auth → 401)"
-curl -s http://127.0.0.1:$PORT/api/profile | pretty_json
+# --- API GROUP: no auth → 401 ---
 echo ""
+echo "Test 2: GET /api/profile (no auth -> 401)"
+RESPONSE=$(http_get "/api/profile")
+assert_rfc7807 "$RESPONSE" 401 "Unauthorized" "unauthorized"
 
-echo "Test 4: GET /api/profile (invalid token → 401)"
-curl -s -H "Authorization: Bearer wrong-token" \
-  http://127.0.0.1:$PORT/api/profile | pretty_json
+# --- API GROUP: invalid token → 401 ---
 echo ""
+echo "Test 3: GET /api/profile (invalid token -> 401)"
+RESPONSE=$(http_get "/api/profile" "Authorization: Bearer wrong-token")
+assert_rfc7807 "$RESPONSE" 401 "Unauthorized" "unauthorized"
 
-echo "Test 5: GET /api/profile (valid token → 200)"
-curl -s -H "Authorization: Bearer valid-token" \
-  http://127.0.0.1:$PORT/api/profile | pretty_json
+# --- API GROUP: valid token → 200 ---
 echo ""
+echo "Test 4: GET /api/profile (valid token -> 200)"
+RESPONSE=$(http_get "/api/profile" "Authorization: Bearer valid-token")
+assert_status "$RESPONSE" 200 "GET /api/profile valid"
+assert_json "$RESPONSE" ".Message" "User profile" ".Message=User profile"
+assert_json "$RESPONSE" ".UserId" "123" ".UserId=123"
 
-echo "Test 6: POST /api/users (valid token → 200)"
-curl -s -X POST \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer valid-token" \
-  http://127.0.0.1:$PORT/api/users | pretty_json
 echo ""
+echo "Test 5: POST /api/users (valid token -> 200)"
+RESPONSE=$(http_post "/api/users" "" "Authorization: Bearer valid-token")
+assert_status "$RESPONSE" 200 "POST /api/users valid"
+assert_json "$RESPONSE" ".Message" "User created" ".Message=User created"
+assert_json "$RESPONSE" ".UserId" "456" ".UserId=456"
 
-echo "Test 7: GET /api/posts (valid token → 200)"
-curl -s -H "Authorization: Bearer valid-token" \
-  http://127.0.0.1:$PORT/api/posts | pretty_json
 echo ""
+echo "Test 6: GET /api/posts (valid token -> 200)"
+RESPONSE=$(http_get "/api/posts" "Authorization: Bearer valid-token")
+assert_status "$RESPONSE" 200 "GET /api/posts valid"
+assert_json "$RESPONSE" ".Message" "All posts" ".Message=All posts"
 
-# --------------------------------------------------
-# ADMIN GROUP — AUTH + ROLE REQUIRED
-# --------------------------------------------------
-
-echo "Test 8: GET /admin/dashboard (no auth → 401)"
-curl -s http://127.0.0.1:$PORT/admin/dashboard | pretty_json
+# --- ADMIN GROUP: no auth → 401 ---
 echo ""
+echo "Test 7: GET /admin/dashboard (no auth -> 401)"
+RESPONSE=$(http_get "/admin/dashboard")
+assert_rfc7807 "$RESPONSE" 401 "Unauthorized" "unauthorized"
 
-echo "Test 9: GET /admin/dashboard (auth, no role → 403)"
-curl -s -H "Authorization: Bearer valid-token" \
-  http://127.0.0.1:$PORT/admin/dashboard | pretty_json
+# --- ADMIN GROUP: auth, no role → 403 ---
 echo ""
+echo "Test 8: GET /admin/dashboard (auth, no role -> 403)"
+RESPONSE=$(http_get "/admin/dashboard" "Authorization: Bearer valid-token")
+assert_rfc7807 "$RESPONSE" 403 "Forbidden" "forbidden"
 
-echo "Test 10: GET /admin/dashboard (auth + admin role → 200)"
-curl -s \
-  -H "Authorization: Bearer valid-token" \
-  -H "X-Role: admin" \
-  http://127.0.0.1:$PORT/admin/dashboard | pretty_json
+# --- ADMIN GROUP: auth + admin role → 200 ---
 echo ""
+echo "Test 9: GET /admin/dashboard (auth + admin -> 200)"
+RESPONSE=$(http_get "/admin/dashboard" "Authorization: Bearer valid-token" "X-Role: admin")
+assert_status "$RESPONSE" 200 "GET /admin/dashboard valid"
+assert_json "$RESPONSE" ".Message" "Admin dashboard" ".Message=Admin dashboard"
 
-echo "Test 11: GET /admin/users (auth + admin role → 200)"
-curl -s \
-  -H "Authorization: Bearer valid-token" \
-  -H "X-Role: admin" \
-  http://127.0.0.1:$PORT/admin/users | pretty_json
 echo ""
+echo "Test 10: GET /admin/users (auth + admin -> 200)"
+RESPONSE=$(http_get "/admin/users" "Authorization: Bearer valid-token" "X-Role: admin")
+assert_status "$RESPONSE" 200 "GET /admin/users valid"
+assert_json "$RESPONSE" ".Message" "All users" ".Message=All users"
 
-echo "Test 12: DELETE /admin/users/789 (auth + admin role → 200)"
-curl -s -X DELETE \
-  -H "Authorization: Bearer valid-token" \
-  -H "X-Role: admin" \
-  http://127.0.0.1:$PORT/admin/users/789 | pretty_json
 echo ""
+echo "Test 11: DELETE /admin/users/789 (auth + admin -> 200)"
+RESPONSE=$(http_delete "/admin/users/789" "Authorization: Bearer valid-token" "X-Role: admin")
+assert_status "$RESPONSE" 200 "DELETE /admin/users/789 valid"
+assert_json "$RESPONSE" ".Status" "deleted" ".Status=deleted"
 
-echo "✅ All middleware + auth + group tests completed"
-
-# --------------------------------------------------
-# Log location (like blog/test_blog.sh)
-# --------------------------------------------------
-echo ""
-echo "📝 Server logs saved in: $(cd "$SCRIPT_DIR" && pwd)/server.log"
-echo "   To inspect: tail -200 \"$SCRIPT_DIR/server.log\""
-if command -v wslpath >/dev/null 2>&1; then
-  WIN_LOG_PATH="$(wslpath -w "$SCRIPT_DIR/server.log")"
-  echo "   Windows path: $WIN_LOG_PATH"
-fi
+print_http_summary

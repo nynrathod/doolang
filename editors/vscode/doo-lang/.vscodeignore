@@ -1,0 +1,13 @@
+.vscode/**
+.vscode-test/**
+src/**
+node_modules/**
+bin/**
+.yarn/**
+.pnp.cjs
+.pnp.loader.mjs
+yarn.lock
+.gitignore
+tsconfig.json
+**/*.ts
+**/*.map

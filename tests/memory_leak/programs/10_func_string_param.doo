@@ -1,0 +1,9 @@
+// Memory leak test: function that takes string parameter (auto-clone)
+fn greet(name: Str) {
+    print("Hello ${name}!");
+}
+fn main() {
+    let n = "World";
+    greet(n);
+    print(n);
+}

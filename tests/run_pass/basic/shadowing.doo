@@ -1,0 +1,12 @@
+// OUTPUT: 10
+// OUTPUT: 20
+// OUTPUT: test
+
+fn main() {
+    let x1 = 10;
+    print(x1);
+    let x2 = 20;
+    print(x2);
+    let x3 = "test";
+    print(x3);
+}

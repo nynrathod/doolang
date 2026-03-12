@@ -1,0 +1,29 @@
+// OUTPUT: Option: Has value
+// OUTPUT: Value: 10
+// OUTPUT: Empty option
+enum Option {
+    Some(Int),
+    None,
+}
+
+fn main() {
+    let opt = Option::Some(42);
+    let msg = match opt {
+        Option::Some(value) => "Has value",
+        Option::None => "No value",
+    };
+    print("Option:", msg);
+
+    let x = 10;
+    if x > 5 {
+        print("Value:", x);
+    } else {
+        print("Small value");
+    }
+
+    let opt2 = Option::None;
+    match opt2 {
+        Option::Some(v) => print("Value is:", v),
+        Option::None => print("Empty option"),
+    }
+}

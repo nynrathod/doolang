@@ -1,0 +1,17 @@
+// OUTPUT: Red color
+// Tests match on enum variants
+
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+fn main() {
+    let c = Color.Red;
+    match c {
+        Color.Red => print("Red color"),
+        Color.Green => print("Green color"),
+        Color.Blue => print("Blue color"),
+    }
+}

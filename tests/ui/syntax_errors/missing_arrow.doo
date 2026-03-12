@@ -1,0 +1,11 @@
+// ERROR: missing a body
+// Tests that function declaration without arrow for return type produces a syntax error
+
+fn foo() Int {
+    return 42;
+}
+
+fn main() {
+    let x = foo();
+    print(x);
+}

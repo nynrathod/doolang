@@ -1,0 +1,37 @@
+// Test Metrics endpoint on HTTP server
+import std::Http::{Server, Request, Response};
+import std::Config;
+
+fn GetHello(req: Request) -> Str {
+    return "Hello World";
+}
+
+struct UserInfo {
+    id: Int,
+    name: Str,
+}
+
+fn GetUsers(req: Request) -> UserInfo {
+    return UserInfo {id: 1, name: "Test"};
+}
+
+fn main() {
+    let app = Server::new(":3200");
+
+    // Enable Prometheus metrics
+    app.metrics();
+
+    // Sample routes
+    app.get("/hello", GetHello);
+    app.get("/users", GetUsers);
+
+
+
+    print("Metrics test server running on :3200");
+    print("Test with:");
+    print("  curl http://localhost:3200/hello");
+    print("  curl http://localhost:3200/users");
+    print("  curl http://localhost:3200/metrics");
+
+    app.start();
+}

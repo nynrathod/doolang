@@ -1,0 +1,16 @@
+// OUTPUT: 42
+// OUTPUT: 3.14
+// OUTPUT: test
+// OUTPUT: true
+// Tests variable declaration and printing
+
+fn main() {
+    let x = 42;
+    let y = 3.14;
+    let z = "test";
+    let b = true;
+    print(x);
+    print(y);
+    print(z);
+    print(b);
+}

@@ -1,0 +1,33 @@
+// OUTPUT: Sum: 15
+// OUTPUT: Array: [1, 2, 3, 4, 5]
+// OUTPUT: Map: {"a": 1, "b": 2, "c": 3}
+// OUTPUT: Complex: 21
+fn main() {
+    let result = 1
+        + 2
+        + 3
+        + 4
+        + 5;
+    print("Sum:", result);
+
+    let arr = [
+        1,
+        2,
+        3,
+        4,
+        5,
+    ];
+    print("Array:", arr);
+
+    let map = {
+        "a": 1,
+        "b": 2,
+        "c": 3,
+    };
+    print("Map:", map);
+
+    let complex = (1 + 2)
+        * (3 + 4);
+    print("Complex:", complex);
+}
+

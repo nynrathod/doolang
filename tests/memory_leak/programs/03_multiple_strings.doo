@@ -1,0 +1,9 @@
+// Memory leak test: multiple string variables
+fn main() {
+    let a = "alpha";
+    let b = "beta";
+    let c = "gamma";
+    print(a);
+    print(b);
+    print(c);
+}

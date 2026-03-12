@@ -1,0 +1,8 @@
+// Crash test: unusual whitespace characters
+let	x	=	42
+let y = 100
+let z = "test"
+let w = true
+let   a   =   1
+let		b		=		2
+let c = 3

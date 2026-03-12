@@ -1,0 +1,11 @@
+// ERROR: Mismatch
+// Tests that calling a function with wrong argument type produces a type error
+
+fn add(a: Int, b: Int) -> Int {
+    return a + b;
+}
+
+fn main() {
+    let result = add(5, "ten");
+    print(result);
+}

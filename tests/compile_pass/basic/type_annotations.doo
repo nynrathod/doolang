@@ -1,0 +1,41 @@
+// OUTPUT: 52 hello world false 6.280000
+// OUTPUT: [1, 2, 3] ["a", "b", "c"] [1.100000, 2.200000] [true, false]
+// OUTPUT: {"a": 1, "b": 2} {1: "one", 2: "two"}
+fn typedAdd(a: Int, b: Int) -> Int {
+    return a + b;
+}
+
+fn typedConcat(a: Str, b: Str) -> Str {
+    return a + b;
+}
+
+fn typedNot(x: Bool) -> Bool {
+    return !x;
+}
+
+fn typedMultiply(a: Float, b: Float) -> Float {
+    return a * b;
+}
+
+fn main() {
+    let intVal: Int = 42;
+    let floatVal: Float = 3.14;
+    let strVal: Str = "hello";
+    let boolVal: Bool = true;
+    let arrInt: [Int] = [1, 2, 3];
+    let arrStr: [Str] = ["a", "b", "c"];
+    let arrFloat: [Float] = [1.1, 2.2];
+    let arrBool: [Bool] = [true, false];
+    let mapSI: {Str: Int} = {"a": 1, "b": 2};
+    let mapIS: {Int: Str} = {1: "one", 2: "two"};
+
+    let result1: Int = typedAdd(intVal, 10);
+    let result2: Str = typedConcat(strVal, " world");
+    let result3: Bool = typedNot(boolVal);
+    let result4: Float = typedMultiply(floatVal, 2.0);
+
+    print(result1, result2, result3, result4);
+    print(arrInt, arrStr, arrFloat, arrBool);
+    print(mapSI, mapIS);
+}
+

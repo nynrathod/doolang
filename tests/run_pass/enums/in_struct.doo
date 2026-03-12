@@ -1,0 +1,11 @@
+
+enum Status { Active, Inactive }
+struct User { name: Str, status: Status }
+fn main() {
+    let u = User { name: "Alice", status: Status::Active };
+    let label = match u.status {
+        Status::Active => "active",
+        Status::Inactive => "inactive",
+    };
+    print(label);
+}

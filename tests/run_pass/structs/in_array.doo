@@ -1,0 +1,9 @@
+
+struct Item { name: Str, price: Int }
+fn main() {
+    let items = [
+        Item { name: "A", price: 10 },
+        Item { name: "B", price: 20 },
+    ];
+    print(items[1].price);
+}

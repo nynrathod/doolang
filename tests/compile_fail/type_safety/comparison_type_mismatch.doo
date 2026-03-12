@@ -1,0 +1,10 @@
+// ERROR: Incompatible
+// This program should fail to compile because you cannot compare Int and Str with ==
+
+fn main() {
+    if 1 == "one" {
+        print("equal");
+    } else {
+        print("not equal");
+    }
+}
