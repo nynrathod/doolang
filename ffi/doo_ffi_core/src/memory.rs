@@ -68,7 +68,8 @@ pub extern "C" fn doo_realloc(ptr: *mut u8, new_size: usize) -> *mut u8 {
         doo_free(ptr);
         return std::ptr::null_mut();
     }
-    unsafe { libc::realloc(ptr as *mut c_void, new_size) as *mut u8 }
+    let new_ptr = unsafe { libc::realloc(ptr as *mut c_void, new_size) as *mut u8 };
+    new_ptr
 }
 
 /// Free memory allocated with doo_alloc.
@@ -155,14 +156,23 @@ pub fn doo_alloc_array(element_count: usize, element_size: usize) -> *mut u8 {
     let data_size = match element_count.checked_mul(element_size) {
         Some(size) => size,
         None => {
-            ffi_debug!("MEMORY", "doo_alloc_array: overflow in element_count({}) * element_size({})", element_count, element_size);
+            ffi_debug!(
+                "MEMORY",
+                "doo_alloc_array: overflow in element_count({}) * element_size({})",
+                element_count,
+                element_size
+            );
             return std::ptr::null_mut();
         }
     };
     let total_size = match HEADER_SIZE.checked_add(data_size) {
         Some(size) => size,
         None => {
-            ffi_debug!("MEMORY", "doo_alloc_array: overflow in HEADER_SIZE + data_size({})", data_size);
+            ffi_debug!(
+                "MEMORY",
+                "doo_alloc_array: overflow in HEADER_SIZE + data_size({})",
+                data_size
+            );
             return std::ptr::null_mut();
         }
     };
