@@ -22,7 +22,6 @@ COPY ffi/ ffi/
 COPY src/ src/
 COPY std/ std/
 COPY packages/ packages/
-COPY linkers/ linkers/
 
 # Build the Doo compiler in release mode
 RUN cargo build --release --workspace
