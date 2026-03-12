@@ -1,0 +1,9 @@
+// Memory leak test: mutable string reassignment
+fn main() {
+    let mut s = "first";
+    print(s);
+    s = "second";
+    print(s);
+    s = "third";
+    print(s);
+}

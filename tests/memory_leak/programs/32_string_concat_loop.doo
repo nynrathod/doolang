@@ -1,0 +1,7 @@
+// Memory leak test: string concatenation in loop
+fn main() {
+    for i in 0..5 {
+        let msg = "iteration ${i}";
+        print(msg);
+    }
+}

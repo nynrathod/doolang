@@ -1,0 +1,14 @@
+// Memory leak test: struct with string field reassignment
+struct Config {
+    host: Str,
+    port: Int
+}
+
+fn main() {
+    let mut cfg = Config { host: "localhost", port: 8080 };
+    print(cfg.host);
+    cfg.host = "production.example.com";
+    print(cfg.host);
+    cfg.host = "staging.example.com";
+    print(cfg.host);
+}

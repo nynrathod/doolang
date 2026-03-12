@@ -1,0 +1,5 @@
+// Memory leak test: map with int values
+fn main() {
+    let scores: {Str: Int} = {"alice": 95, "bob": 87, "charlie": 92};
+    print(scores);
+}

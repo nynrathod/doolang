@@ -56,6 +56,10 @@ mod stress {
     pub mod memory;
 }
 
+// Memory leak tests
+#[cfg(test)]
+mod memory_leak;
+
 // FFI integration tests
 #[cfg(test)]
 mod ffi;

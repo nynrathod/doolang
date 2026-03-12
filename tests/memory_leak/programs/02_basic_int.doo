@@ -1,0 +1,7 @@
+// Memory leak test: integer variables (no heap allocation expected)
+fn main() {
+    let x = 42;
+    let y = 100;
+    let z = x + y;
+    print(z);
+}

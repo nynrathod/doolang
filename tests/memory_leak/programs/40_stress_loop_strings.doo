@@ -1,0 +1,8 @@
+// Memory leak test: heavy loop with string allocations (stress)
+fn main() {
+    for i in 0..100 {
+        let msg = "processing item ${i}";
+        let _ = msg;
+    }
+    print("done");
+}

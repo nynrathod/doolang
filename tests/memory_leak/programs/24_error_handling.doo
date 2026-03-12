@@ -1,0 +1,16 @@
+// Memory leak test: error handling with Result type
+fn divide(a: Int, b: Int) -> Int ! Str {
+    if b == 0 { Err "division by zero"; }
+    Ok a / b;
+}
+
+fn main() {
+    let v1, e1 = divide(10, 2);
+    if e1 == nil {
+        print(v1);
+    }
+    let v2, e2 = divide(10, 0);
+    if e2 != nil {
+        print(e2);
+    }
+}

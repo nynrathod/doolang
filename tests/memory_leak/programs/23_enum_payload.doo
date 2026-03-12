@@ -1,0 +1,18 @@
+// Memory leak test: enum with single payload
+enum Shape {
+    Circle(Int),
+    Square(Int),
+}
+
+fn main() {
+    let s1 = Shape::Circle(5);
+    let s2 = Shape::Square(4);
+    match s1 {
+        Shape::Circle(r) => print(r),
+        Shape::Square(s) => print(s),
+    }
+    match s2 {
+        Shape::Circle(r) => print(r),
+        Shape::Square(s) => print(s),
+    }
+}

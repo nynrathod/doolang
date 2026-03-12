@@ -1,0 +1,8 @@
+// Memory leak test: function returning string
+fn make_greeting(name: Str) -> Str {
+    return "Hello ${name}!";
+}
+fn main() {
+    let result = make_greeting("Alice");
+    print(result);
+}

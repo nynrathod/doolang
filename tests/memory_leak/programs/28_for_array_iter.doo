@@ -1,0 +1,10 @@
+// Memory leak test: for loop iterating over array
+fn main() {
+    let fruits = ["apple", "banana", "cherry", "date"];
+    let mut count = 0;
+    for fruit in fruits {
+        print(fruit);
+        count = count + 1;
+    }
+    print(count);
+}

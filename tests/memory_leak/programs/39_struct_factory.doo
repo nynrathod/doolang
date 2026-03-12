@@ -1,0 +1,19 @@
+// Memory leak test: struct constructed in function and returned
+struct User {
+    name: Str,
+    email: Str,
+    age: Int
+}
+
+fn create_user(n: Str, e: Str, a: Int) -> User {
+    return User { name: n, email: e, age: a };
+}
+
+fn main() {
+    let u1 = create_user("Alice", "alice@example.com", 30);
+    let u2 = create_user("Bob", "bob@example.com", 25);
+    print(u1.name);
+    print(u1.email);
+    print(u2.name);
+    print(u2.email);
+}

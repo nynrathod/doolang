@@ -1,0 +1,13 @@
+// Memory leak test: array of strings with push
+fn main() {
+    let mut names: [Str] = [];
+    names.push("Alice");
+    names.push("Bob");
+    names.push("Charlie");
+    names.push("Diana");
+    names.push("Eve");
+    print(names.len());
+    for name in names {
+        print(name);
+    }
+}

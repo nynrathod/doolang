@@ -1,0 +1,7 @@
+// Memory leak test: simple struct allocation
+struct Point { x: Int, y: Int }
+fn main() {
+    let p = Point { x: 10, y: 20 };
+    print(p.x);
+    print(p.y);
+}
