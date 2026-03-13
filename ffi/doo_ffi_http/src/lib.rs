@@ -110,12 +110,20 @@ pub extern "C" fn doo_http_server_new(host_port: *const c_char) -> *mut c_void {
         };
 
         // Parse host:port
+        // When host is empty (":port" format), auto-detect bind address:
+        //   Container/production → 0.0.0.0 (required for Cloud Run, Docker, etc.)
+        //   Local development    → 127.0.0.1 (safe default, no network exposure)
+        let is_container = std::path::Path::new("/.dockerenv").exists()
+            || std::env::var("DEPLOY_MODE").is_ok()
+            || std::env::var("KUBERNETES_SERVICE_HOST").is_ok();
+        let default_host = if is_container { "0.0.0.0" } else { "127.0.0.1" };
+
         let (host, port) = if let Some(colon) = host_port_str.rfind(':') {
             let h = &host_port_str[..colon];
             let p: i64 = host_port_str[colon + 1..].parse().unwrap_or(3000);
-            (if h.is_empty() { "127.0.0.1" } else { h }.to_string(), p)
+            (if h.is_empty() { default_host } else { h }.to_string(), p)
         } else {
-            ("127.0.0.1".to_string(), 3000i64)
+            (default_host.to_string(), 3000i64)
         };
 
         // Allocate server struct matching LLVM's %Server = type { i64, ptr }
