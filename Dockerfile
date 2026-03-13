@@ -37,7 +37,7 @@ RUN DOO_TAG=${DOO_VERSION:-$(curl -fsSL https://api.github.com/repos/nynrathod/d
 	&& rm -rf /tmp/doo.zip /tmp/doo-linux-*
 
 # Environment
-ENV DOO_STD_PATH=/usr/local/share/doo/std
+ENV DOO_STDLIB_PATH=/usr/local/share/doo/std
 ENV DOO_PACKAGES_PATH=/usr/local/share/doo/packages
 
 # Verify installation
