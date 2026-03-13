@@ -25,16 +25,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN DOO_TAG=${DOO_VERSION:-$(curl -fsSL https://api.github.com/repos/nynrathod/doolang/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')} \
 	&& DOO_VER=${DOO_TAG#v} \
 	&& echo "Installing doo ${DOO_TAG}..." \
-	&& curl -fsSL "https://github.com/nynrathod/doolang/releases/download/${DOO_TAG}/doo-linux-${DOO_VER}.tar.gz" -o /tmp/doo.tar.gz \
-	&& tar -xzf /tmp/doo.tar.gz -C /tmp \
+	&& curl -fsSL "https://github.com/nynrathod/doolang/releases/download/${DOO_TAG}/doo-linux-${DOO_VER}.zip" -o /tmp/doo.zip \
+	&& unzip -q /tmp/doo.zip -d /tmp \
 	&& EXTRACT_DIR=$(find /tmp/doo-linux-* -maxdepth 0 -type d | head -1) \
 	&& cp "$EXTRACT_DIR/doo" /usr/local/bin/doo \
 	&& chmod +x /usr/local/bin/doo \
 	&& mkdir -p /usr/local/lib /usr/local/share/doo \
-	&& cp "$EXTRACT_DIR"/lib/*.a /usr/local/lib/ 2>/dev/null || true \
-	&& cp -r "$EXTRACT_DIR/std" /usr/local/share/doo/std 2>/dev/null || true \
-	&& cp -r "$EXTRACT_DIR/packages" /usr/local/share/doo/packages 2>/dev/null || true \
-	&& rm -rf /tmp/doo.tar.gz /tmp/doo-linux-*
+	&& (cp "$EXTRACT_DIR"/lib/*.a /usr/local/lib/ 2>/dev/null || true) \
+	&& (cp -r "$EXTRACT_DIR/std" /usr/local/share/doo/std 2>/dev/null || true) \
+	&& (cp -r "$EXTRACT_DIR/packages" /usr/local/share/doo/packages 2>/dev/null || true) \
+	&& rm -rf /tmp/doo.zip /tmp/doo-linux-*
 
 # Environment
 ENV DOO_STD_PATH=/usr/local/share/doo/std
