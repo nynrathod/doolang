@@ -238,7 +238,36 @@ pub fn run_command_with_compiler(
     let mut used_cache = false;
 
     // If nothing changed and a cached executable exists, skip compilation
-    if !cache.has_changes() && cached_exe_path.exists() && !doo_files.is_empty() {
+    // Also check if any FFI static libraries (.lib/.a) are newer than the cached exe
+    // — since FFI libs are statically linked, a rebuilt FFI lib requires re-linking.
+    let ffi_libs_stale = cached_exe_path.exists()
+        && cached_exe_path
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .map(|exe_mtime| {
+                // Check all .lib/.a files in the target directory
+                fs::read_dir(&target_dir)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .any(|entry| {
+                        let p = entry.path();
+                        let is_lib = p
+                            .extension()
+                            .map(|e| e == "lib" || e == "a")
+                            .unwrap_or(false);
+                        is_lib
+                            && p.metadata()
+                                .and_then(|m| m.modified())
+                                .map(|lib_mtime| lib_mtime > exe_mtime)
+                                .unwrap_or(false)
+                    })
+            })
+            .unwrap_or(false);
+
+    if !cache.has_changes() && !ffi_libs_stale && cached_exe_path.exists() && !doo_files.is_empty()
+    {
         let t = std::time::Instant::now();
         if let Ok(()) = fs::copy(&cached_exe_path, &exe_full_path).map(|_| ()) {
             let elapsed = t.elapsed().as_millis();
@@ -758,6 +787,12 @@ fn discover_doo_sources(root: &Path) -> Vec<PathBuf> {
                     || name == "target-linux"
                     || name == "node_modules"
                 {
+                    continue;
+                }
+                // Skip subdirectories that are separate project roots (contain
+                // their own main.doo).  This prevents dynamically generated
+                // project files from invalidating the parent project's cache.
+                if dir.as_path() != root && path.join("main.doo").exists() {
                     continue;
                 }
                 queue.push_back(path);

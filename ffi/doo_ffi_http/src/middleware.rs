@@ -338,15 +338,14 @@ fn ensure_user_in_db(email: &str, data_json: Option<&str>) -> Option<i64> {
         .unwrap_or_default();
 
     // Discover which columns actually exist in the table at runtime
-    // This is truly generic — works for ANY table schema
-    let schema_sql = format!(
-        "SELECT column_name, column_default, is_nullable \
+    // Filter by current_schema() to avoid cross-schema column pollution
+    // (Cloud SQL and managed PostgreSQL can have additional schemas)
+    let schema_sql = "SELECT column_name, column_default, is_nullable \
          FROM information_schema.columns \
-         WHERE table_name = $1 \
-         ORDER BY ordinal_position"
-    );
+         WHERE table_name = $1 AND table_schema = current_schema() \
+         ORDER BY ordinal_position";
     let schema_json =
-        crate::db_bridge::execute_db_query_with_string_param(&schema_sql, &table_name).ok()?;
+        crate::db_bridge::execute_db_query_with_string_param(schema_sql, &table_name).ok()?;
 
     let column_rows: Vec<serde_json::Value> = serde_json::from_str(&schema_json).ok()?;
     if column_rows.is_empty() {
