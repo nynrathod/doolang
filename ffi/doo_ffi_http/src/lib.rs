@@ -114,7 +114,10 @@ pub extern "C" fn doo_http_server_new(host_port: *const c_char) -> *mut c_void {
         //   Container/production → 0.0.0.0 (required for Cloud Run, Docker, etc.)
         //   Local development    → 127.0.0.1 (safe default, no network exposure)
         let is_container = std::path::Path::new("/.dockerenv").exists()
-            || std::env::var("DEPLOY_MODE").is_ok()
+            || std::env::var("DEPLOY_MODE")
+                .ok()
+                .map(|v| v != "local" && v != "dev" && v != "development")
+                .unwrap_or(false)
             || std::env::var("KUBERNETES_SERVICE_HOST").is_ok();
         let default_host = if is_container { "0.0.0.0" } else { "127.0.0.1" };
 

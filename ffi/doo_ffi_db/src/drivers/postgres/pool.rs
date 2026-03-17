@@ -78,13 +78,19 @@ pub async fn init_pool(connection_string: &str) -> Result<(), Box<dyn std::error
 
     let pool = config.create_pool(Some(Runtime::Tokio1), NoTls)?;
 
-    // Test connection with timeout
-    let _client = tokio::time::timeout(Duration::from_secs(10), pool.get())
+    // Test connection with timeout and set timezone to UTC
+    let test_client = tokio::time::timeout(Duration::from_secs(10), pool.get())
         .await
         .map_err(|_| "Connection test timed out (10s)")?
         .map_err(|e| format!("Connection test failed: {}", e))?;
 
-    ffi_debug!("DB", "Connection test passed, pool ready");
+    // Ensure UTC timezone for consistent timestamp handling
+    test_client
+        .simple_query("SET timezone = 'UTC'")
+        .await
+        .map_err(|e| format!("Failed to set timezone: {}", e))?;
+
+    ffi_debug!("DB", "Connection test passed, pool ready (timezone=UTC)");
 
     POOL.set(pool).map_err(|_| "Pool already initialized")?;
 
@@ -97,6 +103,7 @@ pub fn is_pool_initialized() -> bool {
 }
 
 /// Get a client from the pool.
+/// Sets timezone to UTC on each checkout to ensure consistent timestamp handling.
 pub async fn get_client(
 ) -> Result<deadpool_postgres::Client, Box<dyn std::error::Error + Send + Sync>> {
     let pool = POOL
@@ -110,5 +117,8 @@ pub async fn get_client(
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
             format!("Failed to get connection from pool: {}", e).into()
         })?;
+    // Ensure UTC timezone — prevents TIMESTAMP columns from using server's local timezone.
+    // This is idempotent (no-op if already UTC) and cheap (~0.1ms per SET).
+    let _ = client.simple_query("SET timezone = 'UTC'").await;
     Ok(client)
 }

@@ -36,12 +36,27 @@ static AUTH_USER_ID_COUNTER: std::sync::atomic::AtomicI64 = std::sync::atomic::A
 /// Store which auth table has been created in the database
 static AUTH_DB_TABLE: std::sync::OnceLock<StdMutex<Option<String>>> = std::sync::OnceLock::new();
 
+/// Store the auth struct name (e.g., "User") for metadata-based operations
+static AUTH_STRUCT_NAME: std::sync::OnceLock<StdMutex<Option<String>>> = std::sync::OnceLock::new();
+
 fn get_auth_users() -> &'static StdMutex<HashMap<String, AuthUser>> {
     AUTH_USERS.get_or_init(|| StdMutex::new(HashMap::new()))
 }
 
 fn get_auth_db_table() -> &'static StdMutex<Option<String>> {
     AUTH_DB_TABLE.get_or_init(|| StdMutex::new(None))
+}
+
+fn get_auth_struct_name_lock() -> &'static StdMutex<Option<String>> {
+    AUTH_STRUCT_NAME.get_or_init(|| StdMutex::new(None))
+}
+
+/// Get the auth struct name (e.g., "User") for metadata-based operations
+pub(crate) fn get_auth_struct_name() -> Option<String> {
+    let lock = get_auth_struct_name_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    lock.clone()
 }
 
 /// Check if auth is using the database
@@ -749,6 +764,14 @@ pub extern "C" fn doo_http_auth(
 
         // Table name for users (lowercase plural)
         let table_name = "users";
+
+        // Store the auth struct name for metadata-based operations (e.g., ensure_user_in_db)
+        {
+            let mut auth_struct = get_auth_struct_name_lock()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            *auth_struct = Some(struct_name.clone());
+        }
 
         // Try to create users table in database if connected
         if is_pool_initialized() {
