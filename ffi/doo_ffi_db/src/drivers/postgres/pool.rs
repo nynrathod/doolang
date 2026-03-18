@@ -2,9 +2,17 @@
 //!
 //! Uses `deadpool-postgres` for production-grade connection pooling.
 //! Configuration via environment variables.
+//!
+//! TLS behavior driven by `sslmode` in DATABASE_URL (standard PostgreSQL parameter):
+//!   - `disable`     → no TLS (local dev)
+//!   - `require`     → TLS encryption, skip CA verification (default — works with any cloud)
+//!   - `verify-full` → TLS + verify server CA against Mozilla root CAs
+//!
+//! Defaults to `require` when sslmode is absent — encrypted but no CA check.
+//! This works with Cloud SQL, AWS RDS, Azure, Supabase, Neon, self-hosted, etc.
 
 use std::str::FromStr;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime, Timeouts};
@@ -13,12 +21,101 @@ use doo_ffi_core::ffi_debug;
 
 static POOL: OnceLock<Pool> = OnceLock::new();
 
+/// Extract sslmode from a connection string.
+/// Checks both parsed tokio-postgres config and raw query string.
+fn parse_sslmode(connection_string: &str) -> String {
+    // tokio-postgres parses sslmode from the connection string and exposes it
+    // via get_ssl_mode(), but the enum doesn't cover all pg modes.
+    // Parse from the raw URL query params for accuracy.
+    if let Some(query_start) = connection_string.find('?') {
+        let query = &connection_string[query_start + 1..];
+        for param in query.split('&') {
+            if let Some((key, value)) = param.split_once('=') {
+                if key.eq_ignore_ascii_case("sslmode") {
+                    return value.to_lowercase();
+                }
+            }
+        }
+    }
+    // Default: require (encrypted, no CA verification) — works with any cloud platform
+    "require".to_string()
+}
+
+/// A TLS certificate verifier that accepts any server certificate.
+/// Equivalent to PostgreSQL `sslmode=require` — encrypts traffic without CA verification.
+/// This is the standard mode for cloud-managed databases (Cloud SQL, RDS, Azure, etc.)
+/// which use private/internal CAs not in public trust stores.
+#[derive(Debug)]
+struct NoVerifier;
+
+impl rustls::client::danger::ServerCertVerifier for NoVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+/// Build a rustls ClientConfig based on sslmode.
+fn build_tls_config(sslmode: &str) -> rustls::ClientConfig {
+    match sslmode {
+        "verify-full" | "verify-ca" => {
+            // Full CA verification using Mozilla's trusted root certificates
+            let mut root_store = rustls::RootCertStore::empty();
+            root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            rustls::ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth()
+        }
+        _ => {
+            // require / prefer — encrypt but skip CA verification
+            // Works with ANY cloud platform's private CA (Cloud SQL, RDS, Azure, etc.)
+            rustls::ClientConfig::builder()
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(NoVerifier))
+                .with_no_client_auth()
+        }
+    }
+}
+
 /// Initialize the connection pool with production-grade configuration.
 ///
 /// Pool sizing: min(cpu_count * 2, 32), overridable via DATABASE_POOL_SIZE env.
 /// Timeouts: 5s wait, 5s create, 5s recycle — prevents infinite hangs.
 /// Recycling: Fast mode — checks connection liveness on checkout.
 pub async fn init_pool(connection_string: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let sslmode = parse_sslmode(connection_string);
+    ffi_debug!("DB", "sslmode={}", sslmode);
+
     let pg_config = tokio_postgres::Config::from_str(connection_string)?;
 
     let mut config = Config::new();
@@ -77,19 +174,24 @@ pub async fn init_pool(connection_string: &str) -> Result<(), Box<dyn std::error
         recycling_method: RecyclingMethod::Fast,
     });
 
-    // Build TLS connector for Cloud SQL (requires encrypted connections)
-    // Uses system/webpki root CAs to verify Cloud SQL server certificate
-    let mut root_store = rustls::RootCertStore::empty();
-    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let rustls_config = rustls::ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-    let tls = tokio_postgres_rustls::MakeRustlsConnect::new(rustls_config);
+    if sslmode == "disable" {
+        // No TLS — local development only
+        ffi_debug!("DB", "TLS disabled (sslmode=disable)");
+        let pool = config.create_pool(Some(Runtime::Tokio1), tokio_postgres::NoTls)?;
+        return test_and_store_pool(pool).await;
+    }
 
-    ffi_debug!("DB", "TLS connector configured (rustls + webpki roots)");
+    // TLS mode (require, verify-full, etc.)
+    let rustls_config = build_tls_config(&sslmode);
+    let tls = tokio_postgres_rustls::MakeRustlsConnect::new(rustls_config);
+    ffi_debug!("DB", "TLS connector configured (sslmode={})", sslmode);
 
     let pool = config.create_pool(Some(Runtime::Tokio1), tls)?;
+    test_and_store_pool(pool).await
+}
 
+/// Test the pool connection and store it in the global static.
+async fn test_and_store_pool(pool: Pool) -> Result<(), Box<dyn std::error::Error>> {
     // Test connection with timeout and set timezone to UTC
     let test_client = tokio::time::timeout(Duration::from_secs(10), pool.get())
         .await
