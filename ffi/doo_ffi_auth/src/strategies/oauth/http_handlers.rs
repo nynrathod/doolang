@@ -673,9 +673,8 @@ fn extract_provider_from_callback_path(path: &str) -> Option<String> {
 /// On Windows: `K32EnumProcessModules` iterates every loaded DLL + exe.
 fn resolve_symbol_in_process<T: Copy>(symbol_name: &[u8]) -> Option<T> {
     // Strip trailing null byte for bridge lookup (bridge uses &str, not C strings)
-    let name_str = std::str::from_utf8(
-        &symbol_name[..symbol_name.len().saturating_sub(1)]
-    ).unwrap_or("");
+    let name_str =
+        std::str::from_utf8(&symbol_name[..symbol_name.len().saturating_sub(1)]).unwrap_or("");
 
     // First: check the FFI bridge registry (works for static linking on all platforms)
     if let Some(ptr) = doo_ffi_core::ffi_bridge::resolve(name_str) {

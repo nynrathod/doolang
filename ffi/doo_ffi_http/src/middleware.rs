@@ -373,7 +373,7 @@ fn lookup_user_id_by_email(email: &str) -> Option<i64> {
     let result_json = crate::db_bridge::execute_db_query_with_string_param(&sql, email).ok()?;
 
     let result: serde_json::Value = serde_json::from_str(&result_json).ok()?;
-    result.as_array()?.first()?.get("id")?.as_i64()
+    result.as_array()?.first().and_then(|row| crate::metadata::json_get_id(row))
 }
 
 /// Auto-create a user in the DB from JWT data claim (for OAuth users).
@@ -505,7 +505,7 @@ fn ensure_user_in_db(email: &str, data_json: Option<&str>) -> Option<i64> {
         crate::db_bridge::execute_db_query_with_string_param(&select_sql, email).ok()?;
 
     let result: serde_json::Value = serde_json::from_str(&select_json).ok()?;
-    result.as_array()?.first()?.get("id")?.as_i64()
+    result.as_array()?.first().and_then(|row| crate::metadata::json_get_id(row))
 }
 
 /// CORS middleware handler
