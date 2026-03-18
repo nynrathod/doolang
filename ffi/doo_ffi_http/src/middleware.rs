@@ -392,12 +392,13 @@ fn ensure_user_in_db(email: &str, data_json: Option<&str>) -> Option<i64> {
         .and_then(|d| serde_json::from_str(d).ok())
         .unwrap_or_default();
 
-    // Discover which columns actually exist in the table at runtime
-    // Filter by current_schema() to avoid cross-schema column pollution
-    // (Cloud SQL and managed PostgreSQL can have additional schemas)
+    // Discover which columns actually exist in the table at runtime.
+    // Exclude system schemas only — supports tables in public, user, or custom schemas
+    // (Cloud SQL with dedicated users may have current_schema() differ from 'public')
     let schema_sql = "SELECT column_name, column_default, is_nullable \
          FROM information_schema.columns \
-         WHERE table_name = $1 AND table_schema = current_schema() \
+         WHERE table_name = $1 \
+           AND table_schema NOT IN ('pg_catalog', 'information_schema') \
          ORDER BY ordinal_position";
     let schema_json =
         crate::db_bridge::execute_db_query_with_string_param(schema_sql, &table_name).ok()?;
@@ -413,6 +414,8 @@ fn ensure_user_in_db(email: &str, data_json: Option<&str>) -> Option<i64> {
     let mut values: Vec<serde_json::Value> = Vec::new();
     let mut email_col = String::new();
     let mut idx = 1usize;
+    // Track seen column names to deduplicate (table may appear in multiple schemas)
+    let mut seen_cols = std::collections::HashSet::new();
 
     for col_row in &column_rows {
         // DB FFI returns PascalCase keys: column_name→ColumnName, column_default→ColumnDefault, is_nullable→IsNullable
@@ -424,6 +427,10 @@ fn ensure_user_in_db(email: &str, data_json: Option<&str>) -> Option<i64> {
             Some(n) => n,
             None => continue, // skip unparseable rows
         };
+        // Skip duplicate column names (can happen if table exists in multiple schemas)
+        if !seen_cols.insert(col_name.to_lowercase()) {
+            continue;
+        }
         let col_default = col_row
             .get("ColumnDefault")
             .or_else(|| col_row.get("column_default"))
