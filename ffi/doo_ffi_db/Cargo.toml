@@ -15,6 +15,9 @@ postgres = [
 	"dep:deadpool",
 	"dep:chrono",
 	"dep:num_cpus",
+	"dep:tokio-postgres-rustls",
+	"dep:rustls",
+	"dep:webpki-roots",
 ]
 
 [dependencies]
@@ -35,6 +38,11 @@ deadpool-postgres = { version = "0.14.1", features = [
 deadpool = { version = "0.12.3", optional = true }
 chrono = { version = "0.4", features = ["serde"], optional = true }
 num_cpus = { version = "1.17.0", optional = true }
+
+# TLS support for PostgreSQL (Cloud SQL requires encrypted connections)
+tokio-postgres-rustls = { version = "0.13", optional = true }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "logging", "std", "tls12"] }
+webpki-roots = { version = "0.26", optional = true }
 
 # High-performance number formatting (zero-alloc)
 itoa = "1"

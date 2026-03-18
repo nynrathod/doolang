@@ -8,7 +8,6 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime, Timeouts};
-use tokio_postgres::NoTls;
 
 use doo_ffi_core::ffi_debug;
 
@@ -78,7 +77,18 @@ pub async fn init_pool(connection_string: &str) -> Result<(), Box<dyn std::error
         recycling_method: RecyclingMethod::Fast,
     });
 
-    let pool = config.create_pool(Some(Runtime::Tokio1), NoTls)?;
+    // Build TLS connector for Cloud SQL (requires encrypted connections)
+    // Uses system/webpki root CAs to verify Cloud SQL server certificate
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let rustls_config = rustls::ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    let tls = tokio_postgres_rustls::MakeRustlsConnect::new(rustls_config);
+
+    ffi_debug!("DB", "TLS connector configured (rustls + webpki roots)");
+
+    let pool = config.create_pool(Some(Runtime::Tokio1), tls)?;
 
     // Test connection with timeout and set timezone to UTC
     let test_client = tokio::time::timeout(Duration::from_secs(10), pool.get())
