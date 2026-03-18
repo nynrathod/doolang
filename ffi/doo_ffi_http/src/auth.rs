@@ -301,7 +301,7 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
                     let rows: Vec<serde_json::Value> =
                         serde_json::from_str(&json).unwrap_or_default();
                     if let Some(user_row) = rows.into_iter().next() {
-                        let user_id = user_row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                        let user_id = crate::metadata::json_get_id(&user_row).unwrap_or(0);
 
                         // Generate JWT token with user_id in claims
                         let token = generate_jwt_token(&email, user_id);
@@ -477,7 +477,7 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
                                 );
 
                                 let user_id =
-                                    user_row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                                    crate::metadata::json_get_id(&user_row).unwrap_or(0);
                                 let token = generate_jwt_token(&email, user_id);
 
                                 // Push httpOnly cookie — centralized

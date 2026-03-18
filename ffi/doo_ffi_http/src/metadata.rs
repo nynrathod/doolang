@@ -138,6 +138,17 @@ pub(crate) fn field_names_match(a: &str, b: &str) -> bool {
     normalize_field_name(a) == normalize_field_name(b)
 }
 
+/// Case-insensitive lookup for an "id" field in a JSON object.
+/// DB FFI may return PascalCase ("Id") or lowercase ("id") — this handles both generically.
+pub(crate) fn json_get_id(obj: &serde_json::Value) -> Option<i64> {
+    obj.as_object()
+        .and_then(|m| {
+            m.iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("id"))
+                .and_then(|(_, v)| v.as_i64())
+        })
+}
+
 /// Check if a field should be included in response output.
 /// Fields with @writeOnly or @internal decorators are EXCLUDED from responses.
 pub(crate) fn should_include_in_response(struct_name: &str, field_name: &str) -> bool {
