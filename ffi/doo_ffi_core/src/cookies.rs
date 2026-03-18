@@ -18,6 +18,7 @@
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 
 // ============================================================================
 // RUNTIME COOKIE SECURITY OVERRIDE
@@ -36,6 +37,34 @@ static INSECURE_COOKIES_SET: AtomicBool = AtomicBool::new(false);
 pub fn set_insecure_cookies(insecure: bool) {
     INSECURE_COOKIES.store(insecure, Ordering::Relaxed);
     INSECURE_COOKIES_SET.store(true, Ordering::Relaxed);
+}
+
+// ============================================================================
+// RUNTIME COOKIE DOMAIN — Cross-subdomain cookie sharing
+// ============================================================================
+
+/// Cookie domain derived from CORS origins at startup.
+/// When set, cookies include `Domain=.parent.tld` so they're shared across subdomains.
+/// Example: CORS origin `https://app.example.com` → cookie domain `.example.com`
+///
+/// This enables the standard cross-subdomain architecture where the API and frontend
+/// live on different subdomains (e.g., `api.example.com` + `app.example.com`).
+static COOKIE_DOMAIN: OnceLock<Option<String>> = OnceLock::new();
+
+/// Called by doo_ffi_http during CORS freeze to set the cookie domain.
+/// Extracts the parent domain from CORS origins for cross-subdomain cookie sharing.
+///
+/// Only sets the domain when:
+/// - CORS credentials are enabled (cookies are being shared cross-origin)
+/// - CORS origin is a specific domain (not "*")
+/// - Origin has a subdomain (e.g., `app.example.com`, not `example.com`)
+pub fn set_cookie_domain(domain: Option<String>) {
+    let _ = COOKIE_DOMAIN.set(domain);
+}
+
+/// Get the configured cookie domain (if any).
+pub fn get_cookie_domain() -> Option<&'static str> {
+    COOKIE_DOMAIN.get().and_then(|opt| opt.as_deref())
 }
 
 // ============================================================================
@@ -301,6 +330,10 @@ fn get_refresh_path() -> String {
 /// **This is the ONE function all auth code calls** — OAuth callback, refresh
 /// endpoint, `Auth.login()`, `Auth.refresh()`. No caller builds cookies manually.
 ///
+/// Automatically applies the cookie domain (if configured via CORS) for
+/// cross-subdomain cookie sharing. This enables architectures where the API
+/// and frontend live on different subdomains (e.g., `api.x.com` + `app.x.com`).
+///
 /// - access_token: The access JWT
 /// - refresh_token: Optional refresh JWT (None = only set access cookie)
 /// - access_expiry_secs: Access token lifetime in seconds
@@ -311,17 +344,19 @@ pub fn push_auth_cookies(
     access_expiry_secs: i64,
     refresh_expiry_secs: i64,
 ) {
-    set_response_cookie(ResponseCookie::access_token(
-        access_token,
-        access_expiry_secs,
-    ));
+    let mut access = ResponseCookie::access_token(access_token, access_expiry_secs);
+    if let Some(domain) = get_cookie_domain() {
+        access = access.with_domain(domain);
+    }
+    set_response_cookie(access);
 
     if let Some(refresh) = refresh_token {
-        set_response_cookie(ResponseCookie::refresh_token(
-            refresh,
-            refresh_expiry_secs,
-            &get_refresh_path(),
-        ));
+        let mut refresh_cookie =
+            ResponseCookie::refresh_token(refresh, refresh_expiry_secs, &get_refresh_path());
+        if let Some(domain) = get_cookie_domain() {
+            refresh_cookie = refresh_cookie.with_domain(domain);
+        }
+        set_response_cookie(refresh_cookie);
     }
 }
 
@@ -329,12 +364,20 @@ pub fn push_auth_cookies(
 ///
 /// Sets Max-Age=0 on both access and refresh cookies, causing the browser
 /// to delete them. **This is the ONE logout cookie function.**
+/// Applies the same cookie domain as push_auth_cookies so the browser
+/// correctly matches and deletes the cookies.
 pub fn push_clear_cookies() {
-    set_response_cookie(ResponseCookie::clear(COOKIE_ACCESS_TOKEN, "/"));
-    set_response_cookie(ResponseCookie::clear(
-        COOKIE_REFRESH_TOKEN,
-        &get_refresh_path(),
-    ));
+    let mut access = ResponseCookie::clear(COOKIE_ACCESS_TOKEN, "/");
+    if let Some(domain) = get_cookie_domain() {
+        access = access.with_domain(domain);
+    }
+    set_response_cookie(access);
+
+    let mut refresh = ResponseCookie::clear(COOKIE_REFRESH_TOKEN, &get_refresh_path());
+    if let Some(domain) = get_cookie_domain() {
+        refresh = refresh.with_domain(domain);
+    }
+    set_response_cookie(refresh);
 }
 
 #[cfg(test)]

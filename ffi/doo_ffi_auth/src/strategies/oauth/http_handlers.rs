@@ -819,8 +819,12 @@ pub fn push_cookies_via_http_bridge(
 ) {
     if let Some(push_fn) = get_push_cookie_fn() {
         // Build cookie header strings using doo_ffi_core cookie builders
-        let access_cookie =
+        let mut access_cookie =
             doo_ffi_core::cookies::ResponseCookie::access_token(access_token, access_expiry_secs);
+        // Apply cookie domain for cross-subdomain sharing (auto-detected from CORS)
+        if let Some(domain) = doo_ffi_core::cookies::get_cookie_domain() {
+            access_cookie = access_cookie.with_domain(domain);
+        }
         let access_header = access_cookie.to_header_value();
         let access_c = string_to_c(&access_header);
         push_fn(access_c);
@@ -830,11 +834,14 @@ pub fn push_cookies_via_http_bridge(
             let refresh_path = std::env::var("AUTH_BASE_PATH")
                 .unwrap_or_else(|_| "/auth".to_string())
                 + "/refresh";
-            let refresh_cookie = doo_ffi_core::cookies::ResponseCookie::refresh_token(
+            let mut refresh_cookie = doo_ffi_core::cookies::ResponseCookie::refresh_token(
                 refresh,
                 refresh_expiry_secs,
                 &refresh_path,
             );
+            if let Some(domain) = doo_ffi_core::cookies::get_cookie_domain() {
+                refresh_cookie = refresh_cookie.with_domain(domain);
+            }
             let refresh_header = refresh_cookie.to_header_value();
             let refresh_c = string_to_c(&refresh_header);
             push_fn(refresh_c);
