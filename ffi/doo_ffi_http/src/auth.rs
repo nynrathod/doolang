@@ -476,8 +476,7 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
                                     email
                                 );
 
-                                let user_id =
-                                    crate::metadata::json_get_id(&user_row).unwrap_or(0);
+                                let user_id = crate::metadata::json_get_id(&user_row).unwrap_or(0);
                                 let token = generate_jwt_token(&email, user_id);
 
                                 // Push httpOnly cookie — centralized

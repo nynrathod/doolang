@@ -370,9 +370,21 @@ fn lookup_user_id_by_email(email: &str) -> Option<i64> {
     let table_name = crate::auth::get_auth_table_name().unwrap_or_else(|| "users".to_string());
 
     let sql = format!("SELECT id FROM {} WHERE email = $1 LIMIT 1", table_name);
-    let result_json = crate::db_bridge::execute_db_query_with_string_param(&sql, email).ok()?;
+    let result_json = match crate::db_bridge::execute_db_query_with_string_param(&sql, email) {
+        Ok(json) => json,
+        Err(e) => {
+            eprintln!("[Doo] JWT middleware: lookup_user_id_by_email query failed: {}", e);
+            return None;
+        }
+    };
 
-    let result: serde_json::Value = serde_json::from_str(&result_json).ok()?;
+    let result: serde_json::Value = match serde_json::from_str(&result_json) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[Doo] JWT middleware: lookup_user_id_by_email JSON parse failed: {}", e);
+            return None;
+        }
+    };
     result.as_array()?.first().and_then(|row| crate::metadata::json_get_id(row))
 }
 
@@ -393,41 +405,101 @@ fn ensure_user_in_db(email: &str, data_json: Option<&str>) -> Option<i64> {
         .unwrap_or_default();
 
     // Discover which columns actually exist in the table at runtime.
-    // Exclude system schemas only — supports tables in public, user, or custom schemas
-    // (Cloud SQL with dedicated users may have current_schema() differ from 'public')
-    let schema_sql = "SELECT column_name, column_default, is_nullable \
+    // CRITICAL: Cast columns to ::text to avoid PostgreSQL domain type mismatch —
+    // information_schema uses sql_identifier/character_data domain types that cause
+    // tokio-postgres prepare_cached to reject String params on some PG versions (incl. PG 18).
+    // Casting to text forces standard text comparison and avoids the domain type issue.
+    let schema_sql = "SELECT column_name::text as column_name, \
+         column_default::text as column_default, \
+         is_nullable::text as is_nullable \
          FROM information_schema.columns \
-         WHERE table_name = $1 \
-           AND table_schema NOT IN ('pg_catalog', 'information_schema') \
+         WHERE table_name::text = $1 \
+           AND table_schema::text = current_schema()::text \
          ORDER BY ordinal_position";
-    let schema_json =
-        crate::db_bridge::execute_db_query_with_string_param(schema_sql, &table_name).ok()?;
+    let schema_result =
+        crate::db_bridge::execute_db_query_with_string_param(schema_sql, &table_name);
 
-    let column_rows: Vec<serde_json::Value> = serde_json::from_str(&schema_json).ok()?;
-    if column_rows.is_empty() {
-        return None;
+    let column_rows: Vec<serde_json::Value> = match &schema_result {
+        Ok(json) => serde_json::from_str(json).unwrap_or_default(),
+        Err(e) => {
+            eprintln!("[Doo] JWT middleware: ensure_user_in_db schema discovery failed: {}", e);
+            Vec::new()
+        }
+    };
+
+    // Try dynamic INSERT if schema discovery succeeded
+    if !column_rows.is_empty() {
+        if let Some(id) = ensure_user_insert_from_columns(email, &table_name, &data_map, &column_rows) {
+            return Some(id);
+        }
+        eprintln!("[Doo] JWT middleware: dynamic INSERT failed, trying metadata fallback");
     }
 
-    // Build dynamic column list and values by matching table columns to JWT data
+    // Fallback: Build INSERT from registered auth struct metadata (generic, no hardcoded columns).
+    // The metadata was registered by app.auth() → codegen → doo_ffi_http::register_struct_metadata().
+    if let Some(struct_name) = crate::auth::get_auth_struct_name() {
+        if let Some(metadata) = crate::metadata::get_struct_metadata(&struct_name) {
+            let meta_columns = metadata_to_column_info(&metadata);
+            if !meta_columns.is_empty() {
+                if let Some(id) = ensure_user_insert_from_columns(email, &table_name, &data_map, &meta_columns) {
+                    return Some(id);
+                }
+                eprintln!("[Doo] JWT middleware: metadata-based INSERT also failed");
+            }
+        }
+    }
+
+    None
+}
+
+/// Convert struct metadata fields to column info JSON matching information_schema format.
+/// This is the generic fallback when information_schema queries fail.
+fn metadata_to_column_info(metadata: &crate::metadata::StructMetadata) -> Vec<serde_json::Value> {
+    metadata.fields.iter().map(|field| {
+        let col_name = crate::db_bridge::to_snake_case(&field.name);
+        let is_auto = field.decorators.iter().any(|d| d == "auto" || d == "@auto" || d == "primary" || d == "@primary");
+        let has_hash = field.decorators.iter().any(|d| d == "hash" || d == "@hash");
+
+        let col_default = if is_auto {
+            Some(serde_json::json!("nextval"))
+        } else if has_hash {
+            // @hash fields (like password) should get empty default for OAuth users
+            Some(serde_json::json!(""))
+        } else {
+            None
+        };
+
+        serde_json::json!({
+            "ColumnName": col_name,
+            "ColumnDefault": col_default,
+            "IsNullable": "NO"
+        })
+    }).collect()
+}
+
+/// Generic INSERT from column info (works with both information_schema rows and metadata).
+fn ensure_user_insert_from_columns(
+    email: &str,
+    table_name: &str,
+    data_map: &HashMap<String, serde_json::Value>,
+    column_rows: &[serde_json::Value],
+) -> Option<i64> {
     let mut insert_columns = Vec::new();
     let mut placeholders = Vec::new();
     let mut values: Vec<serde_json::Value> = Vec::new();
     let mut email_col = String::new();
     let mut idx = 1usize;
-    // Track seen column names to deduplicate (table may appear in multiple schemas)
     let mut seen_cols = std::collections::HashSet::new();
 
-    for col_row in &column_rows {
-        // DB FFI returns PascalCase keys: column_name→ColumnName, column_default→ColumnDefault, is_nullable→IsNullable
+    for col_row in column_rows {
         let col_name = col_row
             .get("ColumnName")
             .or_else(|| col_row.get("column_name"))
             .and_then(|v| v.as_str());
         let col_name = match col_name {
             Some(n) => n,
-            None => continue, // skip unparseable rows
+            None => continue,
         };
-        // Skip duplicate column names (can happen if table exists in multiple schemas)
         if !seen_cols.insert(col_name.to_lowercase()) {
             continue;
         }
@@ -453,7 +525,6 @@ fn ensure_user_in_db(email: &str, data_json: Option<&str>) -> Option<i64> {
             email_col = col_name.to_string();
             Some(email.to_string())
         } else {
-            // Search JWT data keys for a match (case-insensitive field name matching)
             data_map
                 .iter()
                 .find(|(k, _)| crate::metadata::field_names_match(k, col_name))
@@ -473,7 +544,6 @@ fn ensure_user_in_db(email: &str, data_json: Option<&str>) -> Option<i64> {
                 idx += 1;
             }
             None => {
-                // Column has no matching data — skip if nullable or has default
                 if is_nullable || col_default.is_some() {
                     // Skip — DB will use default/null
                 } else {
@@ -491,25 +561,39 @@ fn ensure_user_in_db(email: &str, data_json: Option<&str>) -> Option<i64> {
         return None;
     }
 
-    // Build INSERT ... ON CONFLICT DO NOTHING
-    let insert_sql = format!(
+    // INSERT with ON CONFLICT for idempotency
+    let upsert_sql = format!(
         "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO NOTHING",
         table_name,
         insert_columns.join(", "),
         placeholders.join(", "),
         email_col,
     );
+    if let Err(e) = crate::db_bridge::execute_db_insert(&upsert_sql, &values) {
+        eprintln!("[Doo] JWT middleware: upsert failed: {}, trying plain INSERT", e);
+        let fallback_sql = format!(
+            "INSERT INTO {} ({}) VALUES ({})",
+            table_name,
+            insert_columns.join(", "),
+            placeholders.join(", "),
+        );
+        if let Err(e2) = crate::db_bridge::execute_db_insert(&fallback_sql, &values) {
+            eprintln!("[Doo] JWT middleware: plain INSERT also failed: {}", e2);
+        }
+    }
 
-    // Execute the INSERT via centralized db_bridge
-    let _ = crate::db_bridge::execute_db_insert(&insert_sql, &values);
-
-    // Now look up the user ID (the INSERT may have been a no-op if user already existed)
+    // Look up the user ID
     let select_sql = format!(
         "SELECT id FROM {} WHERE {} = $1 LIMIT 1",
         table_name, email_col
     );
-    let select_json =
-        crate::db_bridge::execute_db_query_with_string_param(&select_sql, email).ok()?;
+    let select_json = match crate::db_bridge::execute_db_query_with_string_param(&select_sql, email) {
+        Ok(json) => json,
+        Err(e) => {
+            eprintln!("[Doo] JWT middleware: SELECT after INSERT failed: {}", e);
+            return None;
+        }
+    };
 
     let result: serde_json::Value = serde_json::from_str(&select_json).ok()?;
     result.as_array()?.first().and_then(|row| crate::metadata::json_get_id(row))
