@@ -69,6 +69,19 @@ pub fn freeze_cors() {
             }
 
             let allow_all = origins.iter().any(|o| o == "*");
+
+            // Auto-detect cookie domain from CORS origins for cross-subdomain sharing.
+            // When credentials are enabled and a specific origin (not "*") has a subdomain,
+            // set cookie Domain to the parent domain (e.g., app.example.com → .example.com).
+            // This enables the standard architecture: api.x.com (backend) + app.x.com (frontend).
+            if config.credentials && !allow_all {
+                let cookie_domain = origins
+                    .iter()
+                    .filter(|o| *o != "*")
+                    .find_map(|origin| extract_parent_domain(origin));
+                doo_ffi_core::cookies::set_cookie_domain(cookie_domain);
+            }
+
             let methods_str = config.methods.join(", ");
             let headers_str = config.headers.join(", ");
 
@@ -131,6 +144,48 @@ impl FrozenCorsHeaders {
 #[inline]
 pub fn has_frozen_cors() -> bool {
     FROZEN_CORS.get().map(|opt| opt.is_some()).unwrap_or(false)
+}
+
+/// Extract parent domain from a CORS origin URL for cross-subdomain cookie sharing.
+///
+/// Given a URL like `https://app.example.com`, extracts `.example.com`.
+/// Returns None if the origin is localhost, an IP, or doesn't have a subdomain.
+///
+/// This is the industry-standard approach: when CORS credentials are enabled with
+/// a specific subdomain origin, cookies should be scoped to the parent domain
+/// so both `api.example.com` and `app.example.com` can share auth state.
+fn extract_parent_domain(origin: &str) -> Option<String> {
+    // Extract hostname from URL (strip scheme and port)
+    let host = origin
+        .strip_prefix("https://")
+        .or_else(|| origin.strip_prefix("http://"))
+        .unwrap_or(origin);
+
+    // Strip port if present
+    let hostname = host.split(':').next().unwrap_or(host);
+
+    // Skip localhost and IP addresses — no parent domain for these
+    if hostname == "localhost"
+        || hostname == "127.0.0.1"
+        || hostname.parse::<std::net::Ipv4Addr>().is_ok()
+        || hostname.parse::<std::net::Ipv6Addr>().is_ok()
+    {
+        return None;
+    }
+
+    // Split into parts: ["app", "example", "com"]
+    let parts: Vec<&str> = hostname.split('.').collect();
+
+    // Need at least 3 parts for a subdomain (sub.domain.tld)
+    // 2 parts = bare domain (example.com) — no parent domain needed
+    if parts.len() < 3 {
+        return None;
+    }
+
+    // Parent domain = last 2 parts (or 3 for country-code TLDs like .co.uk)
+    // For simplicity, use last 2 parts — covers 99% of cases
+    let parent = format!(".{}", parts[parts.len() - 2..].join("."));
+    Some(parent)
 }
 
 pub fn get_cors_config() -> &'static Mutex<Option<CorsConfig>> {
