@@ -40,6 +40,7 @@ pub async fn init_pool(connection_string: &str) -> Result<(), Box<dyn std::error
     if !hosts.is_empty() {
         if let tokio_postgres::config::Host::Tcp(host) = &hosts[0] {
             config.host = Some(host.clone());
+            ffi_debug!("DB", "Parsed host: {}", host);
         }
     }
 
@@ -47,6 +48,7 @@ pub async fn init_pool(connection_string: &str) -> Result<(), Box<dyn std::error
     let ports = pg_config.get_ports();
     if !ports.is_empty() {
         config.port = Some(ports[0]);
+        ffi_debug!("DB", "Parsed port: {}", ports[0]);
     }
 
     // Production pool configuration
@@ -82,7 +84,16 @@ pub async fn init_pool(connection_string: &str) -> Result<(), Box<dyn std::error
     let test_client = tokio::time::timeout(Duration::from_secs(10), pool.get())
         .await
         .map_err(|_| "Connection test timed out (10s)")?
-        .map_err(|e| format!("Connection test failed: {}", e))?;
+        .map_err(|e| {
+            // Walk the full error chain for debugging
+            let mut msg = format!("Connection test failed: {}", e);
+            let mut source = std::error::Error::source(&e);
+            while let Some(cause) = source {
+                msg.push_str(&format!(" | Caused by: {}", cause));
+                source = std::error::Error::source(cause);
+            }
+            msg
+        })?;
 
     // Ensure UTC timezone for consistent timestamp handling
     test_client
