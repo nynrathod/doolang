@@ -262,17 +262,32 @@ const SENSITIVE_ENV_VARS: &[&str] = &[
 /// Returns: Vec<(key, value)> of safe env vars.
 pub fn get_safe_env_vars() -> Vec<(String, String)> {
     std::env::vars()
-        .filter(|(key, _)| {
-            let key_upper = key.to_uppercase();
-            // Filter out sensitive vars
-            !SENSITIVE_ENV_VARS.iter().any(|s| key_upper.contains(s))
-                // Also filter anything ending in _SECRET, _KEY, _TOKEN, _PASSWORD
-                && !key_upper.ends_with("_SECRET")
-                && !key_upper.ends_with("_PASSWORD")
-                && !key_upper.ends_with("_TOKEN")
-                && !key_upper.ends_with("_PRIVATE_KEY")
-        })
+        .filter(|(key, _)| !is_sensitive_key(key))
         .collect()
+}
+
+/// Check if an environment variable key is sensitive (should not be passed to child processes).
+fn is_sensitive_key(key: &str) -> bool {
+    let key_upper = key.to_uppercase();
+    SENSITIVE_ENV_VARS
+        .iter()
+        .any(|s| key_upper.contains(s))
+        || key_upper.ends_with("_SECRET")
+        || key_upper.ends_with("_PASSWORD")
+        || key_upper.ends_with("_TOKEN")
+        || key_upper.ends_with("_PRIVATE_KEY")
+}
+
+/// Remove sensitive environment variables from a Command.
+/// Preferred over env_clear() + selective re-add because it preserves all
+/// platform-specific system variables (PATH, PATHEXT, SystemRoot, COMSPEC, etc.)
+/// that are required for proper command execution on Windows and Linux.
+pub fn remove_sensitive_env_vars(command: &mut tokio::process::Command) {
+    for (key, _) in std::env::vars() {
+        if is_sensitive_key(&key) {
+            command.env_remove(&key);
+        }
+    }
 }
 
 // ============================================================================

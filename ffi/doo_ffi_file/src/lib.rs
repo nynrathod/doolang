@@ -133,6 +133,13 @@ fn get_base_dir() -> PathBuf {
     }
 }
 
+/// Returns true if doo_file_init() was called (explicit sandbox).
+/// When false, sandbox checks are skipped — allows access to any valid path.
+#[inline]
+fn is_sandboxed() -> bool {
+    BASE_DIR.get().is_some()
+}
+
 /// Validate path length
 #[inline]
 fn validate_path_length(path: &str) -> Result<(), String> {
@@ -189,13 +196,16 @@ fn resolve_safe_path(user_path: &str) -> Result<PathBuf, String> {
     let canonical = fs::canonicalize(&resolved)
         .map_err(|e| format!("Path resolution failed for '{}': {}", user_path, e))?;
 
-    let canonical_base = fs::canonicalize(&base).unwrap_or_else(|_| base.clone());
+    // Only enforce sandbox when doo_file_init() was explicitly called
+    if is_sandboxed() {
+        let canonical_base = fs::canonicalize(&base).unwrap_or_else(|_| base.clone());
 
-    if !canonical.starts_with(&canonical_base) {
-        return Err(format!(
-            "Access denied: path '{}' is outside the allowed directory",
-            user_path
-        ));
+        if !canonical.starts_with(&canonical_base) {
+            return Err(format!(
+                "Access denied: path '{}' is outside the allowed directory",
+                user_path
+            ));
+        }
     }
 
     Ok(canonical)
@@ -233,13 +243,16 @@ fn resolve_safe_path_for_create(user_path: &str) -> Result<PathBuf, String> {
         }
     };
 
-    let canonical_base = fs::canonicalize(&base).unwrap_or_else(|_| base.clone());
+    // Only enforce sandbox when doo_file_init() was explicitly called
+    if is_sandboxed() {
+        let canonical_base = fs::canonicalize(&base).unwrap_or_else(|_| base.clone());
 
-    if !canonical_parent.starts_with(&canonical_base) {
-        return Err(format!(
-            "Access denied: path '{}' would be outside the allowed directory",
-            user_path
-        ));
+        if !canonical_parent.starts_with(&canonical_base) {
+            return Err(format!(
+                "Access denied: path '{}' would be outside the allowed directory",
+                user_path
+            ));
+        }
     }
 
     let filename = resolved
@@ -261,24 +274,27 @@ fn resolve_safe_path_for_mkdir(user_path: &str) -> Result<PathBuf, String> {
         base.join(user_path)
     };
 
-    let mut ancestor = resolved.clone();
-    let canonical_ancestor = loop {
-        if ancestor.exists() {
-            break fs::canonicalize(&ancestor)
-                .map_err(|e| format!("Ancestor resolution failed: {}", e))?;
-        }
-        if !ancestor.pop() {
-            return Err("No valid ancestor directory found".to_string());
-        }
-    };
+    // Only enforce sandbox when doo_file_init() was explicitly called
+    if is_sandboxed() {
+        let mut ancestor = resolved.clone();
+        let canonical_ancestor = loop {
+            if ancestor.exists() {
+                break fs::canonicalize(&ancestor)
+                    .map_err(|e| format!("Ancestor resolution failed: {}", e))?;
+            }
+            if !ancestor.pop() {
+                return Err("No valid ancestor directory found".to_string());
+            }
+        };
 
-    let canonical_base = fs::canonicalize(&base).unwrap_or_else(|_| base.clone());
+        let canonical_base = fs::canonicalize(&base).unwrap_or_else(|_| base.clone());
 
-    if !canonical_ancestor.starts_with(&canonical_base) {
-        return Err(format!(
-            "Access denied: path '{}' would be outside the allowed directory",
-            user_path
-        ));
+        if !canonical_ancestor.starts_with(&canonical_base) {
+            return Err(format!(
+                "Access denied: path '{}' would be outside the allowed directory",
+                user_path
+            ));
+        }
     }
 
     Ok(resolved)
