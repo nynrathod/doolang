@@ -79,12 +79,10 @@ fn build_command(cmd: &str, args: &[String]) -> Result<Command, String> {
     };
 
     // 4. Strip sensitive environment variables from child process
-    // Instead of env_clear() (which breaks PATH, HOME, etc.), we selectively
-    // set only safe env vars
-    command.env_clear();
-    for (key, value) in security::get_safe_env_vars() {
-        command.env(&key, &value);
-    }
+    // Uses selective removal instead of env_clear() + re-add to preserve
+    // all platform-specific system variables (PATH, PATHEXT, SystemRoot, etc.)
+    // that are required for proper command execution.
+    security::remove_sensitive_env_vars(&mut command);
 
     Ok(command)
 }
