@@ -50,7 +50,7 @@ fn build_command(cmd: &str, args: &[String]) -> Result<Command, String> {
 
     // 3. Build command (platform-specific)
     let mut command = if cfg!(windows) {
-        // Validate args for Windows shell safety
+        // Validate args
         if args.len() > security::MAX_ARGS_COUNT {
             return Err(format!(
                 "Too many arguments: {} (max {})",
@@ -59,17 +59,64 @@ fn build_command(cmd: &str, args: &[String]) -> Result<Command, String> {
             ));
         }
 
-        let mut full_cmd = cmd.to_string();
-        for arg in args {
-            full_cmd.push(' ');
-            // Sanitize each argument for safe cmd.exe /c usage
-            let safe_arg = security::sanitize_windows_arg(arg)?;
-            full_cmd.push_str(&safe_arg);
-        }
+        // Only route through cmd.exe for Windows shell built-ins.
+        // External commands (curl, git, docker, etc.) are executed directly
+        // to avoid cmd.exe /c double-escaping issues with quoted arguments.
+        let cmd_lower = cmd_basename.to_lowercase();
+        let is_shell_builtin = matches!(
+            cmd_lower.as_str(),
+            "dir"
+                | "type"
+                | "cd"
+                | "echo"
+                | "copy"
+                | "del"
+                | "rd"
+                | "md"
+                | "ren"
+                | "move"
+                | "set"
+                | "cls"
+                | "title"
+                | "color"
+                | "date"
+                | "time"
+                | "vol"
+                | "ver"
+                | "path"
+                | "prompt"
+                | "pushd"
+                | "popd"
+                | "mkdir"
+                | "rmdir"
+                | "mklink"
+                | "assoc"
+                | "ftype"
+                | "start"
+                | "call"
+                | "if"
+                | "for"
+                | "erase"
+        );
 
-        let mut c = Command::new("cmd.exe");
-        c.arg("/c").arg(&full_cmd);
-        c
+        if is_shell_builtin {
+            let mut full_cmd = cmd.to_string();
+            for arg in args {
+                full_cmd.push(' ');
+                let safe_arg = security::sanitize_windows_arg(arg)?;
+                full_cmd.push_str(&safe_arg);
+            }
+            let mut c = Command::new("cmd.exe");
+            c.arg("/c").arg(&full_cmd);
+            c
+        } else {
+            // Direct execution — each arg is a separate argv entry,
+            // no shell quoting, no double-escaping. Safe by default.
+            security::validate_unix_args(args)?;
+            let mut c = Command::new(cmd);
+            c.args(args);
+            c
+        }
     } else {
         // Linux/Mac: direct execution via execvp — no shell, safe by default
         security::validate_unix_args(args)?;
