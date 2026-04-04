@@ -11,7 +11,7 @@
 //!                        ↓
 //!               doo_ffi_auth → init providers
 //!                        ↓
-//!               dlsym(RTLD_DEFAULT) → doo_http_register_package_route
+//!               dlsym(RTLD_DEFAULT) → mdoo_http_register_package_route
 //!                        ↓
 //!               routes registered: GET /auth/google, GET /auth/google/callback, etc.
 //! ```

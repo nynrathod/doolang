@@ -668,6 +668,9 @@ impl<'ctx> CodegenBuilder<'ctx> {
         // Set current function's return type for proper return value conversion
         ctx.current_function_return_type = func.return_type;
 
+        // Track whether current function has error type (returns Result { i64, ptr })
+        ctx.current_function_has_error_type = func.error_type.is_some();
+
         // Set closure flag for special return value handling
         ctx.is_closure_function = func.is_closure;
 
@@ -1131,8 +1134,20 @@ impl<'ctx> CodegenBuilder<'ctx> {
                     ctx.builder.build_unreachable().ok();
                 } else if values.is_empty() {
                     // Non-main function with no return values
-                    // CRITICAL: If function has a return type, return a default value, not void
-                    if let Some(ret_type) = ctx.current_function_return_type {
+                    // CRITICAL: If function has error_type, return a default Result struct
+                    if ctx.current_function_has_error_type {
+                        let result_struct_type = ctx.context.struct_type(
+                            &[
+                                ctx.context.i64_type().into(),
+                                ctx.context
+                                    .ptr_type(inkwell::AddressSpace::default())
+                                    .into(),
+                            ],
+                            false,
+                        );
+                        let default_result = result_struct_type.const_zero();
+                        ctx.builder.build_return(Some(&default_result)).ok();
+                    } else if let Some(ret_type) = ctx.current_function_return_type {
                         let default_val = create_default_return_value(ctx, ret_type);
                         ctx.builder.build_return(Some(&default_val)).ok();
                     } else {
@@ -1178,8 +1193,20 @@ impl<'ctx> CodegenBuilder<'ctx> {
                                 &values[0]
                             );
                         }
-                        // CRITICAL: If function has a return type, return a default value, not void
-                        if let Some(ret_type) = ctx.current_function_return_type {
+                        // CRITICAL: If function has error_type, return a default Result struct
+                        if ctx.current_function_has_error_type {
+                            let result_struct_type = ctx.context.struct_type(
+                                &[
+                                    ctx.context.i64_type().into(),
+                                    ctx.context
+                                        .ptr_type(inkwell::AddressSpace::default())
+                                        .into(),
+                                ],
+                                false,
+                            );
+                            let default_result = result_struct_type.const_zero();
+                            ctx.builder.build_return(Some(&default_result)).ok();
+                        } else if let Some(ret_type) = ctx.current_function_return_type {
                             let default_val = create_default_return_value(ctx, ret_type);
                             ctx.builder.build_return(Some(&default_val)).ok();
                         } else {

@@ -555,6 +555,16 @@ impl<'a> FieldVisibilityChecker<'a> {
             .unwrap_or(false)
     }
 
+    /// Check if an expression is rooted in `self` (possibly through field chains).
+    /// Returns true for `self`, `self.x`, `self.x.y`, etc.
+    fn is_self_rooted(expr: &doo_hir::HirExpr) -> bool {
+        match &expr.kind {
+            HirExprKind::Local { name, .. } => name == "self",
+            HirExprKind::Field { object, .. } => Self::is_self_rooted(object),
+            _ => false,
+        }
+    }
+
     fn check_expr(&mut self, expr: &doo_hir::HirExpr) {
         match &expr.kind {
             HirExprKind::Field { object, field } => {
@@ -574,6 +584,13 @@ impl<'a> FieldVisibilityChecker<'a> {
 
                 // Then check if this is a private field access on an imported struct
                 if Self::is_private_field(field) {
+                    // Allow field access chains rooted in `self` — struct methods
+                    // can access their own encapsulated state at any depth
+                    // e.g. self.field, self.data.sub_field, self.a.b.c
+                    if Self::is_self_rooted(object) {
+                        return;
+                    }
+
                     // Try to get struct name from type_id first
                     let struct_name = if let Some(type_id) = object.type_id {
                         if let Some(info) = self.type_registry.get(type_id) {
@@ -609,7 +626,11 @@ impl<'a> FieldVisibilityChecker<'a> {
                                     if let TypeKind::Struct { fields, .. } = &info.kind {
                                         for (fname, _ftype, is_public) in fields {
                                             if fname == field && !is_public {
-                                                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
+                                                if std::env::var(
+                                                    doo_core::constants::env_vars::DOO_DEBUG,
+                                                )
+                                                .is_ok()
+                                                {
                                                     doo_debug!("VISIBILITY", "ERROR: Private field '{}' accessed on imported struct '{}'", field, struct_name);
                                                 }
                                                 self.errors.push(FieldVisibilityError {

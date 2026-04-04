@@ -1,4 +1,4 @@
-===== BASIC STRUCT =====
+// ===== BASIC STRUCT =====
 struct User {
     age: Int,
     name: Str

@@ -163,6 +163,9 @@ pub struct CodegenContext<'ctx> {
     /// Current function's return type (for proper return value conversion).
     pub current_function_return_type: Option<TypeId>,
 
+    /// Whether the current function has an error type (returns Result { i64, ptr }).
+    pub current_function_has_error_type: bool,
+
     // ========================================================================
     // Borrow Origin Tracking (for mutating operations)
     // ========================================================================
@@ -281,6 +284,7 @@ impl<'ctx> CodegenContext<'ctx> {
             function_return_types: FxHashMap::default(),
             function_error_types: FxHashMap::default(),
             current_function_return_type: None,
+            current_function_has_error_type: false,
             borrow_origins: FxHashMap::default(),
             is_closure_function: false,
             ffi_symbols: FxHashMap::default(),
