@@ -2128,8 +2128,13 @@ impl JsonBuiltins {
             .add_function(ffi_names::DOO_JSON_OBJECT_GET_STR, ft, None)
     }
 
-    fn get_or_declare_object_get_optional_str<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
-        if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_OBJECT_GET_OPTIONAL_STR) {
+    fn get_or_declare_object_get_optional_str<'ctx>(
+        ctx: &mut CodegenContext<'ctx>,
+    ) -> FunctionValue<'ctx> {
+        if let Some(f) = ctx
+            .module
+            .get_function(ffi_names::DOO_JSON_OBJECT_GET_OPTIONAL_STR)
+        {
             return f;
         }
         let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
