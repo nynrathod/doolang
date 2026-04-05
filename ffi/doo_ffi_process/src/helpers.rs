@@ -20,6 +20,53 @@ use std::sync::Arc;
 use tokio::process::Command;
 
 // ============================================================================
+// Windows PATHEXT Resolution — resolves commands like "gcloud" → "gcloud.cmd"
+// ============================================================================
+
+/// On Windows, resolve a command name to its full path by searching PATH
+/// with PATHEXT extensions. This handles commands installed as .cmd/.bat
+/// wrappers (e.g. gcloud, conda, npm) that `CreateProcessW` can't find
+/// directly since it only searches for .exe files.
+///
+/// Returns the resolved full path, or the original command if no match found.
+#[cfg(windows)]
+fn resolve_windows_command_path(cmd: &str) -> String {
+    // If the command already has a file extension, return as-is
+    if std::path::Path::new(cmd).extension().is_some() {
+        return cmd.to_string();
+    }
+
+    // If it's an absolute or relative path, don't search PATH
+    if cmd.contains('\\') || cmd.contains('/') {
+        return cmd.to_string();
+    }
+
+    let pathext = std::env::var("PATHEXT")
+        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    let path_dirs = std::env::var("PATH").unwrap_or_default();
+
+    for dir in path_dirs.split(';') {
+        if dir.is_empty() {
+            continue;
+        }
+        for ext in pathext.split(';') {
+            let candidate = std::path::Path::new(dir).join(format!("{}{}", cmd, ext));
+            if candidate.exists() {
+                return candidate.to_string_lossy().to_string();
+            }
+        }
+    }
+
+    // Fall back to original command name
+    cmd.to_string()
+}
+
+#[cfg(not(windows))]
+fn resolve_windows_command_path(cmd: &str) -> String {
+    cmd.to_string()
+}
+
+// ============================================================================
 // Cross-platform command builder — Single Source of Truth
 // ============================================================================
 
@@ -110,12 +157,33 @@ fn build_command(cmd: &str, args: &[String]) -> Result<Command, String> {
             c.arg("/c").arg(&full_cmd);
             c
         } else {
-            // Direct execution — each arg is a separate argv entry,
-            // no shell quoting, no double-escaping. Safe by default.
-            security::validate_unix_args(args)?;
-            let mut c = Command::new(cmd);
-            c.args(args);
-            c
+            // Resolve the command using PATHEXT to find .cmd/.bat wrappers
+            // (e.g. gcloud → gcloud.cmd, conda → conda.bat)
+            let resolved = resolve_windows_command_path(cmd);
+            let resolved_ext = std::path::Path::new(&resolved)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+
+            if resolved_ext == "cmd" || resolved_ext == "bat" {
+                // .cmd/.bat files must be executed through cmd.exe /c.
+                // Each argument is passed individually via .arg() — Rust's
+                // CommandLine builder handles proper quoting/escaping for
+                // cmd.exe, which prevents shell injection (CVE-2024-24576).
+                security::validate_unix_args(args)?;
+                let mut c = Command::new("cmd.exe");
+                c.arg("/c").arg(&resolved);
+                c.args(args);
+                c
+            } else {
+                // Direct execution — each arg is a separate argv entry,
+                // no shell quoting, no double-escaping. Safe by default.
+                security::validate_unix_args(args)?;
+                let mut c = Command::new(&resolved);
+                c.args(args);
+                c
+            }
         }
     } else {
         // Linux/Mac: direct execution via execvp — no shell, safe by default
