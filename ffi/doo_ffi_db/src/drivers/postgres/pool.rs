@@ -37,6 +37,14 @@ fn parse_sslmode(connection_string: &str) -> String {
             }
         }
     }
+    // Check key-value format (e.g., "host=/path sslmode=disable user=x ...")
+    for part in connection_string.split_whitespace() {
+        if let Some((key, value)) = part.split_once('=') {
+            if key.eq_ignore_ascii_case("sslmode") {
+                return value.to_lowercase();
+            }
+        }
+    }
     // Default: require (encrypted, no CA verification) — works with any cloud platform
     "require".to_string()
 }
@@ -131,12 +139,19 @@ pub async fn init_pool(connection_string: &str) -> Result<(), Box<dyn std::error
         config.dbname = Some(dbname.to_string());
     }
 
-    // Get hosts (take first)
+    // Get hosts (take first) — supports both TCP and Unix socket connections
     let hosts = pg_config.get_hosts();
     if !hosts.is_empty() {
-        if let tokio_postgres::config::Host::Tcp(host) = &hosts[0] {
-            config.host = Some(host.clone());
-            ffi_debug!("DB", "Parsed host: {}", host);
+        match &hosts[0] {
+            tokio_postgres::config::Host::Tcp(host) => {
+                config.host = Some(host.clone());
+                ffi_debug!("DB", "Parsed host: {}", host);
+            }
+            #[cfg(unix)]
+            tokio_postgres::config::Host::Unix(path) => {
+                config.host = Some(path.display().to_string());
+                ffi_debug!("DB", "Parsed Unix socket path: {}", path.display());
+            }
         }
     }
 
