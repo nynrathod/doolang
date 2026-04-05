@@ -251,6 +251,7 @@ pub const DOO_JSON_OBJECT_GET_INT: &str = "doo_json_object_get_int";
 pub const DOO_JSON_OBJECT_GET_FLOAT: &str = "doo_json_object_get_float";
 pub const DOO_JSON_OBJECT_GET_BOOL: &str = "doo_json_object_get_bool";
 pub const DOO_JSON_OBJECT_GET_STR: &str = "doo_json_object_get_str";
+pub const DOO_JSON_OBJECT_GET_OPTIONAL_STR: &str = "doo_json_object_get_optional_str";
 pub const DOO_JSON_OBJECT_GET_JSON: &str = "doo_json_object_get_json";
 pub const DOO_JSON_OBJECT_FREE: &str = "doo_json_object_free";
 

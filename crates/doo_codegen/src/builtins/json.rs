@@ -317,6 +317,7 @@ impl JsonBuiltins {
         let get_float_fn = Self::get_or_declare_object_get_float(ctx);
         let get_bool_fn = Self::get_or_declare_object_get_bool(ctx);
         let get_str_fn = Self::get_or_declare_object_get_str(ctx);
+        let get_optional_str_fn = Self::get_or_declare_object_get_optional_str(ctx);
         let get_json_fn = Self::get_or_declare_object_get_json(ctx);
 
         // Build struct type using get_struct_type for consistency with StructCreate
@@ -524,10 +525,26 @@ impl JsonBuiltins {
                                 .ok()?;
                             ctx.builder.build_store(field_ptr, i8_val).ok()?;
                         }
+                        Some(TypeKind::Str) => {
+                            // Optional(Str): use nullable extraction — returns NULL
+                            // pointer for null/missing JSON values so the serializer
+                            // emits JSON null instead of an empty string.
+                            let val = ctx
+                                .builder
+                                .build_call(
+                                    get_optional_str_fn,
+                                    &[obj_handle.into(), field_name_str.into()],
+                                    "field_opt_str",
+                                )
+                                .ok()?
+                                .try_as_basic_value()
+                                .basic()?;
+                            ctx.builder.build_store(field_ptr, val).ok()?;
+                        }
                         _ => {
-                            // Str, Struct, Array, Map, Enum, etc. — all pointer-based.
-                            // get_str returns "" for null/missing (safe), or fall through
-                            // to generic parse for complex inner types.
+                            // Struct, Array, Map, Enum, etc. — all pointer-based.
+                            // For non-Str optional pointer types, use get_str which
+                            // returns "" for null/missing (safe for further parsing).
                             let val = ctx
                                 .builder
                                 .build_call(
@@ -2109,6 +2126,16 @@ impl JsonBuiltins {
         let ft = ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
         ctx.module
             .add_function(ffi_names::DOO_JSON_OBJECT_GET_STR, ft, None)
+    }
+
+    fn get_or_declare_object_get_optional_str<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
+        if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_OBJECT_GET_OPTIONAL_STR) {
+            return f;
+        }
+        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ft = ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
+        ctx.module
+            .add_function(ffi_names::DOO_JSON_OBJECT_GET_OPTIONAL_STR, ft, None)
     }
 
     fn get_or_declare_object_get_json<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionValue<'ctx> {
