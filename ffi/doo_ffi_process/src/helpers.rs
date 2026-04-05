@@ -41,8 +41,7 @@ fn resolve_windows_command_path(cmd: &str) -> String {
         return cmd.to_string();
     }
 
-    let pathext = std::env::var("PATHEXT")
-        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
     let path_dirs = std::env::var("PATH").unwrap_or_default();
 
     for dir in path_dirs.split(';') {

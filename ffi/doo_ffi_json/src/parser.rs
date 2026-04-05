@@ -1868,6 +1868,31 @@ pub extern "C" fn doo_json_object_get_str(
     .unwrap_or_else(|_| doo_alloc_string(""))
 }
 
+/// Extract an optional string field from a cached JSON object.
+/// Returns NULL pointer if the field is missing, null, or not a string.
+/// Returns a newly allocated C string otherwise. Caller must free non-null results.
+/// Used for Optional(Str) fields — NULL pointer maps to JSON null in serialization.
+#[no_mangle]
+pub extern "C" fn doo_json_object_get_optional_str(
+    obj: *mut std::ffi::c_void,
+    field_name: *const c_char,
+) -> *mut c_char {
+    if obj.is_null() || field_name.is_null() {
+        return std::ptr::null_mut();
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let value = unsafe { &*(obj as *const serde_json::Value) };
+        let field = c_to_string_lossy(field_name);
+        value
+            .as_object()
+            .and_then(|o| json_object_get_field(o, &field))
+            .and_then(|v| v.as_str())
+            .map(|s| doo_alloc_string(s))
+            .unwrap_or(std::ptr::null_mut())
+    }))
+    .unwrap_or_else(|_| std::ptr::null_mut())
+}
+
 /// Extract a nested object/array field from a cached JSON object as a JSON string.
 /// For composite types (structs, arrays, maps) that need further parsing.
 /// Returns "null" if missing. Caller must free.
