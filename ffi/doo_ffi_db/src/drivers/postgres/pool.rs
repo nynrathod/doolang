@@ -115,12 +115,58 @@ fn build_tls_config(sslmode: &str) -> rustls::ClientConfig {
     }
 }
 
+/// Pre-process a PostgreSQL connection URL to percent-encode `@` signs in the
+/// password.  `tokio-postgres` splits on the *first* `@` (`str::find`), so an
+/// unencoded `@` in the password causes the host to be misparsed (e.g.
+/// `user:p@ss@host` → host = `ss@host` instead of `host`).
+///
+/// The fix: find the *last* `@` via `rfind` (which is the real credential / host
+/// separator), then percent-encode any earlier `@` signs in the credentials
+/// portion.  Already-encoded URLs (`%40`) are left unchanged.
+///
+/// Key-value format strings and URLs without credentials are returned as-is.
+fn fix_url_password_encoding(url: &str) -> String {
+    let prefix = if url.starts_with("postgresql://") {
+        "postgresql://"
+    } else if url.starts_with("postgres://") {
+        "postgres://"
+    } else {
+        return url.to_string(); // Not URL format — return unchanged
+    };
+
+    let rest = &url[prefix.len()..];
+
+    // Find the last '@' — separates credentials from host
+    let last_at = match rest.rfind('@') {
+        Some(pos) => pos,
+        None => return url.to_string(), // No '@' at all → no credentials
+    };
+
+    let creds = &rest[..last_at];
+    let host_and_rest = &rest[last_at + 1..];
+
+    // If credentials contain no extra '@', the URL is already fine
+    if !creds.contains('@') {
+        return url.to_string();
+    }
+
+    // Encode all '@' in the credentials portion (user:password)
+    let encoded_creds = creds.replace('@', "%40");
+    format!("{}{}@{}", prefix, encoded_creds, host_and_rest)
+}
+
 /// Initialize the connection pool with production-grade configuration.
 ///
 /// Pool sizing: min(cpu_count * 2, 32), overridable via DATABASE_POOL_SIZE env.
 /// Timeouts: 5s wait, 5s create, 5s recycle — prevents infinite hangs.
 /// Recycling: Fast mode — checks connection liveness on checkout.
 pub async fn init_pool(connection_string: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // Fix unencoded '@' in password before tokio-postgres parses the URL.
+    // tokio-postgres uses find('@') (first occurrence) which misparsed passwords
+    // containing '@'.  This encodes them so the URL is RFC 3986 compliant.
+    let safe_url = fix_url_password_encoding(connection_string);
+    let connection_string = safe_url.as_str();
+
     let sslmode = parse_sslmode(connection_string);
     ffi_debug!("DB", "sslmode={}", sslmode);
 
