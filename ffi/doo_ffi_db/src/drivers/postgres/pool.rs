@@ -252,11 +252,49 @@ pub async fn init_pool(connection_string: &str) -> Result<(), Box<dyn std::error
 }
 
 /// Test the pool connection and store it in the global static.
+/// Retries up to 4 times with exponential backoff (500ms, 1s, 2s, 4s) to handle
+/// Cloud SQL Auth Proxy startup delay on Cloud Run — the sidecar may not be
+/// ready when the app container boots.
 async fn test_and_store_pool(pool: Pool) -> Result<(), Box<dyn std::error::Error>> {
-    // Test connection with timeout and set timezone to UTC
+    let retry_delays = [500, 1000, 2000, 4000]; // ms
+    let mut last_err = String::new();
+
+    // First attempt (immediate)
+    match try_pool_connection(&pool).await {
+        Ok(()) => {
+            POOL.set(pool).map_err(|_| "Pool already initialized")?;
+            return Ok(());
+        }
+        Err(e) => {
+            last_err = e;
+            ffi_debug!("DB", "Initial connection failed, retrying ({})...", last_err);
+        }
+    }
+
+    // Retry with backoff
+    for delay_ms in retry_delays {
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        match try_pool_connection(&pool).await {
+            Ok(()) => {
+                ffi_debug!("DB", "Connection succeeded after retry");
+                POOL.set(pool).map_err(|_| "Pool already initialized")?;
+                return Ok(());
+            }
+            Err(e) => {
+                last_err = e;
+                ffi_debug!("DB", "Retry failed ({}ms): {}", delay_ms, last_err);
+            }
+        }
+    }
+
+    Err(last_err.into())
+}
+
+/// Single connection test attempt — used by retry loop.
+async fn try_pool_connection(pool: &Pool) -> Result<(), String> {
     let test_client = tokio::time::timeout(Duration::from_secs(10), pool.get())
         .await
-        .map_err(|_| "Connection test timed out (10s)")?
+        .map_err(|_| "Connection test timed out (10s)".to_string())?
         .map_err(|e| {
             // Walk the full error chain for debugging
             let mut msg = format!("Connection test failed: {}", e);
@@ -274,10 +312,7 @@ async fn test_and_store_pool(pool: Pool) -> Result<(), Box<dyn std::error::Error
         .await
         .map_err(|e| format!("Failed to set timezone: {}", e))?;
 
-    ffi_debug!("DB", "Connection test passed, pool ready (timezone=UTC)");
-
-    POOL.set(pool).map_err(|_| "Pool already initialized")?;
-
+    ffi_debug!("DB", "Connection test passed (timezone=UTC)");
     Ok(())
 }
 
