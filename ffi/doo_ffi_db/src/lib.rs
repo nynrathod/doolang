@@ -201,28 +201,20 @@ pub extern "C" fn doo_db_connect_postgres() -> *mut DooResult {
     safe_ffi("DB", || {
         ffi_debug!("DB", "doo_db_connect_postgres called");
         match drivers::postgres::connect_from_env() {
-            Ok(drivers::postgres::ConnectResult::Connected) => {
+            Ok(()) => {
                 ffi_debug!("DB", "PostgreSQL connected and driver registered");
                 let db = create_database_struct("postgres", true);
                 db_result_ok(db)
             }
-            Ok(drivers::postgres::ConnectResult::Mock) => {
-                ffi_debug!("DB", "WARNING: DATABASE_URL not set, using mock connection");
-                let db = create_database_struct("mock", true);
-                db_result_ok(db)
-            }
             Err(e) => {
-                // Log the error but don't crash — return degraded mock so the server
-                // can start and pass health checks. DB routes will return 503 errors.
-                eprintln!("[Doo] WARNING: Database connection failed: {}. Server starting in degraded mode.", e);
-                let db = create_database_struct("mock", false);
-                db_result_ok(db)
+                eprintln!("[Doo] FATAL: Database connection failed: {}", e);
+                db_result_err(503, &format!("Database connection failed: {}", e))
             }
         }
     })
 }
 
-/// Get global database instance (returns mock if not connected).
+/// Get global database instance.
 #[no_mangle]
 pub extern "C" fn doo_db_get_global() -> *mut DooResult {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -230,9 +222,7 @@ pub extern "C" fn doo_db_get_global() -> *mut DooResult {
             let db = create_database_struct(drv.name(), true);
             db_result_ok(db)
         } else {
-            ffi_debug!("DB", "WARNING: No database connected, using mock");
-            let db = create_database_struct("mock", false);
-            db_result_ok(db)
+            db_result_err(503, "No database connected. Set DATABASE_URL environment variable.")
         }
     }));
     result.unwrap_or_else(|_| db_result_err(500, "Internal error"))
