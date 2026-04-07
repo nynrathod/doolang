@@ -267,7 +267,11 @@ async fn test_and_store_pool(pool: Pool) -> Result<(), Box<dyn std::error::Error
         }
         Err(e) => {
             last_err = e;
-            ffi_debug!("DB", "Initial connection failed, retrying ({})...", last_err);
+            ffi_debug!(
+                "DB",
+                "Initial connection failed, retrying ({})...",
+                last_err
+            );
         }
     }
 

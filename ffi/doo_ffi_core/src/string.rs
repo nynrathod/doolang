@@ -129,10 +129,7 @@ pub extern "C" fn doo_string_len(s: *const DooString) -> u32 {
 /// Returns a pointer to the data section of a Doo array header ([len][cap][data...]).
 /// Each element is a `*mut c_char` pointing to a heap-allocated null-terminated string.
 #[no_mangle]
-pub extern "C" fn doo_string_split(
-    str_ptr: *const c_char,
-    delim_ptr: *const c_char,
-) -> *mut u8 {
+pub extern "C" fn doo_string_split(str_ptr: *const c_char, delim_ptr: *const c_char) -> *mut u8 {
     use crate::memory::doo_alloc_array;
 
     let ptr_size = std::mem::size_of::<*mut c_char>();
