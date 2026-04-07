@@ -1,8 +1,9 @@
 //! CRUD System
 //!
-//! In-memory and database-backed CRUD handlers for resources.
+//! Database-backed CRUD handlers for resources.
 //! Provides list, create, get, update, and delete handlers, plus
 //! automatic table creation via `doo_http_crud`.
+//! No in-memory fallback — database is required.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -27,34 +28,12 @@ use crate::{make_err_http, make_ok_json, make_ok_void};
 // CRUD STATICS
 // ============================================================================
 
-/// In-memory store fallback for CRUD resources (used when DB not connected)
-static CRUD_STORES: std::sync::OnceLock<StdMutex<HashMap<String, CrudStore>>> =
-    std::sync::OnceLock::new();
-
 /// Store which resources have been configured for DB-backed CRUD
 static CRUD_DB_TABLES: std::sync::OnceLock<StdMutex<HashMap<String, String>>> =
     std::sync::OnceLock::new();
 
-fn get_crud_stores() -> &'static StdMutex<HashMap<String, CrudStore>> {
-    CRUD_STORES.get_or_init(|| StdMutex::new(HashMap::new()))
-}
-
 fn get_crud_db_tables() -> &'static StdMutex<HashMap<String, String>> {
     CRUD_DB_TABLES.get_or_init(|| StdMutex::new(HashMap::new()))
-}
-
-struct CrudStore {
-    items: Vec<serde_json::Value>,
-    next_id: i64,
-}
-
-impl CrudStore {
-    fn new() -> Self {
-        Self {
-            items: Vec::new(),
-            next_id: 1,
-        }
-    }
 }
 
 // ============================================================================
@@ -78,16 +57,6 @@ fn get_crud_struct_name(resource: &str) -> Option<String> {
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     tables.get(resource).cloned()
-}
-
-/// Insert an item into the CRUD in-memory store for a given resource.
-/// Used by auth to sync signed-up users into the CRUD store so that
-/// GET /users returns users created via signup when no DB is available.
-pub(crate) fn crud_store_insert(resource: &str, item: serde_json::Value) {
-    let mut stores = get_crud_stores().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(store) = stores.get_mut(resource) {
-        store.items.push(item);
-    }
 }
 
 /// Extract resource name from CRUD path.
@@ -152,18 +121,9 @@ extern "C" fn crud_list_handler(req: *const DooRequest) -> *mut DooResult {
         }
     }
 
-    // Fallback to in-memory store
-    let stores = get_crud_stores().lock().unwrap_or_else(|e| e.into_inner());
-    let items = match stores.get(&resource) {
-        Some(store) => store.items.clone(),
-        None => Vec::new(),
-    };
-
-    let struct_name = get_crud_struct_name(&resource).unwrap_or_default();
-    let filtered = filter_response_fields(&serde_json::json!(items), &struct_name);
-    let response = serde_json::to_string(&serde_json::json!({ "data": filtered }))
-        .unwrap_or_else(|_| r#"{"data":[]}"#.to_string());
-    make_ok_json(&response)
+    // No in-memory fallback — database is required
+    ffi_debug!("CRUD", "ERROR: Database not available for resource: {}", resource);
+    make_err_http(503, "Database not available")
 }
 
 extern "C" fn crud_create_handler(req: *const DooRequest) -> *mut DooResult {
@@ -253,24 +213,9 @@ extern "C" fn crud_create_handler(req: *const DooRequest) -> *mut DooResult {
         }
     }
 
-    // Fallback to in-memory store
-    let mut item = item;
-    let mut stores = get_crud_stores().lock().unwrap_or_else(|e| e.into_inner());
-    let store = stores
-        .entry(resource.clone())
-        .or_insert_with(CrudStore::new);
-
-    if let Some(obj) = item.as_object_mut() {
-        obj.insert("id".to_string(), serde_json::json!(store.next_id));
-    }
-    store.next_id += 1;
-    store.items.push(item.clone());
-
-    let struct_name = get_crud_struct_name(&resource).unwrap_or_default();
-    let filtered = filter_response_fields(&item, &struct_name);
-    let response = serde_json::to_string(&serde_json::json!({ "data": filtered }))
-        .unwrap_or_else(|_| r#"{"data":{}}"#.to_string());
-    make_ok_json(&response)
+    // No in-memory fallback — database is required
+    ffi_debug!("CRUD", "ERROR: Database not available for resource: {}", resource);
+    make_err_http(503, "Database not available")
 }
 
 extern "C" fn crud_get_handler(req: *const DooRequest) -> *mut DooResult {
@@ -319,28 +264,9 @@ extern "C" fn crud_get_handler(req: *const DooRequest) -> *mut DooResult {
         }
     }
 
-    // Fallback to in-memory store
-    let stores = get_crud_stores().lock().unwrap_or_else(|e| e.into_inner());
-    let item = stores
-        .get(&resource)
-        .and_then(|store| {
-            store
-                .items
-                .iter()
-                .find(|i| i.get("id").and_then(|v| v.as_i64()) == Some(id))
-        })
-        .cloned();
-
-    match item {
-        Some(i) => {
-            let struct_name = get_crud_struct_name(&resource).unwrap_or_default();
-            let filtered = filter_response_fields(&i, &struct_name);
-            let response = serde_json::to_string(&serde_json::json!({ "data": filtered }))
-                .unwrap_or_else(|_| r#"{"data":{}}"#.to_string());
-            make_ok_json(&response)
-        }
-        None => make_err_http(404, "Resource not found"),
-    }
+    // No in-memory fallback — database is required
+    ffi_debug!("CRUD", "ERROR: Database not available for resource: {}", resource);
+    make_err_http(503, "Database not available")
 }
 
 extern "C" fn crud_update_handler(req: *const DooRequest) -> *mut DooResult {
@@ -426,28 +352,9 @@ extern "C" fn crud_update_handler(req: *const DooRequest) -> *mut DooResult {
         }
     }
 
-    // Fallback to in-memory store
-    let mut stores = get_crud_stores().lock().unwrap_or_else(|e| e.into_inner());
-    let item = stores.get_mut(&resource).and_then(|store| {
-        store
-            .items
-            .iter_mut()
-            .find(|i| i.get("id").and_then(|v| v.as_i64()) == Some(id))
-    });
-
-    match item {
-        Some(i) => {
-            if let (Some(existing), Some(new)) = (i.as_object_mut(), updates.as_object()) {
-                for (k, v) in new {
-                    existing.insert(k.clone(), v.clone());
-                }
-            }
-            let response = serde_json::to_string(&serde_json::json!({ "data": i }))
-                .unwrap_or_else(|_| r#"{"data":{}}"#.to_string());
-            make_ok_json(&response)
-        }
-        None => make_err_http(404, "Resource not found"),
-    }
+    // No in-memory fallback — database is required
+    ffi_debug!("CRUD", "ERROR: Database not available for resource: {}", resource);
+    make_err_http(503, "Database not available")
 }
 
 extern "C" fn crud_delete_handler(req: *const DooRequest) -> *mut DooResult {
@@ -491,24 +398,9 @@ extern "C" fn crud_delete_handler(req: *const DooRequest) -> *mut DooResult {
         }
     }
 
-    // Fallback to in-memory store
-    let mut stores = get_crud_stores().lock().unwrap_or_else(|e| e.into_inner());
-    let removed = stores
-        .get_mut(&resource)
-        .map(|store| {
-            let before = store.items.len();
-            store
-                .items
-                .retain(|i| i.get("id").and_then(|v| v.as_i64()) != Some(id));
-            before != store.items.len()
-        })
-        .unwrap_or(false);
-
-    if removed {
-        make_ok_json(r#"{"data":{"deleted":true}}"#)
-    } else {
-        make_err_http(404, "Resource not found")
-    }
+    // No in-memory fallback — database is required
+    ffi_debug!("CRUD", "ERROR: Database not available for resource: {}", resource);
+    make_err_http(503, "Database not available")
 }
 
 // ============================================================================
@@ -575,20 +467,12 @@ pub extern "C" fn doo_http_crud(
             } else {
                 ffi_debug!(
                     "HTTP",
-                    "Warning: No metadata found for struct '{}', using in-memory store",
+                    "Warning: No metadata found for struct '{}'",
                     struct_name
                 );
             }
         } else {
-            ffi_debug!("HTTP", "No database connection, using in-memory CRUD store");
-        }
-
-        // Initialize in-memory store as fallback
-        {
-            let mut stores = get_crud_stores().lock().unwrap_or_else(|e| e.into_inner());
-            stores
-                .entry(resource_key.clone())
-                .or_insert_with(CrudStore::new);
+            ffi_debug!("HTTP", "WARNING: No database connection for CRUD resource '{}'", resource_key);
         }
 
         // Register CRUD routes

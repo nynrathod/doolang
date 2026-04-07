@@ -1,10 +1,9 @@
 //! Auth System
 //!
 //! Signup and login handlers, JWT token generation, and auth route
-//! registration (`doo_http_auth`). Supports both in-memory and
-//! database-backed user storage.
+//! registration (`doo_http_auth`). Database-backed user storage only —
+//! no in-memory fallback.
 
-use std::collections::HashMap;
 use std::ffi::c_void;
 use std::os::raw::c_char;
 use std::sync::Mutex as StdMutex;
@@ -26,22 +25,11 @@ use crate::{make_err_http, make_ok_json, make_ok_void};
 // AUTH STATICS
 // ============================================================================
 
-/// In-memory user store for auth (fallback when no database connected)
-static AUTH_USERS: std::sync::OnceLock<StdMutex<HashMap<String, AuthUser>>> =
-    std::sync::OnceLock::new();
-
-/// Counter for generating user IDs (in-memory; production would use DB auto-increment)
-static AUTH_USER_ID_COUNTER: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
-
 /// Store which auth table has been created in the database
 static AUTH_DB_TABLE: std::sync::OnceLock<StdMutex<Option<String>>> = std::sync::OnceLock::new();
 
 /// Store the auth struct name (e.g., "User") for metadata-based operations
 static AUTH_STRUCT_NAME: std::sync::OnceLock<StdMutex<Option<String>>> = std::sync::OnceLock::new();
-
-fn get_auth_users() -> &'static StdMutex<HashMap<String, AuthUser>> {
-    AUTH_USERS.get_or_init(|| StdMutex::new(HashMap::new()))
-}
 
 fn get_auth_db_table() -> &'static StdMutex<Option<String>> {
     AUTH_DB_TABLE.get_or_init(|| StdMutex::new(None))
@@ -105,20 +93,6 @@ fn is_valid_email(email: &str) -> bool {
 }
 
 // ============================================================================
-// AUTH USER STRUCT
-// ============================================================================
-
-/// Generic auth user that stores all fields from the user's struct
-#[derive(Clone)]
-struct AuthUser {
-    id: i64,
-    email: String,
-    password_hash: String,
-    /// Additional fields from the user's struct (stored as JSON)
-    extra_fields: serde_json::Value,
-}
-
-// ============================================================================
 // RESPONSE HELPERS — Single Source of Truth
 // ============================================================================
 
@@ -137,27 +111,6 @@ fn build_db_auth_response(token: &str, user_row: &serde_json::Value) -> String {
             if !k.eq_ignore_ascii_case("password") {
                 obj.insert(k.clone(), v.clone());
             }
-        }
-    }
-    wrap_data_response(data)
-}
-
-/// Build auth response from in-memory user: adds token, merges extra fields, wraps in envelope.
-/// Used by BOTH signup and login (in-memory path) — zero duplication.
-fn build_memory_auth_response(
-    token: &str,
-    email: &str,
-    user_id: i64,
-    extra_fields: &serde_json::Value,
-) -> String {
-    let mut data = serde_json::json!({
-        "token": token,
-        "email": email,
-        "id": user_id,
-    });
-    if let (Some(obj), Some(extras)) = (data.as_object_mut(), extra_fields.as_object()) {
-        for (k, v) in extras {
-            obj.insert(k.clone(), v.clone());
         }
     }
     wrap_data_response(data)
@@ -313,8 +266,8 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
                         ffi_debug!("AUTH", "Signup success (DB): {}", response);
                         return make_ok_json(&response);
                     } else {
-                        ffi_debug!("AUTH", "DB insert returned no rows, falling back");
-                        // Fall through to in-memory
+                        ffi_debug!("AUTH", "DB insert returned no rows");
+                        return make_err_http(500, "Database insert returned no rows");
                     }
                 }
                 Err(e) => {
@@ -328,72 +281,9 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
         }
     }
 
-    // Fallback to in-memory auth
-    ffi_debug!("AUTH", "Using in-memory auth fallback");
-
-    // Check if user already exists (in-memory check)
-    {
-        let users = get_auth_users().lock().unwrap_or_else(|e| e.into_inner());
-        if users.contains_key(&email) {
-            ffi_debug!("AUTH", "Error: User already exists: {}", email);
-            return make_err_http(409, "User already exists");
-        }
-    }
-
-    // Generate user ID (in-memory counter)
-    let user_id = AUTH_USER_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-
-    // Store user with all fields
-    {
-        let mut users = get_auth_users().lock().unwrap_or_else(|e| e.into_inner());
-        users.insert(
-            email.clone(),
-            AuthUser {
-                id: user_id,
-                email: email.clone(),
-                password_hash,
-                extra_fields: serde_json::Value::Object(extra_fields.clone()),
-            },
-        );
-        ffi_debug!(
-            "AUTH",
-            "User stored in memory: {} (id={}), total users: {}",
-            email,
-            user_id,
-            users.len()
-        );
-    }
-
-    // Sync user into CRUD in-memory store so GET /users returns auth-created users
-    {
-        let mut user_data = serde_json::json!({
-            "id": user_id,
-            "email": email,
-        });
-        if let Some(obj) = user_data.as_object_mut() {
-            for (k, v) in &extra_fields {
-                obj.insert(k.clone(), v.clone());
-            }
-        }
-        crate::crud::crud_store_insert("users", user_data);
-    }
-
-    // Generate JWT token with user_id in claims
-    let token = generate_jwt_token(&email, user_id as i64);
-    ffi_debug!("AUTH", "JWT token generated for: {}", email);
-
-    // Push httpOnly cookie — centralized, works for both app.auth and OAuth
-    // app.auth uses access token only (no refresh token)
-    doo_ffi_core::cookies::push_auth_cookies(&token, None, 86400, 0);
-
-    let response = build_memory_auth_response(
-        &token,
-        &email,
-        user_id as i64,
-        &serde_json::Value::Object(extra_fields),
-    );
-    ffi_debug!("AUTH", "Signup success response: {}", response);
-    make_ok_json(&response)
+    // No in-memory fallback — database is required for auth
+    ffi_debug!("AUTH", "ERROR: Database not available for authentication");
+    make_err_http(503, "Database not available for authentication")
 }
 
 // ============================================================================
@@ -507,47 +397,9 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
         }
     }
 
-    // Fallback to in-memory auth
-    ffi_debug!("AUTH", "Login: Using in-memory auth fallback");
-
-    let user = {
-        let users = get_auth_users().lock().unwrap_or_else(|e| e.into_inner());
-        ffi_debug!(
-            "AUTH",
-            "Login lookup for: {} (total users in store: {})",
-            email,
-            users.len()
-        );
-        users.get(&email).cloned()
-    };
-
-    let user = match user {
-        Some(u) => u,
-        None => {
-            ffi_debug!("AUTH", "Login failed: User not found: {}", email);
-            return make_err_http(401, "Invalid email or password");
-        }
-    };
-
-    // Verify password
-    match bcrypt::verify(password, &user.password_hash) {
-        Ok(true) => {
-            ffi_debug!("AUTH", "Login success: Password verified for: {}", email);
-        }
-        _ => {
-            ffi_debug!("AUTH", "Login failed: Invalid password for: {}", email);
-            return make_err_http(401, "Invalid email or password");
-        }
-    }
-
-    // Generate JWT token with user_id in claims
-    let token = generate_jwt_token(&email, user.id as i64);
-
-    // Push httpOnly cookie — centralized, works for both app.auth and OAuth
-    doo_ffi_core::cookies::push_auth_cookies(&token, None, 86400, 0);
-
-    let response = build_memory_auth_response(&token, &email, user.id as i64, &user.extra_fields);
-    make_ok_json(&response)
+    // No in-memory fallback — database is required for auth
+    ffi_debug!("AUTH", "ERROR: Database not available for authentication");
+    make_err_http(503, "Database not available for authentication")
 }
 
 // ============================================================================
@@ -686,11 +538,10 @@ extern "C" fn auth_me_handler(req: *const DooRequest) -> *mut DooResult {
     }
 }
 
-/// Build user data from DB or in-memory auth store.
+/// Build user data from DB.
 /// Returns a clean JSON value with NO password field.
 /// Single function, single format — no duplicate JSON building.
 fn build_user_data(user_id_str: &str) -> Option<serde_json::Value> {
-    // Strategy 1: DB query (if available)
     if is_pool_initialized() && is_auth_db_backed() {
         let query = "SELECT * FROM users WHERE id = $1";
         if let Ok(json) = execute_db_query_with_string_param(query, user_id_str) {
@@ -708,28 +559,6 @@ fn build_user_data(user_id_str: &str) -> Option<serde_json::Value> {
                     }
                 }
                 return Some(user_row);
-            }
-        }
-    }
-
-    // Strategy 2: In-memory auth store
-    if let Ok(uid) = user_id_str.parse::<i64>() {
-        let users = get_auth_users().lock().unwrap_or_else(|e| e.into_inner());
-        for user in users.values() {
-            if user.id == uid {
-                let mut data = serde_json::json!({
-                    "id": user.id,
-                    "email": user.email,
-                });
-                // Merge extra_fields into the response (flatten, not nest)
-                if let (Some(data_obj), Some(extras_obj)) =
-                    (data.as_object_mut(), user.extra_fields.as_object())
-                {
-                    for (k, v) in extras_obj {
-                        data_obj.insert(k.clone(), v.clone());
-                    }
-                }
-                return Some(data);
             }
         }
     }

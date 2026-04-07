@@ -151,7 +151,7 @@ pub const TODO_TEMPLATE: Template = Template {
 
 import std::Http::Server;
 import std::Database;
-import std::Auth::jwt;
+import std::Auth::Jwt;
 
 struct User {
     id: Int @primary @auto,                 // Primary key, auto-incremented
@@ -280,7 +280,7 @@ fn GetMyPosts(userId: Int) -> [Post] ! DatabaseError {
 
 import std::Http::Server;
 import std::Database;
-import std::Auth::jwt;
+import std::Auth::Jwt;
 import models::{Post, Comment, User};
 import handlers::{GetFeed, GetUserPosts, GetMyPosts};
 

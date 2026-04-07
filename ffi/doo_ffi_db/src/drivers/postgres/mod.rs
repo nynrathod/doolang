@@ -383,28 +383,19 @@ impl DbDriver for PostgresDriver {
 // Connection — reads DATABASE_URL and registers the driver
 // ============================================================================
 
-/// Result of a connection attempt.
-pub enum ConnectResult {
-    /// Successfully connected to PostgreSQL.
-    Connected,
-    /// No DATABASE_URL set — mock mode.
-    Mock,
-}
-
 /// Connect to PostgreSQL and register the driver.
 ///
-/// Reads `DATABASE_URL` from environment. If not set, returns a mock connection.
+/// Reads `DATABASE_URL` from environment. Errors if not set or connection fails.
 /// On success, registers `PostgresDriver` as the active database driver so
 /// all subsequent `doo_db_*` calls route through PostgreSQL.
-pub fn connect_from_env() -> Result<ConnectResult, String> {
+pub fn connect_from_env() -> Result<(), String> {
     let conn_str = match std::env::var(doo_ffi_core::constants::ENV_DATABASE_URL) {
         Ok(s) => {
             ffi_debug!("DB", "DATABASE_URL found");
             s
         }
         Err(_) => {
-            ffi_debug!("DB", "WARNING: DATABASE_URL not set, using mock connection");
-            return Ok(ConnectResult::Mock);
+            return Err("DATABASE_URL environment variable is not set. Cannot start without a database.".to_string());
         }
     };
 
@@ -415,7 +406,7 @@ pub fn connect_from_env() -> Result<ConnectResult, String> {
             ffi_debug!("DB", "Pool initialized successfully");
             // Register the driver for all subsequent DB operations
             crate::driver::register_driver(Box::new(PostgresDriver)).map_err(|e| e.to_string())?;
-            Ok(ConnectResult::Connected)
+            Ok(())
         }
         Err(e) => {
             ffi_debug!("DB", "Connection failed: {}", e);
