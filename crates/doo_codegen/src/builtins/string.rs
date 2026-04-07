@@ -4,6 +4,7 @@
 
 use crate::context::CodegenContext;
 use doo_core::constants::ffi_names;
+use doo_core::types::builtin;
 use inkwell::values::{BasicValueEnum, IntValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate};
 
@@ -40,8 +41,17 @@ impl StringBuiltins {
             "repeat" => Self::emit_repeat(ctx, safe_receiver, args),
             "charCode" => Self::emit_char_code(ctx, safe_receiver),
             "countSubstr" => Self::emit_count_substr(ctx, safe_receiver, args),
+            "split" => Self::emit_split(ctx, safe_receiver, args),
             _ => return None,
         };
+
+        // Register array element type for methods that return arrays
+        if method == "split" {
+            if let Some(dest_name) = dest {
+                ctx.array_element_types
+                    .insert(dest_name.to_string(), builtin::STR);
+            }
+        }
 
         if let (Some(val), Some(dest_name)) = (result, dest) {
             ctx.set_temp(dest_name, val);
@@ -1331,6 +1341,28 @@ impl StringBuiltins {
 
         Some(final_count)
     }
+
+    // =========================================================================
+    // split(delimiter: Str) -> [Str]
+    // =========================================================================
+    fn emit_split<'ctx>(
+        ctx: &mut CodegenContext<'ctx>,
+        str_ptr: PointerValue<'ctx>,
+        args: &[BasicValueEnum<'ctx>],
+    ) -> Option<BasicValueEnum<'ctx>> {
+        if args.is_empty() {
+            return None;
+        }
+        let delim_ptr = args[0].into_pointer_value();
+        let split_fn = get_or_declare_string_split(ctx);
+        let result = ctx
+            .builder
+            .build_call(split_fn, &[str_ptr.into(), delim_ptr.into()], "split_arr")
+            .ok()?
+            .try_as_basic_value()
+            .basic()?;
+        Some(result)
+    }
 }
 
 // =============================================================================
@@ -1406,5 +1438,19 @@ fn get_or_declare_memcpy<'ctx>(ctx: &CodegenContext<'ctx>) -> inkwell::values::F
                 false,
             );
             ctx.module.add_function(ffi_names::MEMCPY, fn_type, None)
+        })
+}
+
+fn get_or_declare_string_split<'ctx>(
+    ctx: &CodegenContext<'ctx>,
+) -> inkwell::values::FunctionValue<'ctx> {
+    ctx.module
+        .get_function(ffi_names::DOO_STRING_SPLIT)
+        .unwrap_or_else(|| {
+            let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+            // doo_string_split(str: *const c_char, delim: *const c_char) -> *mut u8
+            let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+            ctx.module
+                .add_function(ffi_names::DOO_STRING_SPLIT, fn_type, None)
         })
 }
