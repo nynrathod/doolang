@@ -122,6 +122,58 @@ pub extern "C" fn doo_string_len(s: *const DooString) -> u32 {
 }
 
 // ============================================================================
+// Split
+// ============================================================================
+
+/// Split a string by a delimiter, returning a Doo array of C-string pointers.
+/// Returns a pointer to the data section of a Doo array header ([len][cap][data...]).
+/// Each element is a `*mut c_char` pointing to a heap-allocated null-terminated string.
+#[no_mangle]
+pub extern "C" fn doo_string_split(
+    str_ptr: *const c_char,
+    delim_ptr: *const c_char,
+) -> *mut u8 {
+    use crate::memory::doo_alloc_array;
+
+    let ptr_size = std::mem::size_of::<*mut c_char>();
+
+    if str_ptr.is_null() || delim_ptr.is_null() {
+        return doo_alloc_array(0, ptr_size);
+    }
+
+    unsafe {
+        let s = match CStr::from_ptr(str_ptr).to_str() {
+            Ok(v) => v,
+            Err(_) => return doo_alloc_array(0, ptr_size),
+        };
+        let delim = match CStr::from_ptr(delim_ptr).to_str() {
+            Ok(v) => v,
+            Err(_) => return doo_alloc_array(0, ptr_size),
+        };
+
+        let parts: Vec<&str> = if delim.is_empty() {
+            vec![s]
+        } else {
+            s.split(delim).collect()
+        };
+
+        let count = parts.len();
+        let data_ptr = doo_alloc_array(count, ptr_size);
+        if data_ptr.is_null() {
+            return data_ptr;
+        }
+
+        for (i, part) in parts.iter().enumerate() {
+            let part_ptr = doo_alloc_string(part);
+            let elem_offset = i * ptr_size;
+            *(data_ptr.add(elem_offset) as *mut *mut c_char) = part_ptr;
+        }
+
+        data_ptr
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
