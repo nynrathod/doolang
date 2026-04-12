@@ -236,17 +236,10 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     };
     timings.push(("Parse", t.elapsed()));
 
-    // Phase 3: AST Transformations
-    // Transform route DSL (groups, decorators) into explicit route registrations
-    let t = Instant::now();
-    let mut program = program;
-    transform_route_groups(&mut program);
-    transform_inline_closures(&mut program);
-    timings.push(("AST transforms", t.elapsed()));
-
-    // Phase 3.5: Resolve Imports (using centralized loader module)
+    // Phase 3: Resolve Imports FIRST (so transforms see the complete program)
     // Load and merge imported functions/structs/enums from std library and other modules
     let t = Instant::now();
+    let mut program = program;
     let mut loader = ModuleLoader::new();
     let import_resolution = resolve_imports(&program, &mut loader, &project_root)?;
 
@@ -288,6 +281,13 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
 
     merge_imports(&mut program, import_resolution);
     timings.push(("Import resolution", t.elapsed()));
+
+    // Phase 3.5: AST Transformations (AFTER imports so all files are transformed)
+    // Transform route DSL (groups, decorators) into explicit route registrations
+    let t = Instant::now();
+    transform_route_groups(&mut program);
+    transform_inline_closures(&mut program);
+    timings.push(("AST transforms", t.elapsed()));
 
     if opts.print_ast {
         eprintln!("=== AST ===");
