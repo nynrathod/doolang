@@ -1543,6 +1543,7 @@ fn link_unix(
         cmd.arg("-lpthread");
         cmd.arg("-framework").arg("Security");
         cmd.arg("-framework").arg("CoreFoundation");
+        cmd.arg("-framework").arg("SystemConfiguration");
         // When linking multiple Rust static libraries, each contains its own copy of
         // the Rust runtime symbols (__rust_alloc, compiler-builtins, etc.).
         // Allow duplicates so the linker uses the first definition and ignores the rest.
