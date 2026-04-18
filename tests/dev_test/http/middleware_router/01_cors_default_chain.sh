@@ -19,7 +19,7 @@ expect_header_contains() {
     exit 1
   fi
 
-  if ! grep -i "^${header_name}:.*${expected_substring}" "$headers_file" >/dev/null; then
+  if ! grep -i "^${header_name}:" "$headers_file" | grep -qF "$expected_substring"; then
     echo "❌ Header $header_name did not contain '$expected_substring'"
     echo "Headers were:"
     cat "$headers_file"

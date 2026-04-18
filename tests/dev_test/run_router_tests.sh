@@ -69,8 +69,8 @@ run_test() {
     else
         # Extract pass/total from summary
         local total passed
-        total=$(echo "$actual" | grep -oP 'Total:\s+\K[0-9]+' | tail -1)
-        passed=$(echo "$actual" | grep -oP 'Passed:\s+\K[0-9]+' | tail -1)
+        total=$(echo "$actual" | grep 'Total:' | tail -1 | sed 's/.*Total:[[:space:]]*//' | grep -o '[0-9]*' | head -1)
+        passed=$(echo "$actual" | grep 'Passed:' | tail -1 | sed 's/.*Passed:[[:space:]]*//' | grep -o '[0-9]*' | head -1)
         echo "  OK: $name ($passed/$total assertions)"
     fi
     sleep 0.3

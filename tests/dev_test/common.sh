@@ -34,17 +34,19 @@ else
     export BIN="${BIN:-$CARGO_TARGET_DIR/release/doo}"
 fi
 
-# JWT secret for auth tests
-if [ -z "${JWT_SECRET:-}" ]; then
-    env_candidates=()
-    if [ -n "${PROJECT_ENV_FILE:-}" ]; then
-        env_candidates+=("$PROJECT_ENV_FILE")
-    fi
-    env_candidates+=("$PWD/.env")
-    env_candidates+=("$PROJECT_ROOT/url-shortner/server/.env")
+# Determine environment variables if not set
+env_candidates=()
+if [ -n "${PROJECT_ENV_FILE:-}" ]; then
+    env_candidates+=("$PROJECT_ENV_FILE")
+fi
+env_candidates+=("$PWD/.env")
+env_candidates+=("$COMMON_DIR/.env")
+env_candidates+=("$PROJECT_ROOT/.env")
 
-    for env_file in "${env_candidates[@]}"; do
-        if [ -f "$env_file" ]; then
+for env_file in "${env_candidates[@]}"; do
+    if [ -f "$env_file" ]; then
+        # Load JWT_SECRET
+        if [ -z "${JWT_SECRET:-}" ]; then
             jwt_line=$(grep -E '^JWT_SECRET=' "$env_file" | head -n 1 || true)
             if [ -n "$jwt_line" ]; then
                 jwt_val=${jwt_line#JWT_SECRET=}
@@ -54,12 +56,26 @@ if [ -z "${JWT_SECRET:-}" ]; then
                 jwt_val=${jwt_val#\'}
                 if [ -n "$jwt_val" ]; then
                     export JWT_SECRET="$jwt_val"
-                    break
                 fi
             fi
         fi
-    done
-fi
+        
+        # Load DATABASE_URL
+        if [ -z "${DATABASE_URL:-}" ]; then
+            db_line=$(grep -E '^DATABASE_URL=' "$env_file" | head -n 1 || true)
+            if [ -n "$db_line" ]; then
+                db_val=${db_line#DATABASE_URL=}
+                db_val=${db_val%\"}
+                db_val=${db_val#\"}
+                db_val=${db_val%\'}
+                db_val=${db_val#\'}
+                if [ -n "$db_val" ]; then
+                    export DATABASE_URL="$db_val"
+                fi
+            fi
+        fi
+    fi
+done
 
 export JWT_SECRET="${JWT_SECRET:-test-key}"
 
