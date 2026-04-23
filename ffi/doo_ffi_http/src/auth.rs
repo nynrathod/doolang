@@ -199,6 +199,14 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
         }
     }
 
+    // Validate extra fields (e.g. enum fields like Role) against struct metadata
+    if let Some(struct_name) = get_auth_struct_name() {
+        let full_body = serde_json::Value::Object(json.clone());
+        if let Err(e) = crate::validation::validate_item_against_struct(&full_body, &struct_name, "/auth/signup") {
+            return make_err_http(400, &e);
+        }
+    }
+
     // Try database-backed auth first
     if is_auth_db_backed() {
         if let Some(table_name) = get_auth_table_name() {
@@ -256,8 +264,10 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
                     if let Some(user_row) = rows.into_iter().next() {
                         let user_id = crate::metadata::json_get_id(&user_row).unwrap_or(0);
 
+                        // Extract role value from the @role-decorated field if present
+                        let role_value = extract_role_from_user_row(&user_row, &table_name);
                         // Generate JWT token with user_id in claims
-                        let token = generate_jwt_token(&email, user_id);
+                        let token = generate_jwt_token(&email, user_id, role_value.as_deref());
 
                         // Push httpOnly cookie — centralized
                         doo_ffi_core::cookies::push_auth_cookies(&token, None, 86400, 0);
@@ -367,7 +377,9 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
                                 );
 
                                 let user_id = crate::metadata::json_get_id(&user_row).unwrap_or(0);
-                                let token = generate_jwt_token(&email, user_id);
+                                // Extract role value from the @role-decorated field if present
+                                let role_value = extract_role_from_user_row(&user_row, &table_name);
+                                let token = generate_jwt_token(&email, user_id, role_value.as_deref());
 
                                 // Push httpOnly cookie — centralized
                                 doo_ffi_core::cookies::push_auth_cookies(&token, None, 86400, 0);
@@ -408,7 +420,47 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
 
 /// Generate a JWT token for the given subject and user ID
 /// Uses JWT_SECRET from env — FAILS if not set (no insecure fallback)
-fn generate_jwt_token(sub: &str, user_id: i64) -> String {
+/// Given a user row and table name, find the field with @role decorator and return its value.
+/// Looks up the struct whose table name matches, checks field decorators for "role".
+fn extract_role_from_user_row(user_row: &serde_json::Value, table_name: &str) -> Option<String> {
+    use crate::db_bridge::to_pascal_case;
+    use crate::metadata::get_struct_metadata;
+    // Primary: use the registered auth struct name (e.g. "User") — single source of truth
+    let auth_struct = get_auth_struct_name();
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(ref s) = auth_struct {
+        candidates.push(s.clone());
+    }
+    // Fallbacks derived from table_name
+    candidates.push(table_name.to_string());
+    candidates.push({
+        let mut c = table_name.chars();
+        match c.next() {
+            None => String::new(),
+            Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        }
+    });
+    for candidate in &candidates {
+        if let Some(meta) = get_struct_metadata(candidate) {
+            for field in &meta.fields {
+                if field.decorators.iter().any(|d| d == "role") {
+                    // Found the @role field; read its value from the user row
+                    // DB returns PascalCase keys (json_utils), also try snake_case and original
+                    let col_snake = to_snake_case(&field.name);
+                    let col_pascal = to_pascal_case(&col_snake);
+                    let val = user_row
+                        .get(&field.name)
+                        .or_else(|| user_row.get(&col_snake))
+                        .or_else(|| user_row.get(&col_pascal));
+                    return val.and_then(|v| v.as_str()).map(|s| s.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn generate_jwt_token(sub: &str, user_id: i64, role: Option<&str>) -> String {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
     use serde::{Deserialize, Serialize};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -420,6 +472,8 @@ fn generate_jwt_token(sub: &str, user_id: i64) -> String {
         exp: usize,
         iat: usize,
         iss: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
     }
 
     // Use the shared secret from middleware (cached OnceLock, read once)
@@ -442,6 +496,7 @@ fn generate_jwt_token(sub: &str, user_id: i64) -> String {
                 exp: now + 86400,
                 iat: now,
                 iss: "doo".to_string(),
+                role: role.map(|r| r.to_string()),
             };
             let key = EncodingKey::from_secret(dev_secret.as_bytes());
             return encode(&Header::new(Algorithm::HS256), &claims, &key)
@@ -465,6 +520,7 @@ fn generate_jwt_token(sub: &str, user_id: i64) -> String {
         exp: now + 86400, // 24 hours
         iat: now,
         iss: "doo".to_string(),
+        role: role.map(|r| r.to_string()),
     };
 
     let key = EncodingKey::from_secret(secret.as_bytes());

@@ -18,10 +18,14 @@ use crate::db_bridge::{
     execute_db_statement, generate_create_table_sql, is_pool_initialized, to_snake_case,
 };
 use crate::helpers::c_to_string;
-use crate::metadata::{filter_response_fields, get_struct_metadata};
+use crate::metadata::{filter_response_fields, get_struct_metadata, json_get_id};
+use crate::rbac::{
+    check_policy, extract_jwt_claims_from_request, filter_request_fields_rbac,
+    filter_response_fields_rbac, get_jwt_role, get_resource_owner_from_row, is_authenticated,
+};
 use crate::router::{get_routes, CrudConfig};
 use crate::types::*;
-use crate::validation::validate_item_against_schema;
+use crate::validation::{validate_item_against_schema, validate_required_fields};
 use crate::{make_err_http, make_ok_json, make_ok_void};
 
 // ============================================================================
@@ -84,6 +88,18 @@ fn extract_crud_resource(path: &str) -> String {
     String::new()
 }
 
+/// Fetch a single DB row by primary key. Returns None when not found or on error.
+fn fetch_item_by_id(resource: &str, id: i64) -> Option<serde_json::Value> {
+    let sql = format!("SELECT * FROM {} WHERE id = $1", resource);
+    match execute_db_query_by_id(&sql, id as i32) {
+        Ok(json) => {
+            let items: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap_or_default();
+            items.into_iter().next()
+        }
+        Err(_) => None,
+    }
+}
+
 /// Create CRUD handler that returns all items
 #[allow(unused_variables)]
 fn make_crud_list_handler(resource: String) -> DooHandlerFn {
@@ -102,6 +118,17 @@ extern "C" fn crud_list_handler(req: *const DooRequest) -> *mut DooResult {
     let path = unsafe { c_to_string((*req).path) };
     let resource = extract_crud_resource(&path);
 
+    // --- RBAC: check read policy ---
+    let jwt_claims = extract_jwt_claims_from_request(req);
+    let struct_name_for_rbac = get_crud_struct_name(&resource).unwrap_or_else(|| resource.clone());
+    if !check_policy(&jwt_claims, &struct_name_for_rbac, "read", None) {
+        if !is_authenticated(&jwt_claims) {
+            return make_err_http(401, "Unauthorized");
+        }
+        return make_err_http(403, "Access denied");
+    }
+    let jwt_role = get_jwt_role(&jwt_claims, &struct_name_for_rbac);
+
     // Try database-backed CRUD first
     if is_db_backed_crud(&resource) {
         let sql = format!("SELECT * FROM {}", resource);
@@ -109,7 +136,13 @@ extern "C" fn crud_list_handler(req: *const DooRequest) -> *mut DooResult {
             Ok(json) => {
                 let items: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap_or_default();
                 let struct_name = get_crud_struct_name(&resource).unwrap_or_default();
-                let filtered = filter_response_fields(&serde_json::json!(items), &struct_name);
+                // Apply RBAC field filtering (extends base writeOnly/internal filtering)
+                let filtered = filter_response_fields_rbac(
+                    &serde_json::json!(items),
+                    &struct_name,
+                    jwt_role.as_deref(),
+                    false, // ownership is per-item; use false for list
+                );
                 let response = serde_json::to_string(&serde_json::json!({ "data": filtered }))
                     .unwrap_or_else(|_| r#"{"data":[]}"#.to_string());
                 return make_ok_json(&response);
@@ -122,7 +155,11 @@ extern "C" fn crud_list_handler(req: *const DooRequest) -> *mut DooResult {
     }
 
     // No in-memory fallback — database is required
-    ffi_debug!("CRUD", "ERROR: Database not available for resource: {}", resource);
+    ffi_debug!(
+        "CRUD",
+        "ERROR: Database not available for resource: {}",
+        resource
+    );
     make_err_http(503, "Database not available")
 }
 
@@ -144,8 +181,19 @@ extern "C" fn crud_create_handler(req: *const DooRequest) -> *mut DooResult {
 
     let resource = extract_crud_resource(&path);
 
+    // --- RBAC: check create policy ---
+    let jwt_claims = extract_jwt_claims_from_request(req);
+    let struct_name_for_rbac = get_crud_struct_name(&resource).unwrap_or_else(|| resource.clone());
+    if !check_policy(&jwt_claims, &struct_name_for_rbac, "create", None) {
+        if !is_authenticated(&jwt_claims) {
+            return make_err_http(401, "Unauthorized");
+        }
+        return make_err_http(403, "Access denied");
+    }
+    let jwt_role = get_jwt_role(&jwt_claims, &struct_name_for_rbac);
+
     // Parse body JSON
-    let item: serde_json::Value = match serde_json::from_str(&body) {
+    let mut item: serde_json::Value = match serde_json::from_str(&body) {
         Ok(v) => v,
         Err(e) => {
             ffi_debug!("CRUD", "JSON parse error: {:?}", e);
@@ -156,6 +204,27 @@ extern "C" fn crud_create_handler(req: *const DooRequest) -> *mut DooResult {
     // Validate fields using centralized struct/enum metadata
     if let Err(validation_error) = validate_item_against_schema(&item, &resource, &path) {
         return make_err_http(422, &validation_error);
+    }
+
+    // Validate required fields — returns 400 if any non-auto/non-owner field is absent
+    if let Err(missing) = validate_required_fields(&item, &resource, &path) {
+        return make_err_http(400, &missing);
+    }
+
+    // Auto-fill @owner field with the JWT user_id so users cannot forge ownership.
+    // Only applied when the user is authenticated and the struct has an @owner field.
+    if let Some(user_id) = crate::rbac::get_jwt_user_id(&jwt_claims) {
+        if let Some(meta) = get_struct_metadata(&struct_name_for_rbac) {
+            for field in &meta.fields {
+                if field.decorators.iter().any(|d| d == "owner") {
+                    let col = to_snake_case(&field.name);
+                    if let Some(obj) = item.as_object_mut() {
+                        obj.insert(col, serde_json::json!(user_id));
+                    }
+                    break;
+                }
+            }
+        }
     }
 
     // Try database-backed CRUD first
@@ -197,7 +266,12 @@ extern "C" fn crud_create_handler(req: *const DooRequest) -> *mut DooResult {
                                 serde_json::from_str(&json).unwrap_or_default();
                             let created = items.into_iter().next().unwrap_or(serde_json::json!({}));
                             let sn = get_crud_struct_name(&resource).unwrap_or_default();
-                            let filtered = filter_response_fields(&created, &sn);
+                            let filtered = filter_response_fields_rbac(
+                                &created,
+                                &sn,
+                                jwt_role.as_deref(),
+                                false,
+                            );
                             let response =
                                 serde_json::to_string(&serde_json::json!({ "data": filtered }))
                                     .unwrap_or_else(|_| r#"{"data":{}}"#.to_string());
@@ -214,7 +288,11 @@ extern "C" fn crud_create_handler(req: *const DooRequest) -> *mut DooResult {
     }
 
     // No in-memory fallback — database is required
-    ffi_debug!("CRUD", "ERROR: Database not available for resource: {}", resource);
+    ffi_debug!(
+        "CRUD",
+        "ERROR: Database not available for resource: {}",
+        resource
+    );
     make_err_http(503, "Database not available")
 }
 
@@ -241,6 +319,20 @@ extern "C" fn crud_get_handler(req: *const DooRequest) -> *mut DooResult {
         .and_then(|s: &str| s.parse().ok())
         .unwrap_or_else(|| parts.iter().rev().find_map(|s| s.parse().ok()).unwrap_or(0));
 
+    // --- RBAC: check read policy (ownership check happens after DB fetch) ---
+    let jwt_claims = extract_jwt_claims_from_request(req);
+    let struct_name_for_rbac = get_crud_struct_name(&resource).unwrap_or_else(|| resource.clone());
+    // Pre-check: if the rule is purely "Admin" etc. we can reject early.
+    // For "own" rules we need the resource; check_policy with id=None will allow it
+    // and we do a second check post-fetch.
+    if !check_policy(&jwt_claims, &struct_name_for_rbac, "read", Some(id)) {
+        if !is_authenticated(&jwt_claims) {
+            return make_err_http(401, "Unauthorized");
+        }
+        return make_err_http(403, "Access denied");
+    }
+    let jwt_role = get_jwt_role(&jwt_claims, &struct_name_for_rbac);
+
     // Try database-backed CRUD first
     if is_db_backed_crud(&resource) {
         let sql = format!("SELECT * FROM {} WHERE id = $1", resource);
@@ -249,7 +341,16 @@ extern "C" fn crud_get_handler(req: *const DooRequest) -> *mut DooResult {
                 let items: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap_or_default();
                 if let Some(item) = items.into_iter().next() {
                     let struct_name = get_crud_struct_name(&resource).unwrap_or_default();
-                    let filtered = filter_response_fields(&item, &struct_name);
+                    // Determine ownership for field-level visibility
+                    let owner_id = get_resource_owner_from_row(&item, &struct_name);
+                    let is_owner = is_authenticated(&jwt_claims)
+                        && owner_id == crate::rbac::get_jwt_user_id(&jwt_claims);
+                    let filtered = filter_response_fields_rbac(
+                        &item,
+                        &struct_name,
+                        jwt_role.as_deref(),
+                        is_owner,
+                    );
                     let response = serde_json::to_string(&serde_json::json!({ "data": filtered }))
                         .unwrap_or_else(|_| r#"{"data":{}}"#.to_string());
                     return make_ok_json(&response);
@@ -265,7 +366,11 @@ extern "C" fn crud_get_handler(req: *const DooRequest) -> *mut DooResult {
     }
 
     // No in-memory fallback — database is required
-    ffi_debug!("CRUD", "ERROR: Database not available for resource: {}", resource);
+    ffi_debug!(
+        "CRUD",
+        "ERROR: Database not available for resource: {}",
+        resource
+    );
     make_err_http(503, "Database not available")
 }
 
@@ -298,63 +403,100 @@ extern "C" fn crud_update_handler(req: *const DooRequest) -> *mut DooResult {
         Err(_) => return make_err_http(400, "Invalid JSON body"),
     };
 
-    // Try database-backed CRUD first
+    // Extract JWT claims — header reading is safe here because write routes
+    // always have JWT middleware (needs_headers=true).
+    let jwt_claims = extract_jwt_claims_from_request(req);
+    let struct_name_for_rbac = get_crud_struct_name(&resource).unwrap_or_else(|| resource.clone());
+    let jwt_role = get_jwt_role(&jwt_claims, &struct_name_for_rbac);
+
+    // --- RBAC: check update policy with real owner ID ---
+    // Fetch the item first so we can compare the @owner field against the JWT user_id.
     if is_db_backed_crud(&resource) {
-        if let Some(obj) = updates.as_object() {
-            let struct_name = get_crud_struct_name(&resource);
-            if let Some(meta) = struct_name.and_then(|n| get_struct_metadata(&n)) {
-                let mut set_clauses = Vec::new();
-                let mut values: Vec<serde_json::Value> = Vec::new();
-                let mut idx = 1;
+        let existing = match fetch_item_by_id(&resource, id) {
+            Some(item) => item,
+            None => return make_err_http(404, "Resource not found"),
+        };
+        let resource_owner_id = get_resource_owner_from_row(&existing, &struct_name_for_rbac);
+        if !check_policy(
+            &jwt_claims,
+            &struct_name_for_rbac,
+            "update",
+            resource_owner_id,
+        ) {
+            if !is_authenticated(&jwt_claims) {
+                return make_err_http(401, "Unauthorized");
+            }
+            return make_err_http(403, "Access denied");
+        }
+    } else {
+        return make_err_http(503, "Database not available");
+    }
+    // Filter request body by role-writable fields
+    let updates = filter_request_fields_rbac(&updates, &struct_name_for_rbac, jwt_role.as_deref());
 
-                for field in &meta.fields {
-                    if field.name.to_lowercase() == "id" {
-                        continue;
-                    }
-                    let col_name = to_snake_case(&field.name);
-                    if let Some(val) = obj.get(&field.name).or_else(|| obj.get(&col_name)) {
-                        set_clauses.push(format!("{} = ${}", col_name, idx));
-                        values.push(val.clone());
-                        idx += 1;
-                    }
+    // Apply the update (we already confirmed is_db_backed_crud above)
+    if let Some(obj) = updates.as_object() {
+        let struct_name = get_crud_struct_name(&resource);
+        if let Some(meta) = struct_name.and_then(|n| get_struct_metadata(&n)) {
+            let mut set_clauses = Vec::new();
+            let mut values: Vec<serde_json::Value> = Vec::new();
+            let mut idx = 1;
+
+            for field in &meta.fields {
+                if field.name.to_lowercase() == "id" {
+                    continue;
                 }
+                let col_name = to_snake_case(&field.name);
+                if let Some(val) = obj.get(&field.name).or_else(|| obj.get(&col_name)) {
+                    set_clauses.push(format!("{} = ${}", col_name, idx));
+                    values.push(val.clone());
+                    idx += 1;
+                }
+            }
 
-                if !set_clauses.is_empty() {
-                    values.push(serde_json::json!(id));
-                    let sql = format!(
-                        "UPDATE {} SET {} WHERE id = ${} RETURNING *",
-                        resource,
-                        set_clauses.join(", "),
-                        idx
-                    );
-                    ffi_debug!("CRUD", "DB UPDATE SQL: {}", sql);
+            if !set_clauses.is_empty() {
+                values.push(serde_json::json!(id));
+                let sql = format!(
+                    "UPDATE {} SET {} WHERE id = ${} RETURNING *",
+                    resource,
+                    set_clauses.join(", "),
+                    idx
+                );
+                ffi_debug!("CRUD", "DB UPDATE SQL: {}", sql);
 
-                    match execute_db_insert(&sql, &values) {
-                        Ok(json) => {
-                            let items: Vec<serde_json::Value> =
-                                serde_json::from_str(&json).unwrap_or_default();
-                            if let Some(updated) = items.into_iter().next() {
-                                let response =
-                                    serde_json::to_string(&serde_json::json!({ "data": updated }))
-                                        .unwrap_or_else(|_| r#"{"data":{}}"#.to_string());
-                                return make_ok_json(&response);
-                            } else {
-                                return make_err_http(404, "Resource not found");
-                            }
+                match execute_db_insert(&sql, &values) {
+                    Ok(json) => {
+                        let items: Vec<serde_json::Value> =
+                            serde_json::from_str(&json).unwrap_or_default();
+                        if let Some(updated) = items.into_iter().next() {
+                            let sn = get_crud_struct_name(&resource).unwrap_or_default();
+                            let owner_id = get_resource_owner_from_row(&updated, &sn);
+                            let is_owner = is_authenticated(&jwt_claims)
+                                && owner_id == crate::rbac::get_jwt_user_id(&jwt_claims);
+                            let filtered = filter_response_fields_rbac(
+                                &updated,
+                                &sn,
+                                jwt_role.as_deref(),
+                                is_owner,
+                            );
+                            let response =
+                                serde_json::to_string(&serde_json::json!({ "data": filtered }))
+                                    .unwrap_or_else(|_| r#"{"data":{}}"#.to_string());
+                            return make_ok_json(&response);
+                        } else {
+                            return make_err_http(404, "Resource not found");
                         }
-                        Err(e) => {
-                            ffi_debug!("CRUD", "DB update error: {}", e);
-                            return make_err_http(500, &format!("Update failed: {}", e));
-                        }
+                    }
+                    Err(e) => {
+                        ffi_debug!("CRUD", "DB update error: {}", e);
+                        return make_err_http(500, &format!("Update failed: {}", e));
                     }
                 }
             }
         }
     }
 
-    // No in-memory fallback — database is required
-    ffi_debug!("CRUD", "ERROR: Database not available for resource: {}", resource);
-    make_err_http(503, "Database not available")
+    make_err_http(400, "No fields to update")
 }
 
 extern "C" fn crud_delete_handler(req: *const DooRequest) -> *mut DooResult {
@@ -380,8 +522,28 @@ extern "C" fn crud_delete_handler(req: *const DooRequest) -> *mut DooResult {
         .and_then(|s: &str| s.parse().ok())
         .unwrap_or_else(|| parts.iter().rev().find_map(|s| s.parse().ok()).unwrap_or(0));
 
-    // Try database-backed CRUD first
+    // --- RBAC: check delete policy with real owner ID ---
+    let jwt_claims = extract_jwt_claims_from_request(req);
+    let struct_name_for_rbac = get_crud_struct_name(&resource).unwrap_or_else(|| resource.clone());
+
     if is_db_backed_crud(&resource) {
+        let existing = match fetch_item_by_id(&resource, id) {
+            Some(item) => item,
+            None => return make_err_http(404, "Resource not found"),
+        };
+        let resource_owner_id = get_resource_owner_from_row(&existing, &struct_name_for_rbac);
+        if !check_policy(
+            &jwt_claims,
+            &struct_name_for_rbac,
+            "delete",
+            resource_owner_id,
+        ) {
+            if !is_authenticated(&jwt_claims) {
+                return make_err_http(401, "Unauthorized");
+            }
+            return make_err_http(403, "Access denied");
+        }
+
         let sql = format!("DELETE FROM {} WHERE id = $1", resource);
         match execute_db_delete_by_id(&sql, id as i32) {
             Ok(affected) => {
@@ -399,7 +561,11 @@ extern "C" fn crud_delete_handler(req: *const DooRequest) -> *mut DooResult {
     }
 
     // No in-memory fallback — database is required
-    ffi_debug!("CRUD", "ERROR: Database not available for resource: {}", resource);
+    ffi_debug!(
+        "CRUD",
+        "ERROR: Database not available for resource: {}",
+        resource
+    );
     make_err_http(503, "Database not available")
 }
 
@@ -472,17 +638,21 @@ pub extern "C" fn doo_http_crud(
                 );
             }
         } else {
-            ffi_debug!("HTTP", "WARNING: No database connection for CRUD resource '{}'", resource_key);
+            ffi_debug!(
+                "HTTP",
+                "WARNING: No database connection for CRUD resource '{}'",
+                resource_key
+            );
         }
 
         // Register CRUD routes
         let routes = get_routes();
         let mut registry = routes.lock().unwrap_or_else(|e| e.into_inner());
 
-        // Read routes are always public
-        registry.register("GET", &base_str, crud_list_handler);
+        // Read routes extract headers so RBAC can enforce read policies with auth context.
+        registry.register_needs_headers("GET", &base_str, crud_list_handler);
         let get_one_path = format!("{}/{{id}}", base_str);
-        registry.register("GET", &get_one_path, crud_get_handler);
+        registry.register_needs_headers("GET", &get_one_path, crud_get_handler);
 
         // Write routes: auto-protect with JWT when app.auth() has been configured.
         // This is generic — any CRUD endpoint auto-protects writes when auth is present.
@@ -494,8 +664,18 @@ pub extern "C" fn doo_http_crud(
                 base_str
             );
             let jwt_mw: Vec<DooMiddlewareFn> = vec![crate::middleware::jwt_middleware_handler];
-            registry.register_with_middleware("POST", &base_str, crud_create_handler, jwt_mw.clone());
-            registry.register_with_middleware("PUT", &get_one_path, crud_update_handler, jwt_mw.clone());
+            registry.register_with_middleware(
+                "POST",
+                &base_str,
+                crud_create_handler,
+                jwt_mw.clone(),
+            );
+            registry.register_with_middleware(
+                "PUT",
+                &get_one_path,
+                crud_update_handler,
+                jwt_mw.clone(),
+            );
             registry.register_with_middleware("DELETE", &get_one_path, crud_delete_handler, jwt_mw);
         } else {
             registry.register("POST", &base_str, crud_create_handler);

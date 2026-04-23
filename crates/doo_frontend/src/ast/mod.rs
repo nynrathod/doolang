@@ -43,6 +43,8 @@ pub enum Item {
     Enum(EnumDecl),
     /// Import statement
     Import(ImportDecl),
+    /// RBAC policy block
+    Policy(PolicyDecl),
     /// Standalone statement (for scripting)
     Statement(Stmt),
 }
@@ -54,6 +56,7 @@ impl Item {
             Self::Struct(s) => s.span,
             Self::Enum(e) => e.span,
             Self::Import(i) => i.span,
+            Self::Policy(p) => p.span,
             Self::Statement(s) => s.span(),
         }
     }

@@ -53,6 +53,9 @@ pub struct MirProgram {
     pub structs: HashMap<Sym, StructDef>,
     /// Enum metadata: name -> variant definitions
     pub enums: HashMap<Sym, EnumDef>,
+    /// RBAC policy metadata: struct_name -> policy JSON string
+    /// The key is the guarded struct name (e.g. "Post").
+    pub policies: HashMap<Sym, String>,
     /// Entry point function name (usually "main")
     pub entry_point: Option<Sym>,
 }
@@ -96,6 +99,8 @@ pub struct VariantDef {
     pub name: Sym,
     pub index: u32,
     pub payload_type: Option<TypeId>,
+    /// Decorators on this variant (e.g. `@inherits(User)`).
+    pub decorators: Vec<Decorator>,
 }
 
 /// Decorator on struct/field
@@ -112,6 +117,7 @@ impl MirProgram {
             globals: Vec::new(),
             structs: HashMap::new(),
             enums: HashMap::new(),
+            policies: HashMap::new(),
             entry_point: None,
         }
     }

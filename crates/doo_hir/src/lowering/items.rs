@@ -18,6 +18,7 @@ impl Lower {
             Item::Struct(s) => Some(HirItem::Struct(self.lower_struct(s))),
             Item::Enum(e) => Some(HirItem::Enum(self.lower_enum(e))),
             Item::Import(i) => Some(HirItem::Import(self.lower_import(i))),
+            Item::Policy(p) => Some(HirItem::Policy(self.lower_policy(p))),
             Item::Statement(_stmt) => {
                 // Top-level statements not supported in HIR yet
                 None
@@ -31,6 +32,7 @@ impl Lower {
             Item::Struct(s) => Some(HirItem::Struct(self.lower_struct_typed(s, registry))),
             Item::Enum(e) => Some(HirItem::Enum(self.lower_enum_typed(e, registry))),
             Item::Import(i) => Some(HirItem::Import(self.lower_import(i))),
+            Item::Policy(p) => Some(HirItem::Policy(self.lower_policy(p))),
             Item::Statement(_stmt) => {
                 // Top-level statements not supported in HIR yet
                 None
@@ -265,6 +267,7 @@ impl Lower {
             .map(|v| HirVariant {
                 name: v.name.clone(),
                 payload: None,
+                decorators: v.decorators.iter().map(|d| self.lower_decorator(d)).collect(),
                 span: v.span,
             })
             .collect();
@@ -286,6 +289,7 @@ impl Lower {
                     .payload
                     .as_ref()
                     .map(|t| self.resolve_type_expr(t, registry)),
+                decorators: v.decorators.iter().map(|d| self.lower_decorator(d)).collect(),
                 span: v.span,
             })
             .collect();
@@ -331,6 +335,16 @@ impl Lower {
             name: d.name.clone(),
             args: d.args.iter().map(|e| self.lower_expr(e)).collect(),
             span: d.span,
+        }
+    }
+
+    /// Lower a `PolicyDecl` to `HirPolicy`.
+    pub(crate) fn lower_policy(&mut self, p: &doo_frontend::ast::PolicyDecl) -> HirPolicy {
+        HirPolicy {
+            name: p.name.clone(),
+            for_struct: p.for_struct.clone(),
+            rules: p.rules.clone(),
+            span: p.span,
         }
     }
 }

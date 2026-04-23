@@ -66,6 +66,7 @@ mod metadata;
 pub mod metrics;
 mod middleware_ffi;
 mod password_reset;
+mod rbac;
 mod request;
 mod response;
 mod routes;

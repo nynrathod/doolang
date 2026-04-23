@@ -350,6 +350,27 @@ impl<'a> MirBuilder<'a> {
                                 name: sym(&v.name),
                                 index: i as u32,
                                 payload_type: v.payload,
+                                decorators: v
+                                    .decorators
+                                    .iter()
+                                    .map(|d| crate::types::Decorator {
+                                        name: sym(&d.name),
+                                        args: d
+                                            .args
+                                            .iter()
+                                            .filter_map(|a| match &a.kind {
+                                                HirExprKind::Const(cv) => match cv {
+                                                    ConstValue::Int(i) => Some(i.to_string()),
+                                                    ConstValue::Str(s) => Some(s.clone()),
+                                                    _ => None,
+                                                },
+                                                HirExprKind::Local { name } => Some(name.clone()),
+                                                HirExprKind::Global { name } => Some(name.clone()),
+                                                _ => None,
+                                            })
+                                            .collect(),
+                                    })
+                                    .collect(),
                             })
                             .collect(),
                     };
@@ -357,6 +378,17 @@ impl<'a> MirBuilder<'a> {
                 }
                 HirItem::Import(_) => {
                     // Imports handled elsewhere
+                }
+                HirItem::Policy(p) => {
+                    // Serialise policy rules to a JSON string for the FFI runtime.
+                    // Format: {"create":"authenticated","read":"public",...}
+                    let mut map = serde_json::Map::new();
+                    for (action, rule) in &p.rules {
+                        map.insert(action.clone(), serde_json::Value::String(rule.clone()));
+                    }
+                    let json = serde_json::to_string(&serde_json::Value::Object(map))
+                        .unwrap_or_else(|_| "{}".to_string());
+                    program.policies.insert(sym(&p.for_struct), json);
                 }
             }
         }

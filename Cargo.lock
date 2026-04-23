@@ -900,6 +900,7 @@ dependencies = [
  "pretty_assertions",
  "rustc-hash 1.1.0",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

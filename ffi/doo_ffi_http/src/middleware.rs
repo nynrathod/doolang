@@ -290,6 +290,7 @@ fn jwt_middleware_inner(req: *const DooRequest, next: DooNextFn) -> *mut DooResu
             user_id: Option<i64>,
             exp: Option<usize>,
             data: Option<String>,
+            role: Option<String>,
         }
 
         let mut validation = Validation::new(Algorithm::HS256);
@@ -351,9 +352,16 @@ fn jwt_middleware_inner(req: *const DooRequest, next: DooNextFn) -> *mut DooResu
         let headers_ptr = (*req_mut).headers as *mut HashMap<String, String>;
         if !headers_ptr.is_null() {
             (*headers_ptr).insert("x-user-id".to_string(), user_id_str.clone());
+            // Inject role so RBAC handlers can read it without re-decoding the JWT.
+            if let Some(ref r) = token_data.claims.role {
+                (*headers_ptr).insert("x-user-role".to_string(), r.clone());
+            }
         } else {
             let mut map = HashMap::new();
             map.insert("x-user-id".to_string(), user_id_str.clone());
+            if let Some(ref r) = token_data.claims.role {
+                map.insert("x-user-role".to_string(), r.clone());
+            }
             (*req_mut).headers = Box::into_raw(Box::new(map)) as *mut std::ffi::c_void;
         }
 

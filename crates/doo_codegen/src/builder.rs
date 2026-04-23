@@ -370,6 +370,30 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 .insert(resolve(*struct_name), field_decorators);
         }
 
+        // Populate RBAC policies from MIR
+        for (struct_name, policy_json) in &mir.policies {
+            ctx.rbac_policies.insert(resolve(*struct_name), policy_json.clone());
+        }
+
+        // Populate enum variant inheritance from MIR enums
+        for (enum_name, enum_def) in &mir.enums {
+            let mut inheritance: Vec<(String, Vec<String>)> = Vec::new();
+            for variant in &enum_def.variants {
+                let inherited: Vec<String> = variant
+                    .decorators
+                    .iter()
+                    .filter(|d| resolve(d.name) == "inherits")
+                    .flat_map(|d| d.args.iter().cloned())
+                    .collect();
+                if !inherited.is_empty() {
+                    inheritance.push((resolve(variant.name), inherited));
+                }
+            }
+            if !inheritance.is_empty() {
+                ctx.enum_inheritance.insert(resolve(*enum_name), inheritance);
+            }
+        }
+
         // First pass: declare all functions
         for func in &mir.functions {
             self.declare_function(&mut ctx, func);

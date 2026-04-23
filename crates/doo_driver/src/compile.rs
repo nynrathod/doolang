@@ -321,6 +321,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
                 doo_frontend::ast::Item::Enum(e) => doo_debug!("DEBUG", "  Enum: {}", e.name),
                 doo_frontend::ast::Item::Import(i) => doo_debug!("DEBUG", "  Import: {:?}", i.path),
                 doo_frontend::ast::Item::Statement(_) => doo_debug!("DEBUG", "  Statement"),
+                doo_frontend::ast::Item::Policy(p) => doo_debug!("DEBUG", "  Policy for {}", p.for_struct),
             }
         }
         doo_debug!("DEBUG", "HIR items: {}", hir.items.len());
@@ -330,6 +331,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
                 doo_hir::HirItem::Struct(s) => doo_debug!("DEBUG", "  HIR Struct: {}", s.name),
                 doo_hir::HirItem::Enum(e) => doo_debug!("DEBUG", "  HIR Enum: {}", e.name),
                 doo_hir::HirItem::Import(_) => doo_debug!("DEBUG", "  HIR Import"),
+                doo_hir::HirItem::Policy(p) => doo_debug!("DEBUG", "  HIR Policy for {}", p.for_struct),
             }
         }
     }

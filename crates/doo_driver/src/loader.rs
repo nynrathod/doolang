@@ -693,7 +693,7 @@ pub fn resolve_imports(
                         result.items.push(item.clone());
                     }
                 }
-                Item::Import(_) | Item::Statement(_) => {
+                Item::Import(_) | Item::Statement(_) | Item::Policy(_) => {
                     // Don't re-export
                 }
             }
@@ -1104,7 +1104,7 @@ pub fn resolve_imports(
                         result.items.push(item.clone());
                     }
                 }
-                Item::Import(_) | Item::Statement(_) => {
+                Item::Import(_) | Item::Statement(_) | Item::Policy(_) => {
                     // Don't re-export
                 }
             }
@@ -1258,7 +1258,7 @@ pub fn resolve_imports(
                             result.items.push(item.clone());
                         }
                     }
-                    Item::Import(_) | Item::Statement(_) => {}
+                    Item::Import(_) | Item::Statement(_) | Item::Policy(_) => {}
                 }
             }
         }

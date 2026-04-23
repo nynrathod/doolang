@@ -24,6 +24,7 @@ pub trait HirVisitor {
             HirItem::Struct(s) => self.visit_struct(s),
             HirItem::Enum(e) => self.visit_enum(e),
             HirItem::Import(i) => self.visit_import(i),
+            HirItem::Policy(_) => {}
         }
     }
 
@@ -277,6 +278,7 @@ pub trait HirVisitorMut {
             HirItem::Struct(s) => self.visit_struct_mut(s),
             HirItem::Enum(e) => self.visit_enum_mut(e),
             HirItem::Import(i) => self.visit_import_mut(i),
+            HirItem::Policy(_) => {}
         }
     }
 

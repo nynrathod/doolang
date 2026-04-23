@@ -54,6 +54,7 @@ for env_file in "${env_candidates[@]}"; do
                 jwt_val=${jwt_val#\"}
                 jwt_val=${jwt_val%\'}
                 jwt_val=${jwt_val#\'}
+                jwt_val=${jwt_val%$'\r'}
                 if [ -n "$jwt_val" ]; then
                     export JWT_SECRET="$jwt_val"
                 fi
@@ -69,6 +70,7 @@ for env_file in "${env_candidates[@]}"; do
                 db_val=${db_val#\"}
                 db_val=${db_val%\'}
                 db_val=${db_val#\'}
+                db_val=${db_val%$'\r'}
                 if [ -n "$db_val" ]; then
                     export DATABASE_URL="$db_val"
                 fi
@@ -143,7 +145,7 @@ start_server() {
     # Start server in background AND LOG TO server.log
     # Use stdbuf -oL for line-buffered output so log is readable immediately
     if command -v stdbuf >/dev/null 2>&1; then
-        stdbuf -oL "$BIN" run "$doo_file" >server.log 2>&1 &
+        stdbuf -oL "$BIN" run "$doo_file" --debug>server.log 2>&1 &
     else
         "$BIN" run "$doo_file" >server.log 2>&1 &
     fi

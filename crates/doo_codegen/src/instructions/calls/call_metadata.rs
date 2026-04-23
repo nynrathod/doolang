@@ -604,3 +604,159 @@ fn type_id_to_string_inner(
         "Unknown".to_string()
     }
 }
+
+/// Emit RBAC policy metadata registration if a policy is registered for
+/// the struct referenced in the current auth/crud call.
+///
+/// Called from `http::pre_call` after struct metadata emission.
+pub(crate) fn emit_policy_metadata_if_present<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    args: &[MirOperand],
+) {
+    // Find the struct name from arguments (same logic as struct metadata emission)
+    let struct_name = args.iter().find_map(|arg| {
+        if let MirOperand::Const(MirConst::Str(name)) = arg {
+            if ctx.type_registry.lookup(name).is_some() {
+                return Some(name.clone());
+            }
+        }
+        None
+    });
+
+    let struct_name = match struct_name {
+        Some(name) => name,
+        None => return,
+    };
+
+    // Look up the policy JSON for this struct
+    let policy_json = match ctx.rbac_policies.get(&struct_name).cloned() {
+        Some(j) => j,
+        None => return, // No policy registered — no-op
+    };
+
+    let debug = std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok();
+    if debug {
+        doo_debug!(
+            "CODEGEN",
+            "Registering RBAC policy for {}: {}",
+            struct_name,
+            policy_json
+        );
+    }
+
+    // Get or declare doo_http_register_policy(name: *const c_char, policy_json: *const c_char)
+    let void_type = ctx.context.void_type();
+    let ptr_type = ctx.ptr_type();
+    let fn_type = void_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+
+    let register_fn = ctx
+        .module
+        .get_function(http_pkg::DOO_HTTP_REGISTER_POLICY)
+        .unwrap_or_else(|| {
+            ctx.module
+                .add_function(http_pkg::DOO_HTTP_REGISTER_POLICY, fn_type, None)
+        });
+
+    let struct_name_ptr = ctx.const_string(&struct_name);
+    let policy_ptr = ctx.const_string(&policy_json);
+
+    let _ = ctx.builder.build_call(
+        register_fn,
+        &[struct_name_ptr.into(), policy_ptr.into()],
+        "register_policy",
+    );
+
+    // Also emit role hierarchy for any enum types referenced by this struct
+    // (i.e., fields with @role decorator whose type is an enum with @inherits variants)
+    emit_role_hierarchy_for_struct(ctx, &struct_name);
+}
+
+/// Emit role hierarchy registration for all enum fields in a struct that
+/// have `@inherits` data recorded in `ctx.enum_inheritance`.
+fn emit_role_hierarchy_for_struct<'ctx>(ctx: &mut CodegenContext<'ctx>, struct_name: &str) {
+    // Find the struct type
+    let struct_type_id = match ctx.type_registry.lookup(struct_name) {
+        Some(id) => id,
+        None => return,
+    };
+
+    // Collect field types
+    let field_type_ids: Vec<doo_core::types::TypeId> = ctx
+        .type_registry
+        .get(struct_type_id)
+        .and_then(|info| {
+            if let doo_core::types::TypeKind::Struct { fields, .. } = &info.kind {
+                Some(fields.iter().map(|(_, tid, _)| *tid).collect())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+
+    for field_type_id in field_type_ids {
+        let type_info = match ctx.type_registry.get(field_type_id) {
+            Some(info) => info,
+            None => continue,
+        };
+
+        if let doo_core::types::TypeKind::Enum { name, .. } = &type_info.kind {
+            let enum_name = name.clone();
+            // Check if we have inheritance data for this enum
+            if let Some(inheritance) = ctx.enum_inheritance.get(&enum_name).cloned() {
+                emit_role_hierarchy_for_enum(ctx, &enum_name, &inheritance);
+            }
+        }
+    }
+}
+
+/// Emit `doo_http_register_role_hierarchy(enum_name, hierarchy_json)` for an enum.
+///
+/// `inheritance` is `Vec<(variant_name, Vec<inherited_variants>)>` from `ctx.enum_inheritance`.
+/// The emitted JSON format is: `{"Admin":["Moderator","User"],"Moderator":["User"]}`
+fn emit_role_hierarchy_for_enum<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    enum_name: &str,
+    inheritance: &[(String, Vec<String>)],
+) {
+    let mut map = serde_json::Map::new();
+    for (variant, inherited) in inheritance {
+        let arr: Vec<serde_json::Value> = inherited
+            .iter()
+            .map(|s| serde_json::Value::String(s.clone()))
+            .collect();
+        map.insert(variant.clone(), serde_json::Value::Array(arr));
+    }
+    let hierarchy_json =
+        serde_json::to_string(&serde_json::Value::Object(map)).unwrap_or_else(|_| "{}".to_string());
+
+    let debug = std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok();
+    if debug {
+        doo_debug!(
+            "CODEGEN",
+            "Registering role hierarchy for {}: {}",
+            enum_name,
+            hierarchy_json
+        );
+    }
+
+    let void_type = ctx.context.void_type();
+    let ptr_type = ctx.ptr_type();
+    let fn_type = void_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+
+    let register_fn = ctx
+        .module
+        .get_function("doo_http_register_role_hierarchy")
+        .unwrap_or_else(|| {
+            ctx.module
+                .add_function("doo_http_register_role_hierarchy", fn_type, None)
+        });
+
+    let enum_name_ptr = ctx.const_string(enum_name);
+    let hierarchy_ptr = ctx.const_string(&hierarchy_json);
+
+    let _ = ctx.builder.build_call(
+        register_fn,
+        &[enum_name_ptr.into(), hierarchy_ptr.into()],
+        "register_role_hierarchy",
+    );
+}

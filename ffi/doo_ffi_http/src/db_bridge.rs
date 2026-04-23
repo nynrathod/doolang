@@ -35,13 +35,19 @@ fn get_db_symbols() -> Option<&'static DbSymbols> {
         .get_or_init(|| {
             // Strategy 1: Find symbols in current process (static linking)
             if let Some(syms) = resolve_from_current_process() {
-                ffi_debug!("HTTP", "DB symbols resolved from current process (static linking)");
+                ffi_debug!(
+                    "HTTP",
+                    "DB symbols resolved from current process (static linking)"
+                );
                 return Some(syms);
             }
 
             // Strategy 2: Load from external library file (dynamic linking fallback)
             if let Some(syms) = resolve_from_external_library() {
-                ffi_debug!("HTTP", "DB symbols resolved from external library (dynamic linking)");
+                ffi_debug!(
+                    "HTTP",
+                    "DB symbols resolved from external library (dynamic linking)"
+                );
                 return Some(syms);
             }
 
@@ -74,9 +80,7 @@ fn resolve_from_current_process() -> Option<DbSymbols> {
 /// 2. OS-level resolution (dlsym/GetProcAddress) — works for dynamic linking
 fn find_symbol_in_process(name: &[u8]) -> Option<*mut c_void> {
     // Strip trailing null byte for bridge lookup
-    let name_str = std::str::from_utf8(
-        &name[..name.len().saturating_sub(1)]
-    ).unwrap_or("");
+    let name_str = std::str::from_utf8(&name[..name.len().saturating_sub(1)]).unwrap_or("");
 
     // First: check FFI bridge registry (works for static linking on all platforms)
     if let Some(ptr) = doo_ffi_core::ffi_bridge::resolve(name_str) {
@@ -90,9 +94,7 @@ fn find_symbol_in_process(name: &[u8]) -> Option<*mut c_void> {
 /// Find a symbol using OS-level APIs (dlsym on Unix, GetProcAddress on Windows).
 #[cfg(unix)]
 fn find_symbol_os_level(name: &[u8]) -> Option<*mut c_void> {
-    let addr = unsafe {
-        libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr() as *const c_char)
-    };
+    let addr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr() as *const c_char) };
     if addr.is_null() {
         None
     } else {
@@ -104,10 +106,7 @@ fn find_symbol_os_level(name: &[u8]) -> Option<*mut c_void> {
 fn find_symbol_os_level(name: &[u8]) -> Option<*mut c_void> {
     // Enumerate all loaded modules and search for the symbol
     extern "system" {
-        fn GetProcAddress(
-            hModule: *mut c_void,
-            lpProcName: *const i8,
-        ) -> *mut c_void;
+        fn GetProcAddress(hModule: *mut c_void, lpProcName: *const i8) -> *mut c_void;
         fn GetCurrentProcess() -> *mut c_void;
         fn K32EnumProcessModules(
             hProcess: *mut c_void,

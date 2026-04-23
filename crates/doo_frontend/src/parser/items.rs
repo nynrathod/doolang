@@ -20,6 +20,9 @@ pub trait ParserItems {
     fn parse_enum(&mut self) -> ParseResult<EnumDecl>;
     fn parse_variant_decl(&mut self) -> ParseResult<VariantDecl>;
     fn parse_import(&mut self) -> ParseResult<ImportDecl>;
+    fn parse_policy(&mut self) -> ParseResult<PolicyDecl>;
+    fn parse_policy_rule(&mut self) -> ParseResult<String>;
+    fn parse_policy_term(&mut self) -> ParseResult<String>;
 }
 
 impl ParserItems for Parser {
@@ -55,6 +58,11 @@ impl ParserItems for Parser {
                 // Decorators not supported on imports
                 drop(decorators);
                 Ok(Item::Import(self.parse_import()?))
+            }
+            TokenKind::Policy => {
+                // Decorators not supported on policy blocks
+                drop(decorators);
+                Ok(Item::Policy(self.parse_policy()?))
             }
             _ => {
                 // Treat as statement - decorators not supported
@@ -495,10 +503,14 @@ impl ParserItems for Parser {
             None
         };
 
+        // Parse decorators on variants (e.g. @inherits(User))
+        let decorators = self.parse_decorators()?;
+
         let end = self.prev_span();
         Ok(VariantDecl {
             name,
             payload,
+            decorators,
             span: start.merge(&end),
         })
     }
@@ -585,5 +597,86 @@ impl ParserItems for Parser {
             wildcard: false,
             span: start.merge(&end),
         })
+    }
+
+    // === RBAC Policy ===
+
+    /// Parse a `policy PolicyName for StructName { action: rule, ... }` block.
+    ///
+    /// Rules are parsed as free-form expressions and serialised to a canonical
+    /// string understood by the FFI runtime:
+    ///   - `public`           → "public"
+    ///   - `authenticated`    → "authenticated"
+    ///   - `own`              → "own"
+    ///   - `Role::Admin`      → "Admin"
+    ///   - `a | b`            → "a|b"
+    ///   - `a & b`            → "a&b"
+    fn parse_policy(&mut self) -> ParseResult<PolicyDecl> {
+        let start = self.current_span();
+        self.expect(TokenKind::Policy)?;
+
+        let name = self.expect_ident()?;
+        self.expect(TokenKind::For)?;
+        let for_struct = self.expect_ident()?;
+        self.expect(TokenKind::LBrace)?;
+
+        let mut rules: Vec<(String, String)> = Vec::new();
+        while !self.check(TokenKind::RBrace) && !self.is_at_end() {
+            let action = self.expect_ident()?;
+            self.expect(TokenKind::Colon)?;
+            let rule_str = self.parse_policy_rule()?;
+            rules.push((action, rule_str));
+            // Optional trailing comma
+            if self.check(TokenKind::Comma) {
+                self.advance();
+            }
+        }
+
+        self.expect(TokenKind::RBrace)?;
+        let end = self.prev_span();
+
+        let mut decl = PolicyDecl::new(name, for_struct, start.merge(&end));
+        decl.rules = rules;
+        Ok(decl)
+    }
+
+    /// Parse a policy rule expression and serialise it to a canonical string.
+    ///
+    /// Grammar (simple recursive descent):
+    ///   rule  = term (('|' | '&') term)*
+    ///   term  = ident ('::' ident)?   -- e.g. Role::Admin, public, own, authenticated
+    fn parse_policy_rule(&mut self) -> ParseResult<String> {
+        // Canonical serialization (single source of truth):
+        // - no whitespace
+        // - Role::Variant lowered to "Variant" by parse_policy_term
+        // - operators preserved in source order
+        let mut result = self.parse_policy_term()?;
+
+        while self.check(TokenKind::Or) || self.check(TokenKind::And) {
+            if self.check(TokenKind::Or) {
+                self.advance();
+                result.push('|');
+            } else {
+                self.advance();
+                result.push('&');
+            }
+            result.push_str(&self.parse_policy_term()?);
+        }
+
+        Ok(result)
+    }
+
+    /// Parse a single policy term: an identifier, optionally qualified with `::`.
+    /// Examples: `public`, `authenticated`, `own`, `Role::Admin`, `Role::User`
+    fn parse_policy_term(&mut self) -> ParseResult<String> {
+        let first = self.expect_ident()?;
+        if self.check(TokenKind::ColonColon) {
+            self.advance();
+            let variant = self.expect_ident()?;
+            // Discard the enum name prefix — the FFI matches on variant name only
+            Ok(variant)
+        } else {
+            Ok(first)
+        }
     }
 }
