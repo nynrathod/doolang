@@ -428,6 +428,16 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             method,
             args,
         } => {
+            // === Query Builder Interception ===
+            // When we see a terminal method (exec/execOne/toSql), attempt to lower
+            // the entire chain as a compile-time SQL query. Falls through to normal
+            // dispatch if this is not a recognizable query chain.
+            if super::query_builder::is_query_terminal(method) {
+                if let Some(op) = super::query_builder::try_lower_query_chain(builder, expr, span) {
+                    return op;
+                }
+            }
+
             if method == "__set" && args.len() == 2 {
                 let recv_kind = builder.infer_container_kind(receiver);
                 let recv = builder.build_expr(receiver);

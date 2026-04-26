@@ -30,6 +30,106 @@ pub fn json_value_to_typed_param(
     }
 
     match pg_type {
+        // Array types
+        &Type::INT2_ARRAY => match v {
+            serde_json::Value::Array(items) => Box::new(
+                items
+                    .iter()
+                    .map(|x| match x {
+                        serde_json::Value::Number(n) => n.as_i64().unwrap_or(0) as i16,
+                        serde_json::Value::String(s) => s.parse::<i16>().unwrap_or(0),
+                        serde_json::Value::Bool(b) => if *b { 1i16 } else { 0i16 },
+                        _ => 0i16,
+                    })
+                    .collect::<Vec<i16>>(),
+            ),
+            _ => Box::new(Vec::<i16>::new()),
+        },
+        &Type::INT4_ARRAY => match v {
+            serde_json::Value::Array(items) => Box::new(
+                items
+                    .iter()
+                    .map(|x| match x {
+                        serde_json::Value::Number(n) => n.as_i64().unwrap_or(0) as i32,
+                        serde_json::Value::String(s) => s.parse::<i32>().unwrap_or(0),
+                        serde_json::Value::Bool(b) => if *b { 1i32 } else { 0i32 },
+                        _ => 0i32,
+                    })
+                    .collect::<Vec<i32>>(),
+            ),
+            _ => Box::new(Vec::<i32>::new()),
+        },
+        &Type::INT8_ARRAY => match v {
+            serde_json::Value::Array(items) => Box::new(
+                items
+                    .iter()
+                    .map(|x| match x {
+                        serde_json::Value::Number(n) => n.as_i64().unwrap_or(0),
+                        serde_json::Value::String(s) => s.parse::<i64>().unwrap_or(0),
+                        serde_json::Value::Bool(b) => if *b { 1i64 } else { 0i64 },
+                        _ => 0i64,
+                    })
+                    .collect::<Vec<i64>>(),
+            ),
+            _ => Box::new(Vec::<i64>::new()),
+        },
+        &Type::FLOAT4_ARRAY => match v {
+            serde_json::Value::Array(items) => Box::new(
+                items
+                    .iter()
+                    .map(|x| match x {
+                        serde_json::Value::Number(n) => n.as_f64().unwrap_or(0.0) as f32,
+                        serde_json::Value::String(s) => s.parse::<f32>().unwrap_or(0.0),
+                        serde_json::Value::Bool(b) => if *b { 1.0f32 } else { 0.0f32 },
+                        _ => 0.0f32,
+                    })
+                    .collect::<Vec<f32>>(),
+            ),
+            _ => Box::new(Vec::<f32>::new()),
+        },
+        &Type::FLOAT8_ARRAY => match v {
+            serde_json::Value::Array(items) => Box::new(
+                items
+                    .iter()
+                    .map(|x| match x {
+                        serde_json::Value::Number(n) => n.as_f64().unwrap_or(0.0),
+                        serde_json::Value::String(s) => s.parse::<f64>().unwrap_or(0.0),
+                        serde_json::Value::Bool(b) => if *b { 1.0f64 } else { 0.0f64 },
+                        _ => 0.0f64,
+                    })
+                    .collect::<Vec<f64>>(),
+            ),
+            _ => Box::new(Vec::<f64>::new()),
+        },
+        &Type::BOOL_ARRAY => match v {
+            serde_json::Value::Array(items) => Box::new(
+                items
+                    .iter()
+                    .map(|x| match x {
+                        serde_json::Value::Bool(b) => *b,
+                        serde_json::Value::String(s) => s == "true" || s == "1",
+                        serde_json::Value::Number(n) => n.as_i64().unwrap_or(0) != 0,
+                        _ => false,
+                    })
+                    .collect::<Vec<bool>>(),
+            ),
+            _ => Box::new(Vec::<bool>::new()),
+        },
+        &Type::TEXT_ARRAY | &Type::VARCHAR_ARRAY | &Type::BPCHAR_ARRAY | &Type::NAME_ARRAY => {
+            match v {
+                serde_json::Value::Array(items) => Box::new(
+                    items
+                        .iter()
+                        .map(|x| match x {
+                            serde_json::Value::String(s) => s.clone(),
+                            serde_json::Value::Null => String::new(),
+                            _ => x.to_string(),
+                        })
+                        .collect::<Vec<String>>(),
+                ),
+                _ => Box::new(Vec::<String>::new()),
+            }
+        }
         // Integer types
         &Type::INT2 => match v {
             serde_json::Value::Number(n) => Box::new(n.as_i64().unwrap_or(0) as i16),
@@ -114,6 +214,16 @@ pub fn json_values_to_pg_params(
 /// Convert a single JSON value to a PG parameter without type context.
 pub fn json_value_to_untyped_param(v: &serde_json::Value) -> Box<dyn ToSql + Sync + Send> {
     match v {
+        serde_json::Value::Array(items) => Box::new(
+            items
+                .iter()
+                .map(|x| match x {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Null => String::new(),
+                    _ => x.to_string(),
+                })
+                .collect::<Vec<String>>(),
+        ),
         serde_json::Value::String(s) => Box::new(s.clone()),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
