@@ -1,0 +1,361 @@
+import std::Database;
+
+// ============================================================================
+// QB Advanced Tests — Operators, Aggregate, GroupBy, Distinct, Increment, etc.
+//
+// YC-level startup scenario: Analytics + reporting layer of a SaaS platform.
+// Tests advanced query builder features beyond basic CRUD.
+//
+// REQUIRES: PostgreSQL running with DATABASE_URL set
+// ============================================================================
+
+// @table decorator overrides the auto-generated table name
+@table("blog_posts")
+struct Post {
+    id: Int @primary @auto,
+    title: Str,
+    category: Str,
+    view_count: Int,
+    like_count: Int,
+    author_id: Int,
+    published: Bool,
+    summary: Str,
+}
+
+struct Metric {
+    id: Int @primary @auto,
+    name: Str,
+    value: Int,
+    category: Str,
+    user_id: Int,
+    recorded_at: Str,
+}
+
+fn main() {
+    let mut db = Database::Postgres()?;
+    print("=== QB Advanced Tests ===");
+
+    // ========================================================================
+    // SEED: Use QB insert() to populate tables
+    // ========================================================================
+    print("=== SEED: Inserting test data via QB ===");
+
+    db.insert(Post, { title: "Building a Compiler in Rust", category: "engineering", view_count: 4500, like_count: 230, author_id: 1, published: true, summary: "Deep dive into LLVM" }).exec()?;
+    db.insert(Post, { title: "YC Application Tips", category: "startup", view_count: 8900, like_count: 450, author_id: 2, published: true, summary: "How we got into YC" }).exec()?;
+    db.insert(Post, { title: "Database Performance at Scale", category: "engineering", view_count: 3200, like_count: 180, author_id: 1, published: true, summary: "PgBouncer + read replicas" }).exec()?;
+    db.insert(Post, { title: "Draft: Type System Design", category: "engineering", view_count: 0, like_count: 0, author_id: 1, published: false, summary: "Unpublished draft" }).exec()?;
+    db.insert(Post, { title: "How to Scale to 10K Users", category: "startup", view_count: 12000, like_count: 890, author_id: 3, published: true, summary: "Infrastructure lessons learned" }).exec()?;
+    db.insert(Post, { title: "Customer Interview Framework", category: "growth", view_count: 2100, like_count: 95, author_id: 2, published: true, summary: "" }).exec()?;
+
+    db.insertMany(Metric, [
+        { name: "api_requests", value: 1500, category: "performance", user_id: 1, recorded_at: "2024-01-01" },
+        { name: "db_queries", value: 3200, category: "performance", user_id: 1, recorded_at: "2024-01-01" },
+        { name: "errors", value: 12, category: "reliability", user_id: 2, recorded_at: "2024-01-01" },
+        { name: "new_users", value: 45, category: "growth", user_id: 1, recorded_at: "2024-01-02" },
+        { name: "churn", value: 3, category: "growth", user_id: 2, recorded_at: "2024-01-02" },
+        { name: "revenue", value: 9800, category: "business", user_id: 1, recorded_at: "2024-01-02" },
+    ]).exec()?;
+
+    print("PASS: Test data seeded via QB");
+
+    // ========================================================================
+    // TEST 1: @table decorator — custom table name
+    // ========================================================================
+    print("=== TEST 1: @table decorator (custom table name) ===");
+
+    let customTableSql: Str = db.find(Post).toSql()?;
+    print("PASS: @table decorator SQL:", customTableSql);
+
+    let allPosts: Str = db.find(Post).exec()?;
+    print("PASS: find all posts (blog_posts table):", allPosts);
+
+    // ========================================================================
+    // TEST 2: select([cols]) — specific columns
+    // ========================================================================
+    print("=== TEST 2: select([cols]) ===");
+
+    let selectCols: Str = db.find(Post)
+        .select(["title", "category", "view_count"])
+        .toSql()?;
+    print("PASS: select specific cols SQL:", selectCols);
+
+    let titleAndCat: Str = db.find(Post)
+        .select(["title", "category", "view_count"])
+        .where({ published: true })
+        .exec()?;
+    print("PASS: select 3 cols from published posts:", titleAndCat);
+
+    let excludeSql: Str = db.find(Post)
+        .exclude(["summary"])
+        .toSql()?;
+    print("PASS: exclude SQL:", excludeSql);
+
+    // ========================================================================
+    // TEST 3: distinct()
+    // ========================================================================
+    print("=== TEST 3: distinct() ===");
+
+    let distinctSql: Str = db.find(Post)
+        .select(["category"])
+        .distinct()
+        .toSql()?;
+    print("PASS: distinct category SQL:", distinctSql);
+
+    let distinctCategories: Str = db.find(Post)
+        .select(["category"])
+        .distinct()
+        .orderBy({ category: Asc })
+        .exec()?;
+    print("PASS: distinct categories:", distinctCategories);
+
+    // ========================================================================
+    // TEST 4: IsNull / IsNotNull
+    // ========================================================================
+    print("=== TEST 4: IsNull / IsNotNull ===");
+
+    let isNullSql: Str = db.find(Post).where({ summary: IsNull }).toSql()?;
+    print("PASS: IsNull SQL:", isNullSql);
+
+    let emptyOrNullSummary: Str = db.find(Post).where({ summary: IsNull }).exec()?;
+    print("PASS: summary IsNull result:", emptyOrNullSummary);
+
+    let notNullSql: Str = db.find(Post).where({ summary: IsNotNull }).toSql()?;
+    print("PASS: IsNotNull SQL:", notNullSql);
+
+    let hasSummary: Str = db.find(Post).where({ summary: IsNotNull }).exec()?;
+    print("PASS: summary IsNotNull result:", hasSummary);
+
+    // ========================================================================
+    // TEST 5: orWhere() — OR conditions
+    // ========================================================================
+    print("=== TEST 5: orWhere() ===");
+
+    let orWhereSql: Str = db.find(Post)
+        .where({ category: "engineering" })
+        .orWhere({ category: "startup" })
+        .toSql()?;
+    print("PASS: orWhere SQL:", orWhereSql);
+
+    let engineeringOrStartup: Str = db.find(Post)
+        .where({ category: "engineering" })
+        .orWhere({ category: "startup" })
+        .exec()?;
+    print("PASS: engineering OR startup posts:", engineeringOrStartup);
+
+    // ========================================================================
+    // TEST 6: whereNot() — NOT conditions
+    // ========================================================================
+    print("=== TEST 6: whereNot() ===");
+
+    let whereNotSql: Str = db.find(Post)
+        .whereNot({ category: "engineering" })
+        .toSql()?;
+    print("PASS: whereNot SQL:", whereNotSql);
+
+    let notEngineering: Str = db.find(Post)
+        .whereNot({ category: "engineering" })
+        .exec()?;
+    print("PASS: non-engineering posts:", notEngineering);
+
+    // ========================================================================
+    // TEST 7: whereNull() / whereNotNull() chain methods
+    // ========================================================================
+    print("=== TEST 7: whereNull / whereNotNull chain methods ===");
+
+    let whereNullSql: Str = db.find(Post).whereNull(["summary"]).toSql()?;
+    print("PASS: whereNull chain SQL:", whereNullSql);
+
+    let whereNullSingleSql: Str = db.find(Post).whereNull("summary").toSql()?;
+    print("PASS: whereNull single-field SQL:", whereNullSingleSql);
+
+    let whereNotNullSql: Str = db.find(Post).whereNotNull(["summary"]).toSql()?;
+    print("PASS: whereNotNull chain SQL:", whereNotNullSql);
+
+    // ========================================================================
+    // TEST 8: whereBetween() — BETWEEN via chain method
+    // ========================================================================
+    print("=== TEST 8: whereBetween() chain ===");
+
+    let betweenSql: Str = db.find(Post)
+        .whereBetween("view_count", 2000, 10000)
+        .toSql()?;
+    print("PASS: whereBetween SQL:", betweenSql);
+
+    let popularPosts: Str = db.find(Post)
+        .whereBetween("view_count", 2000, 10000)
+        .orderBy({ view_count: Desc })
+        .exec()?;
+    print("PASS: posts with 2k-10k views:", popularPosts);
+
+    // ========================================================================
+    // TEST 9: whereIn() chain method
+    // ========================================================================
+    print("=== TEST 9: whereIn() chain ===");
+
+    let whereInSql: Str = db.find(Post)
+        .whereIn("author_id", [1, 3])
+        .toSql()?;
+    print("PASS: whereIn SQL:", whereInSql);
+
+    let authorPosts: Str = db.find(Post)
+        .whereIn("author_id", [1, 3])
+        .exec()?;
+    print("PASS: posts by authors 1 and 3:", authorPosts);
+
+    // ========================================================================
+    // TEST 10: Full complex chain (enterprise-level query)
+    // ========================================================================
+    print("=== TEST 10: Complex full chain ===");
+
+    let complexSql: Str = db.find(Post)
+        .select(["title", "category", "view_count", "like_count"])
+        .where({ published: true, view_count: Gt(1000) })
+        .orderBy({ view_count: Desc, like_count: Desc })
+        .limit(10)
+        .offset(0)
+        .toSql()?;
+    print("PASS: complex query SQL:", complexSql);
+
+    let topContent: Str = db.find(Post)
+        .select(["title", "category", "view_count", "like_count"])
+        .where({ published: true, view_count: Gt(1000) })
+        .orderBy({ view_count: Desc })
+        .limit(5)
+        .exec()?;
+    print("PASS: top content by views:", topContent);
+
+    let topOne: Str = db.find(Post)
+        .where({ published: true })
+        .orderBy({ view_count: Desc })
+        .execOne()?;
+    print("PASS: execOne top published post:", topOne);
+
+    // ========================================================================
+    // TEST 11: insertMany() — bulk insert
+    // ========================================================================
+    print("=== TEST 11: insertMany() ===");
+
+    let insertManySql: Str = db.insertMany(Metric, [
+        { name: "p99_latency", value: 280, category: "performance", user_id: 1, recorded_at: "2024-01-03" },
+        { name: "p99_latency", value: 310, category: "performance", user_id: 2, recorded_at: "2024-01-03" },
+        { name: "uptime_pct", value: 9995, category: "reliability", user_id: 1, recorded_at: "2024-01-03" },
+    ]).toSql()?;
+    print("PASS: insertMany SQL:", insertManySql);
+
+    let bulkInserted: Str = db.insertMany(Metric, [
+        { name: "dau", value: 1250, category: "growth", user_id: 1, recorded_at: "2024-01-03" },
+        { name: "mrr", value: 14200, category: "business", user_id: 1, recorded_at: "2024-01-03" },
+    ]).exec()?;
+    print("PASS: bulk insert metrics:", bulkInserted);
+
+    // ========================================================================
+    // TEST 12: update().increment() — atomic counter updates
+    // ========================================================================
+    print("=== TEST 12: increment() / decrement() ===");
+
+    let incSql: Str = db.update(Post)
+        .increment("view_count", 1)
+        .where({ id: 1 })
+        .toSql()?;
+    print("PASS: increment SQL:", incSql);
+
+    let incResult: Str = db.update(Post)
+        .increment("view_count", 100)
+        .where({ category: "engineering" })
+        .exec()?;
+    print("PASS: increment view_count for engineering posts:", incResult);
+
+    let decSql: Str = db.update(Metric)
+        .decrement("value", 1)
+        .where({ name: "churn" })
+        .toSql()?;
+    print("PASS: decrement SQL:", decSql);
+
+    // ========================================================================
+    // TEST 13: update().returning(["id", "title"]) — custom RETURNING
+    // ========================================================================
+    print("=== TEST 13: custom RETURNING clause ===");
+
+    let returningSql: Str = db.update(Post)
+        .set({ published: true })
+        .where({ published: false })
+        .returning(["id", "title"])
+        .toSql()?;
+    print("PASS: custom RETURNING SQL:", returningSql);
+
+    let publishedDraft: Str = db.update(Post)
+        .set({ published: true })
+        .where({ published: false })
+        .returning(["id", "title"])
+        .exec()?;
+    print("PASS: publish draft, get id + title:", publishedDraft);
+
+    let returningAllSql: Str = db.update(Post)
+        .set({ published: true })
+        .where({ category: "growth" })
+        .returning("*")
+        .toSql()?;
+    print("PASS: RETURNING * SQL:", returningAllSql);
+
+    // ========================================================================
+    // TEST 14: groupBy() for analytics
+    // ========================================================================
+    print("=== TEST 14: groupBy() analytics ===");
+
+    let groupBySql: Str = db.find(Post)
+        .select(["category"])
+        .groupBy(["category"])
+        .toSql()?;
+    print("PASS: groupBy SQL:", groupBySql);
+
+    let groupByResult: Str = db.find(Metric)
+        .select(["category"])
+        .groupBy(["category"])
+        .exec()?;
+    print("PASS: metrics grouped by category:", groupByResult);
+
+    // ========================================================================
+    // TEST 14B: aggregate() + having() for analytical queries
+    // ========================================================================
+    print("=== TEST 14B: aggregate() + having() ===");
+
+    let aggSql: Str = db.find(Post)
+        .aggregate({ total: Count("*"), max_views: Max("view_count") })
+        .groupBy(["category"])
+        .having({ total: Gt(1) })
+        .toSql()?;
+    print("PASS: aggregate + having SQL:", aggSql);
+
+    let aggResult: Str = db.find(Post)
+        .aggregate({ total: Count("*") })
+        .groupBy(["category"])
+        .having({ total: Gt(0) })
+        .exec()?;
+    print("PASS: aggregate + having result:", aggResult);
+
+    let numericAggSql: Str = db.find(Post)
+        .aggregate({ sum_views: Sum("view_count"), avg_views: Avg("view_count"), min_views: Min("view_count"), max_views: Max("view_count") })
+        .toSql()?;
+    print("PASS: numeric aggregate SQL:", numericAggSql);
+
+    // ========================================================================
+    // TEST 15: Edge cases
+    // ========================================================================
+    print("=== TEST 15: Edge cases ===");
+
+    // Empty where — should match all
+    let allPostsSql: Str = db.find(Post).toSql()?;
+    print("PASS: no-where SQL (SELECT *):", allPostsSql);
+
+    // Multiple orderBy fields
+    let multiOrderSql: Str = db.find(Post)
+        .orderBy({ category: Asc, view_count: Desc })
+        .toSql()?;
+    print("PASS: multi-field orderBy SQL:", multiOrderSql);
+
+    // execOne on empty result should not crash
+    let countPost: Str = db.count(Post).where({ category: "nonexistent" }).exec()?;
+    print("PASS: count nonexistent category:", countPost);
+
+    print("=== ALL QB ADVANCED TESTS COMPLETED ===");
+}

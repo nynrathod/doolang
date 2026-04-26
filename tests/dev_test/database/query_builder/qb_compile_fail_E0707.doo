@@ -1,0 +1,24 @@
+import std::Database;
+
+// --- E0707: update/delete without a filter clause (unsafe mutation) ---
+struct E0707Task {
+    id: Int @primary @auto,
+    title: Str,
+    status: Str,
+}
+
+fn main() {
+    let db = Database::Postgres()?;
+
+    // MUST fail: update with no .where() clause
+    let _upd: Str = db.update(E0707Task)
+        .set({ status: "done" })
+        .toSql()?;
+
+    // MUST fail: delete with no .where() clause
+    let _del: Str = db.delete(E0707Task)
+        .toSql()?;
+
+    print(_upd);
+    print(_del);
+}
