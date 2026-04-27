@@ -107,18 +107,20 @@ jobs:
           # Delete old dev release + tag if they exist (ignore errors)
           gh release delete dev --yes --cleanup-tag 2>/dev/null || true
           sleep 2
+          REPO="${{ github.repository }}"
+          BRANCH="${{ github.ref_name }}"
+          SHA="${{ github.sha }}"
+          NOTES="Pre-release build from branch \`${BRANCH}\` (commit \`${SHA}\`)
+
+For the stable release see: https://github.com/${REPO}/releases/latest
+
+Install (Linux):
+curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash"
           # Create fresh dev pre-release
           gh release create dev \
             --prerelease \
-            --title "dev — ${{ github.ref_name }} @ $(date -u +'%Y-%m-%d %H:%M UTC')" \
-            --notes "**Pre-release build** from branch \`${{ github.ref_name }}\` (commit \`${{ github.sha }}\`)
-
-This is a development build. For the stable release, see [latest](https://github.com/${{ github.repository }}/releases/latest).
-
-**Install (Linux)**:
-\`\`\`bash
-curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash -s -- --version dev
-\`\`\`" \
+            --title "dev — ${BRANCH} @ $(date -u +'%Y-%m-%d %H:%M UTC')" \
+            --notes "$NOTES" \
             --target ${{ github.sha }} \
             "${{ steps.version.outputs.zip_name }}"
 

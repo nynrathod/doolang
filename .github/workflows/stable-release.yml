@@ -110,26 +110,26 @@ jobs:
           # Delete if tag already exists (re-release same version)
           gh release delete "${TAG}" --yes --cleanup-tag 2>/dev/null || true
           sleep 2
+          NOTES=$(cat <<'RELEASE_NOTES'
+## Install
+
+**Linux / macOS**
+```bash
+curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | bash
+```
+
+**Windows**
+```powershell
+irm https://raw.githubusercontent.com/$REPO/main/install.ps1 | iex
+```
+RELEASE_NOTES
+)
+          REPO="${{ github.repository }}"
+          NOTES="${NOTES//'$REPO'/$REPO}"
           gh release create "${TAG}" \
             --latest \
             --title "Doo ${{ steps.version.outputs.version }}" \
-            --notes "## Doo ${{ steps.version.outputs.version }}
-
-### Install
-
-**Linux / macOS**
-\`\`\`bash
-curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash
-\`\`\`
-
-**Windows**
-\`\`\`powershell
-irm https://raw.githubusercontent.com/${{ github.repository }}/main/install.ps1 | iex
-\`\`\`
-
-### What's changed
-
-See [commits since last release](https://github.com/${{ github.repository }}/compare/${{ steps.version.outputs.tag }}...main)." \
+            --notes "$NOTES" \
             --target ${{ github.sha }} \
             "${{ steps.version.outputs.zip_name }}"
 
