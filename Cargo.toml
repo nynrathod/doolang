@@ -33,7 +33,7 @@ strip = true      # Strip symbols
 panic = "abort"   # Smaller panic handler
 
 [workspace.package]
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 
 [package]

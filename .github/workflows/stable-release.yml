@@ -1,0 +1,175 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Stable Release Pipeline
+#
+# Triggered: every push to main.
+#
+# What happens automatically (you just merge/push to main):
+#   1. Build Linux binary
+#   2. Zip the bundle
+#   3. Create GitHub release tagged v{version} (from Cargo.toml)
+#   4. Upload zip as release asset
+#   5. Build GHCR image tagged :latest + :v{version}
+#   6. DELETE the dev pre-release and :dev GHCR tag (no conflict forever)
+#
+# The "latest" GitHub release tag always points to the most recent stable.
+# Anyone running `install.sh` without a version flag gets the latest stable.
+# ──────────────────────────────────────────────────────────────────────────────
+
+name: Stable Release
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/doo-runtime
+
+jobs:
+  build-and-release-stable:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── 1. Read version from Cargo.toml ─────────────────────────────────────
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "zip_name=doo-linux-${VERSION}.zip" >> $GITHUB_OUTPUT
+          echo "Version: ${VERSION}  Tag: ${TAG}"
+
+      # ── 2. Install Rust ──────────────────────────────────────────────────────
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-gnu
+
+      # ── 3. Cache Cargo ───────────────────────────────────────────────────────
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # ── 4. Install system deps ───────────────────────────────────────────────
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            clang lld libssl-dev libpq-dev zlib1g-dev pkg-config
+
+      # ── 5. Build release binary ──────────────────────────────────────────────
+      - name: Build release binary
+        run: cargo build --release --workspace
+
+      # ── 6. Assemble bundle ───────────────────────────────────────────────────
+      - name: Assemble bundle
+        run: |
+          BUNDLE="doo-linux-${{ steps.version.outputs.version }}"
+          mkdir -p "${BUNDLE}/lib" "${BUNDLE}/std" "${BUNDLE}/packages"
+          cp target/release/doo "${BUNDLE}/doo"
+          chmod +x "${BUNDLE}/doo"
+          find target/release -maxdepth 1 -name '*.a' -exec cp {} "${BUNDLE}/lib/" \; 2>/dev/null || true
+          if [ -d std ]; then cp -r std/. "${BUNDLE}/std/"; fi
+          if [ -d packages ]; then cp -r packages/. "${BUNDLE}/packages/"; fi
+          zip -r "${{ steps.version.outputs.zip_name }}" "${BUNDLE}"
+          echo "Bundle:"
+          ls -lh "${BUNDLE}/"
+
+      # ── 7. Delete dev pre-release (clean slate) ──────────────────────────────
+      - name: Delete dev pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete dev --yes --cleanup-tag 2>/dev/null || true
+          echo "dev pre-release cleaned up"
+
+      # ── 8. Create or update stable release ───────────────────────────────────
+      - name: Create stable release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          # Delete if tag already exists (re-release same version)
+          gh release delete "${TAG}" --yes --cleanup-tag 2>/dev/null || true
+          sleep 2
+          gh release create "${TAG}" \
+            --latest \
+            --title "Doo ${{ steps.version.outputs.version }}" \
+            --notes "## Doo ${{ steps.version.outputs.version }}
+
+### Install
+
+**Linux / macOS**
+\`\`\`bash
+curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash
+\`\`\`
+
+**Windows**
+\`\`\`powershell
+irm https://raw.githubusercontent.com/${{ github.repository }}/main/install.ps1 | iex
+\`\`\`
+
+### What's changed
+
+See [commits since last release](https://github.com/${{ github.repository }}/compare/${{ steps.version.outputs.tag }}...main)." \
+            --target ${{ github.sha }} \
+            "${{ steps.version.outputs.zip_name }}"
+
+      # ── 9. Log in to GHCR ────────────────────────────────────────────────────
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 10. Build and push GHCR :latest + :vX.Y.Z ────────────────────────────
+      - name: Build and push :latest image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: |
+            DOO_VERSION=${{ steps.version.outputs.tag }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+
+      # ── 11. Delete :dev GHCR tag ──────────────────────────────────────────────
+      # Removes the dev image so DooCloud can't accidentally pull it.
+      # ghcr.io package deletion requires the GITHUB_TOKEN with packages:write.
+      - name: Delete :dev GHCR tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          OWNER="${{ github.repository_owner }}"
+          PKG_NAME="doo-runtime"
+          # Find the version ID for the :dev tag
+          VERSION_ID=$(gh api \
+            "/users/${OWNER}/packages/container/${PKG_NAME}/versions" \
+            --jq '.[] | select(.metadata.container.tags[] == "dev") | .id' 2>/dev/null || echo "")
+          if [ -n "$VERSION_ID" ]; then
+            gh api --method DELETE \
+              "/users/${OWNER}/packages/container/${PKG_NAME}/versions/${VERSION_ID}" 2>/dev/null || true
+            echo ":dev GHCR tag deleted (id=${VERSION_ID})"
+          else
+            echo ":dev GHCR tag not found — nothing to delete"
+          fi
