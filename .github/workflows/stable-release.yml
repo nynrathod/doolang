@@ -107,29 +107,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ steps.version.outputs.tag }}"
+          REPO="${{ github.repository }}"
           # Delete if tag already exists (re-release same version)
           gh release delete "${TAG}" --yes --cleanup-tag 2>/dev/null || true
           sleep 2
-          NOTES=$(cat <<'RELEASE_NOTES'
-## Install
-
-**Linux / macOS**
-```bash
-curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | bash
-```
-
-**Windows**
-```powershell
-irm https://raw.githubusercontent.com/$REPO/main/install.ps1 | iex
-```
-RELEASE_NOTES
-)
-          REPO="${{ github.repository }}"
-          NOTES="${NOTES//'$REPO'/$REPO}"
+          printf '## Install\n\n**Linux / macOS**\n```bash\ncurl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | bash\n```\n\n**Windows**\n```powershell\nirm https://raw.githubusercontent.com/%s/main/install.ps1 | iex\n```\n' \
+            "$REPO" "$REPO" > /tmp/release_notes.md
           gh release create "${TAG}" \
             --latest \
             --title "Doo ${{ steps.version.outputs.version }}" \
-            --notes "$NOTES" \
+            --notes-file /tmp/release_notes.md \
             --target ${{ github.sha }} \
             "${{ steps.version.outputs.zip_name }}"
 

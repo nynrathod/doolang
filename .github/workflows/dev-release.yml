@@ -110,17 +110,13 @@ jobs:
           REPO="${{ github.repository }}"
           BRANCH="${{ github.ref_name }}"
           SHA="${{ github.sha }}"
-          NOTES="Pre-release build from branch \`${BRANCH}\` (commit \`${SHA}\`)
-
-For the stable release see: https://github.com/${REPO}/releases/latest
-
-Install (Linux):
-curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash"
+          printf 'Pre-release build from branch `%s` (commit `%s`)\n\nFor the stable release see: https://github.com/%s/releases/latest\n\nInstall (Linux):\n```bash\ncurl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | bash\n```\n' \
+            "$BRANCH" "$SHA" "$REPO" "$REPO" > /tmp/dev_notes.md
           # Create fresh dev pre-release
           gh release create dev \
             --prerelease \
             --title "dev — ${BRANCH} @ $(date -u +'%Y-%m-%d %H:%M UTC')" \
-            --notes "$NOTES" \
+            --notes-file /tmp/dev_notes.md \
             --target ${{ github.sha }} \
             "${{ steps.version.outputs.zip_name }}"
 
