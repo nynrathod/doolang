@@ -3,7 +3,7 @@
 #   CI: DOO_LOCAL_BUNDLE=doo-linux-X.Y.Z.zip  → copies from build context (no download)
 #   Manual: leave empty → downloads from GitHub releases using DOO_VERSION tag
 
-FROM debian:bookworm-slim
+FROM ubuntu:24.04
 
 ARG DOO_VERSION=""
 ARG DOO_LOCAL_BUNDLE=""
