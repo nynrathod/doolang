@@ -141,7 +141,7 @@ jobs:
           context: .
           push: true
           build-args: |
-            DOO_VERSION=${{ steps.version.outputs.tag }}
+            DOO_LOCAL_BUNDLE=${{ steps.version.outputs.zip_name }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}
