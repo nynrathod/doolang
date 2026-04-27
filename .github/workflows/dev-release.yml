@@ -43,7 +43,7 @@ jobs:
       - name: Read version
         id: version
         run: |
-          VERSION=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          VERSION=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/' | tr -d '\r')
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "bundle_name=doo-linux-${VERSION}" >> $GITHUB_OUTPUT
           echo "zip_name=doo-linux-${VERSION}.zip" >> $GITHUB_OUTPUT
