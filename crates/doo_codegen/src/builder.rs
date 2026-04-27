@@ -50,16 +50,78 @@ fn convert_return_value<'ctx>(
     // Get the expected type kind for semantic decisions
     let expected_kind = ctx.get_type_kind(expected_type);
 
-    // Check if types already match
+    // Handle wrapping raw value into Ok Result struct.
+    // MUST happen BEFORE the type-match early return below.
+    // When a function has an error type (returns T ! E), its LLVM signature is { i64, ptr }.
+    // `return value` where value: T (e.g. ptr for [Task]) must be wrapped into { 0, ptr }.
+    // Note: expected_llvm_type here is T (not Result), so ptr==ptr would trigger early return.
+    if ctx.current_function_has_error_type {
+        let result_struct_type = ctx.context.struct_type(
+            &[
+                ctx.context.i64_type().into(),
+                ctx.context
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .into(),
+            ],
+            false,
+        );
+        // Only wrap if the value is NOT already a Result struct
+        if val.get_type() != BasicTypeEnum::StructType(result_struct_type) {
+            let payload_ptr = if val.is_pointer_value() {
+                val.into_pointer_value()
+            } else {
+                // Non-pointer value (Int, Bool, etc.): box it on the heap first
+                let ptr_type = ctx.context.ptr_type(inkwell::AddressSpace::default());
+                let malloc_fn = ctx.get_function(ffi_names::MALLOC).unwrap_or_else(|| {
+                    let fn_type = ptr_type.fn_type(&[ctx.context.i64_type().into()], false);
+                    ctx.module.add_function(
+                        ffi_names::MALLOC,
+                        fn_type,
+                        Some(inkwell::module::Linkage::External),
+                    )
+                });
+                let size = ctx.context.i64_type().const_int(8, false);
+                if let Some(alloc) = ctx
+                    .builder
+                    .build_call(malloc_fn, &[size.into()], "ok_box")
+                    .ok()
+                    .and_then(|c| c.try_as_basic_value().basic())
+                    .map(|v| v.into_pointer_value())
+                {
+                    ctx.builder.build_store(alloc, val).ok();
+                    alloc
+                } else {
+                    ctx.context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .const_null()
+                }
+            };
+            // Build { 0i64, payload_ptr }
+            let ok_tag = ctx.context.i64_type().const_zero();
+            let mut ok_struct = result_struct_type.get_undef();
+            if let Ok(s) = ctx
+                .builder
+                .build_insert_value(ok_struct, ok_tag, 0, "ok_tag")
+            {
+                ok_struct = s.into_struct_value();
+            }
+            if let Ok(s) = ctx
+                .builder
+                .build_insert_value(ok_struct, payload_ptr, 1, "ok_payload")
+            {
+                return BasicValueEnum::StructValue(s.into_struct_value());
+            }
+            return BasicValueEnum::StructValue(result_struct_type.const_zero());
+        }
+    }
+
+    // Check if types already match (no conversion needed)
     if val.get_type() == expected_llvm_type {
         return val;
     }
 
     // Handle i64/i32/i1 -> ptr conversion (when function expects pointer type)
-    // SAFETY FIX: Validate the integer before inttoptr. Invalid values like 0 (null)
-    // or -1 (0xFFFFFFFFFFFFFFFF) would produce pointers that crash on dereference.
-    // On x64, valid user-space addresses have the high bit clear (positive as signed).
-    // If the integer is zero or negative, return null instead.
+    // SAFETY FIX: Validate the integer before inttoptr.
     if val.is_int_value() && expected_llvm_type.is_pointer_type() {
         let int_val = val.into_int_value();
         let ptr_type = expected_llvm_type.into_pointer_type();
@@ -372,7 +434,8 @@ impl<'ctx> CodegenBuilder<'ctx> {
 
         // Populate RBAC policies from MIR
         for (struct_name, policy_json) in &mir.policies {
-            ctx.rbac_policies.insert(resolve(*struct_name), policy_json.clone());
+            ctx.rbac_policies
+                .insert(resolve(*struct_name), policy_json.clone());
         }
 
         // Populate enum variant inheritance from MIR enums
@@ -390,7 +453,8 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 }
             }
             if !inheritance.is_empty() {
-                ctx.enum_inheritance.insert(resolve(*enum_name), inheritance);
+                ctx.enum_inheritance
+                    .insert(resolve(*enum_name), inheritance);
             }
         }
 

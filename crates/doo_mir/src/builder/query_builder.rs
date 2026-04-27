@@ -31,7 +31,7 @@ use doo_hir::{ConstValue, HirExpr, HirExprKind};
 use std::collections::{HashMap, HashSet};
 
 use crate::sym::sym;
-use crate::types::{MirConst, MirInstrKind, MirOperand, Span as MirSpan};
+use crate::types::{MirConst, MirInstrKind, MirOperand, MirTerminator, Span as MirSpan};
 
 use super::MirBuilder;
 
@@ -85,12 +85,14 @@ pub fn try_lower_query_chain(
     let params_op = build_params_operand(builder, &param_exprs, span);
 
     // Emit FfiCall to doo_db_raw_param(db, sql_str, params_json).
-    let dest = builder.new_temp();
+    // The FFI returns a *mut DooResult — we must unwrap it inline so callers
+    // receive the payload (JSON string ptr) directly instead of a DooResult*.
+    let ffi_dest = builder.new_temp();
     let sql_op = MirOperand::Const(MirConst::Str(sql));
-    builder.set_temp_type(dest, builtin::STR);
+    builder.set_temp_type(ffi_dest, builtin::STR);
     builder.emit(
         MirInstrKind::FfiCall {
-            dest: Some(dest),
+            dest: Some(ffi_dest),
             lib: sym(ffi_names::LIB_DOO_DB),
             symbol: sym(ffi_names::DOO_DB_RAW_PARAM),
             args: vec![db_op, sql_op, params_op],
@@ -98,7 +100,87 @@ pub fn try_lower_query_chain(
         span,
     );
 
-    Some(MirOperand::Temp(dest))
+    // Emit inline Result-unwrap pattern (equivalent to `?` operator) so that
+    // the outer `?` applied by the caller doesn't need to handle this itself.
+    // doo_db_raw_param returns *mut DooResult; IsOk/UnwrapOk extract the payload.
+    let is_ok_dest = builder.new_temp();
+    builder.emit(
+        MirInstrKind::IsOk {
+            dest: is_ok_dest,
+            value: MirOperand::Temp(ffi_dest),
+        },
+        span,
+    );
+
+    let ok_label = builder.new_block_label("qb_ok");
+    let err_label = builder.new_block_label("qb_err");
+    let cont_label = builder.new_block_label("qb_cont");
+
+    builder.set_terminator(MirTerminator::Branch {
+        cond: MirOperand::Temp(is_ok_dest),
+        then_block: ok_label,
+        else_block: err_label,
+    });
+
+    // Ok path: unwrap payload and jump to continuation.
+    builder.add_block(ok_label);
+    let unwrapped = builder.new_temp();
+    builder.set_temp_type(unwrapped, builtin::STR);
+    builder.emit(
+        MirInstrKind::UnwrapOk {
+            dest: unwrapped,
+            value: MirOperand::Temp(ffi_dest),
+            expected_type: Some(builtin::STR),
+        },
+        span,
+    );
+    builder.set_terminator(MirTerminator::Goto { target: cont_label });
+
+    // Err path: propagate or panic depending on current function signature.
+    builder.add_block(err_label);
+    if builder.get_current_function_error_type().is_some() {
+        let err_dest = builder.new_temp();
+        builder.emit(
+            MirInstrKind::UnwrapErr {
+                dest: err_dest,
+                value: MirOperand::Temp(ffi_dest),
+            },
+            span,
+        );
+        let wrapped_err = builder.new_temp();
+        builder.emit(
+            MirInstrKind::WrapErr {
+                dest: wrapped_err,
+                value: MirOperand::Temp(err_dest),
+            },
+            span,
+        );
+        builder.set_terminator(MirTerminator::Return {
+            values: vec![MirOperand::Temp(wrapped_err)],
+        });
+    } else {
+        // No error type — emit a panic so the program aborts on DB error.
+        let err_dest = builder.new_temp();
+        builder.emit(
+            MirInstrKind::UnwrapErr {
+                dest: err_dest,
+                value: MirOperand::Temp(ffi_dest),
+            },
+            span,
+        );
+        builder.emit(
+            MirInstrKind::Panic {
+                message: MirOperand::Temp(err_dest),
+            },
+            span,
+        );
+        builder.set_terminator(MirTerminator::Unreachable);
+    }
+
+    // Continuation block: value is the unwrapped JSON string pointer.
+    builder.add_block(cont_label);
+
+    Some(MirOperand::Temp(unwrapped))
 }
 
 /// Emit `CREATE TABLE IF NOT EXISTS` for the model used in this query chain.
