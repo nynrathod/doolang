@@ -23,24 +23,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 	&& rm -rf /var/lib/apt/lists/*
 
 # Install doo compiler from GitHub release
-# DOO_VERSION can be:
-#   ""      → download from the latest stable release (default)
-#   "dev"   → download from the dev pre-release
-#   "vX.Y.Z"→ download that exact version
-RUN DOO_INPUT=${DOO_VERSION:-""} \
-	&& if [ "$DOO_INPUT" = "dev" ]; then \
-	DOO_TAG=$(curl -fsSL "https://api.github.com/repos/nynrathod/doolang/releases" \
-	| grep '"tag_name":' | grep -v '"v' | head -1 \
-	| sed -E 's/.*"([^"]+)".*/\1/' || echo "dev"); \
-	if [ -z "$DOO_TAG" ] || [ "$DOO_TAG" = "dev" ]; then \
-	DOO_TAG=$(curl -fsSL "https://api.github.com/repos/nynrathod/doolang/releases" \
-	| grep '"tag_name"' | head -1 | sed -E 's/.*"([^"]+)".*/\1/'); \
-	fi; \
-	elif [ -z "$DOO_INPUT" ]; then \
+# DOO_VERSION: vX.Y.Z tag (required). Empty → fetches latest stable.
+RUN DOO_TAG="${DOO_VERSION:-}" \
+	&& if [ -z "$DOO_TAG" ]; then \
 	DOO_TAG=$(curl -fsSL https://api.github.com/repos/nynrathod/doolang/releases/latest \
-	| grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/'); \
-	else \
-	DOO_TAG="$DOO_INPUT"; \
+	| grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | tr -d '\r'); \
 	fi \
 	&& DOO_VER=${DOO_TAG#v} \
 	&& echo "Installing doo ${DOO_TAG} (ver=${DOO_VER})..." \
