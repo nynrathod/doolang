@@ -68,12 +68,18 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      # ── 4. Install system deps ───────────────────────────────────────────────
-      - name: Install system deps
+      # ── 4. Install LLVM 18 + system deps ──────────────────────────────────
+      - name: Install LLVM 18 and system deps
         run: |
+          # Install LLVM 18 from the official apt repo
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-18 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm18.list
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            clang lld libssl-dev libpq-dev zlib1g-dev pkg-config
+            llvm-18-dev libpolly-18-dev libclang-18-dev clang-18 lld-18 \
+            libssl-dev libpq-dev zlib1g-dev pkg-config
+          echo "LLVM_SYS_181_PREFIX=/usr/lib/llvm-18" >> $GITHUB_ENV
 
       # ── 5. Build release binary ──────────────────────────────────────────────
       - name: Build release binary
