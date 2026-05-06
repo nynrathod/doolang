@@ -32,6 +32,7 @@ fn keyword_map() -> &'static FxHashMap<&'static str, TokenKind> {
         map.insert("as", TokenKind::As);
         map.insert("struct", TokenKind::Struct);
         map.insert("enum", TokenKind::Enum);
+        map.insert("interface", TokenKind::Interface);
         map.insert("match", TokenKind::Match);
 
         // Control flow

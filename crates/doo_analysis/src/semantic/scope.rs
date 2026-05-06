@@ -35,6 +35,8 @@ pub enum SymbolKind {
     Struct,
     /// Enum type.
     Enum,
+    /// Interface / generic type name.
+    Type,
     /// Import.
     Import,
     /// Loop variable (for-in).

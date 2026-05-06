@@ -1,0 +1,35 @@
+// Generics Phase 1: Parser + HIR foundation test
+// Generic functions parse and lower correctly.
+// They are skipped at MIR (templates, not concrete code).
+// Concrete functions work as before.
+
+// Generic function declaration (template — skipped at MIR)
+fn identity<T>(x: T) -> T {
+    return x;
+}
+
+// Generic with constraint
+fn printable<T: Displayable>(x: T) -> Str {
+    return x.toString();
+}
+
+// Generic struct
+struct Pair<A, B> {
+    First: A,
+    Second: B
+}
+
+// Multiple type params
+fn swap<A, B>(a: A, b: B) -> (B, A) {
+    return (b, a);
+}
+
+// Concrete function (should work normally)
+fn main() {
+    print("Generics Phase 1: parsing works!");
+    print("Generic fn identity<T> declared");
+    print("Generic fn printable<T: Displayable> declared");
+    print("Generic struct Pair<A, B> declared");
+    print("Generic fn swap<A, B> declared");
+    print("All generic declarations parsed successfully");
+}

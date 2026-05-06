@@ -5,6 +5,24 @@
 use super::{Stmt, TypeExpr};
 use doo_core::Span;
 
+// ============================================================================
+// Generic Type Parameters
+// ============================================================================
+
+/// A generic type parameter declaration: `<T>` or `<T: SomeInterface>`.
+///
+/// Used on function and struct declarations to declare type variables.
+/// The compiler monomorphizes generic definitions at call/construction sites.
+#[derive(Debug, Clone)]
+pub struct TypeParam {
+    /// Type parameter name (e.g. "T", "A", "B").
+    pub name: String,
+    /// Optional interface constraint: `<T: Displayable>`.
+    pub constraint: Option<String>,
+    /// Source location.
+    pub span: Span,
+}
+
 /// Function declaration.
 #[derive(Debug, Clone)]
 pub struct FunctionDecl {
@@ -12,6 +30,8 @@ pub struct FunctionDecl {
     pub name: String,
     /// Visibility (public/private based on name casing).
     pub is_public: bool,
+    /// Generic type parameters: `fn first<T>(...)` → `[TypeParam("T")]`.
+    pub type_params: Vec<TypeParam>,
     /// Parameters: (name, type?)
     pub params: Vec<(String, Option<TypeExpr>)>,
     /// Return type.
@@ -44,6 +64,7 @@ impl FunctionDecl {
         Self {
             name,
             is_public,
+            type_params: Vec::new(),
             params: Vec::new(),
             return_type: None,
             error_type: None,
@@ -65,6 +86,8 @@ pub struct StructDecl {
     pub name: String,
     /// Whether this struct is public.
     pub is_public: bool,
+    /// Generic type parameters: `struct Wrapper<T>` → `[TypeParam("T")]`.
+    pub type_params: Vec<TypeParam>,
     /// Fields.
     pub fields: Vec<FieldDecl>,
     /// Struct-level decorators like @table.
@@ -83,6 +106,7 @@ impl StructDecl {
         Self {
             name,
             is_public,
+            type_params: Vec::new(),
             fields: Vec::new(),
             decorators: Vec::new(),
             span,
@@ -203,6 +227,78 @@ impl Decorator {
 }
 
 // ============================================================================
+// Interface
+// ============================================================================
+
+/// Interface declaration.
+///
+/// Defines a contract that structs can satisfy by implementing all its methods.
+/// Satisfaction is implicit (like Go) — no `implements` keyword needed.
+///
+/// Example:
+/// ```doo
+/// interface CloudProvider {
+///     fn deploy(slug: Str, image: Str) -> Str ! Str
+///     fn delete(slug: Str, region: Str) -> Str ! Str
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct InterfaceDecl {
+    /// Interface name.
+    pub name: String,
+    /// Whether this interface is public.
+    pub is_public: bool,
+    /// Method signatures (bodies are NOT in the interface, only signatures).
+    pub methods: Vec<InterfaceMethodDecl>,
+    /// Source location.
+    pub span: Span,
+}
+
+impl InterfaceDecl {
+    pub fn new(name: String, span: Span) -> Self {
+        let is_public = name
+            .chars()
+            .next()
+            .map(|c| c.is_uppercase())
+            .unwrap_or(false);
+        Self {
+            name,
+            is_public,
+            methods: Vec::new(),
+            span,
+        }
+    }
+}
+
+/// A method signature inside an interface declaration.
+/// Only the signature — no body.
+#[derive(Debug, Clone)]
+pub struct InterfaceMethodDecl {
+    /// Method name.
+    pub name: String,
+    /// Parameters: (name, type?)
+    pub params: Vec<(String, Option<TypeExpr>)>,
+    /// Return type.
+    pub return_type: Option<TypeExpr>,
+    /// Error type for fallible methods.
+    pub error_type: Option<TypeExpr>,
+    /// Source location.
+    pub span: Span,
+}
+
+impl InterfaceMethodDecl {
+    pub fn new(name: String, span: Span) -> Self {
+        Self {
+            name,
+            params: Vec::new(),
+            return_type: None,
+            error_type: None,
+            span,
+        }
+    }
+}
+
+// ============================================================================
 // RBAC Policy
 // ============================================================================
 
@@ -225,6 +321,11 @@ pub struct PolicyDecl {
 
 impl PolicyDecl {
     pub fn new(name: String, for_struct: String, span: Span) -> Self {
-        Self { name, for_struct, rules: Vec::new(), span }
+        Self {
+            name,
+            for_struct,
+            rules: Vec::new(),
+            span,
+        }
     }
 }

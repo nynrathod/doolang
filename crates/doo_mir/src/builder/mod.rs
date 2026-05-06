@@ -267,6 +267,10 @@ impl<'a> MirBuilder<'a> {
 
         for item in &hir.items {
             if let HirItem::Function(f) = item {
+                // Skip generic function templates — their types contain TypeParam placeholders
+                if !f.type_params.is_empty() {
+                    continue;
+                }
                 // For functions with error types, track them separately
                 // This includes both `-> T ! E` (return_type + error_type)
                 // and `-> ! E` (error_type only, meaning void return with possible error)
@@ -346,6 +350,19 @@ impl<'a> MirBuilder<'a> {
         for item in &hir.items {
             match item {
                 HirItem::Function(f) => {
+                    // Skip generic functions — they're templates, not concrete code.
+                    // Monomorphization will create concrete instantiations later.
+                    if !f.type_params.is_empty() {
+                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
+                            doo_debug!(
+                                "MIR",
+                                "Skipping generic function template: {}<{}>",
+                                f.name,
+                                f.type_params.join(", ")
+                            );
+                        }
+                        continue;
+                    }
                     let mir_func = self.build_function(f);
                     program.functions.push(mir_func);
                 }
@@ -441,6 +458,26 @@ impl<'a> MirBuilder<'a> {
                             .collect(),
                     };
                     program.enums.insert(sym(&e.name), mir_enum);
+                }
+                HirItem::Interface(i) => {
+                    let mir_interface = InterfaceDef {
+                        name: sym(&i.name),
+                        methods: i
+                            .methods
+                            .iter()
+                            .map(|m| InterfaceMethodDef {
+                                name: sym(&m.name),
+                                param_types: m
+                                    .params
+                                    .iter()
+                                    .filter_map(|p| p.type_id)
+                                    .collect(),
+                                return_type: m.return_type,
+                                error_type: m.error_type,
+                            })
+                            .collect(),
+                    };
+                    program.interfaces.insert(sym(&i.name), mir_interface);
                 }
                 HirItem::Import(_) => {
                     // Imports handled elsewhere

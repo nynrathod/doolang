@@ -89,22 +89,36 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             // Resolve aliases to handle imported associated functions
             // Check both Local and Global - namespace-qualified calls (like File::Write)
             // are lowered to Call with Global { name } func
-            let is_result_call = if let HirExprKind::Call { func, .. } = &value.kind {
-                // Extract function name from both Local and Global
-                let func_name = match &func.kind {
-                    HirExprKind::Local { name } => Some(name.as_str()),
-                    HirExprKind::Global { name } => Some(name.as_str()),
-                    _ => None,
-                };
-                // Check if it returns a Result (resolve alias first)
-                func_name
-                    .map(|name| {
-                        let resolved_name = builder.resolve_function_name(name);
-                        builder.function_result_types.contains_key(&resolved_name)
-                    })
-                    .unwrap_or(false)
-            } else {
-                false
+            let is_result_call = match &value.kind {
+                HirExprKind::Call { func, .. } => {
+                    // Extract function name from both Local and Global
+                    let func_name = match &func.kind {
+                        HirExprKind::Local { name } => Some(name.as_str()),
+                        HirExprKind::Global { name } => Some(name.as_str()),
+                        _ => None,
+                    };
+                    // Check if it returns a Result (resolve alias first)
+                    func_name
+                        .map(|name| {
+                            let resolved_name = builder.resolve_function_name(name);
+                            builder.function_result_types.contains_key(&resolved_name)
+                        })
+                        .unwrap_or(false)
+                }
+                // Interface method call with fallible return (-> T ! E)
+                HirExprKind::MethodCall { receiver, method, .. } => {
+                    let receiver_type = receiver.type_id.unwrap_or(builtin::ANY);
+                    builder.type_registry.get(receiver_type)
+                        .map(|info| {
+                            if let TypeKind::Interface { methods, .. } = &info.kind {
+                                methods.iter().any(|(mname, _, _, err)| mname == method && err.is_some())
+                            } else {
+                                false
+                            }
+                        })
+                        .unwrap_or(false)
+                }
+                _ => false,
             };
 
             if is_result_call && names.len() >= 2 {
@@ -124,8 +138,8 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                 // Get Result's ok and err types from function_result_types
                 // Resolve aliases to handle imported associated functions
                 // Check both Local and Global for namespace-qualified calls
-                let (ok_type, err_type, is_ffi) =
-                    if let HirExprKind::Call { func, .. } = &value.kind {
+                let (ok_type, err_type, is_ffi) = match &value.kind {
+                    HirExprKind::Call { func, .. } => {
                         let func_name = match &func.kind {
                             HirExprKind::Local { name } => Some(name.as_str()),
                             HirExprKind::Global { name } => Some(name.as_str()),
@@ -143,9 +157,28 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                         } else {
                             (builtin::ANY, builtin::ANY, false)
                         }
-                    } else {
-                        (builtin::ANY, builtin::ANY, false)
-                    };
+                    }
+                    // Interface method call: extract ok/err types from the interface definition
+                    HirExprKind::MethodCall { receiver, method, .. } => {
+                        let receiver_type = receiver.type_id.unwrap_or(builtin::ANY);
+                        builder.type_registry.get(receiver_type)
+                            .and_then(|info| {
+                                if let TypeKind::Interface { methods, .. } = &info.kind {
+                                    methods.iter()
+                                        .find(|(mname, _, _, _)| mname == method)
+                                        .map(|(_, _, ret, err)| (
+                                            ret.unwrap_or(builtin::ANY),
+                                            err.unwrap_or(builtin::ANY),
+                                            false, // interface methods are never FFI
+                                        ))
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or((builtin::ANY, builtin::ANY, false))
+                    }
+                    _ => (builtin::ANY, builtin::ANY, false),
+                };
 
                 // Register ok variables as locals
                 for &ok_name in &ok_names {
@@ -606,26 +639,46 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             // This matches how TupleLet handles Result-returning functions
             // Check both Local and Global - namespace-qualified calls (like File::Write)
             // are lowered to Call with Global { name } func
-            let (ok_type, err_type, is_ffi) = if let HirExprKind::Call { func, .. } = &expr.kind {
-                let func_name = match &func.kind {
-                    HirExprKind::Local { name } => Some(name.as_str()),
-                    HirExprKind::Global { name } => Some(name.as_str()),
-                    _ => None,
-                };
-                if let Some(name) = func_name {
-                    let resolved_name = builder.resolve_function_name(name);
-                    let types = builder
-                        .function_result_types
-                        .get(&resolved_name)
-                        .copied()
-                        .unwrap_or((builtin::ANY, builtin::ANY));
-                    let ffi = builder.ffi_functions.contains_key(&resolved_name);
-                    (types.0, types.1, ffi)
-                } else {
-                    (builtin::ANY, builtin::ANY, false)
+            let (ok_type, err_type, is_ffi) = match &expr.kind {
+                HirExprKind::Call { func, .. } => {
+                    let func_name = match &func.kind {
+                        HirExprKind::Local { name } => Some(name.as_str()),
+                        HirExprKind::Global { name } => Some(name.as_str()),
+                        _ => None,
+                    };
+                    if let Some(name) = func_name {
+                        let resolved_name = builder.resolve_function_name(name);
+                        let types = builder
+                            .function_result_types
+                            .get(&resolved_name)
+                            .copied()
+                            .unwrap_or((builtin::ANY, builtin::ANY));
+                        let ffi = builder.ffi_functions.contains_key(&resolved_name);
+                        (types.0, types.1, ffi)
+                    } else {
+                        (builtin::ANY, builtin::ANY, false)
+                    }
                 }
-            } else {
-                (builtin::ANY, builtin::ANY, false)
+                // Interface method call: extract ok/err types from the interface definition
+                HirExprKind::MethodCall { receiver, method, .. } => {
+                    let receiver_type = receiver.type_id.unwrap_or(builtin::ANY);
+                    builder.type_registry.get(receiver_type)
+                        .and_then(|info| {
+                            if let TypeKind::Interface { methods, .. } = &info.kind {
+                                methods.iter()
+                                    .find(|(mname, _, _, _)| mname == method)
+                                    .map(|(_, _, ret, err)| (
+                                        ret.unwrap_or(builtin::ANY),
+                                        err.unwrap_or(builtin::ANY),
+                                        false,
+                                    ))
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or((builtin::ANY, builtin::ANY, false))
+                }
+                _ => (builtin::ANY, builtin::ANY, false),
             };
 
             // Register error variable type so codegen knows it's a struct

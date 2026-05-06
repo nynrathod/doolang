@@ -578,6 +578,7 @@ fn type_id_to_string_inner(
             }
             TypeKind::Struct { name, .. } => name.clone(),
             TypeKind::Enum { name, .. } => name.clone(),
+            TypeKind::Interface { name, .. } => name.clone(),
             TypeKind::Function { .. } => "Function".to_string(),
             TypeKind::Map { key, value } => {
                 let key_str = type_id_to_string_inner(registry, *key);
@@ -599,6 +600,7 @@ fn type_id_to_string_inner(
             TypeKind::TypeRef { name } => name.clone(),
             TypeKind::Any => "Any".to_string(),
             TypeKind::Error => "Error".to_string(),
+            TypeKind::TypeParam { name } => name.clone(),
         }
     } else {
         "Unknown".to_string()

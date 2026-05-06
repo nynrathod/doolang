@@ -2,11 +2,11 @@
 
 use doo_core::{
     doo_debug,
-    types::{TypeKind, TypeRegistry},
+    types::{TypeId, TypeKind, TypeRegistry},
 };
 use doo_frontend::ast::{
     self, Decorator, EnumDecl, FunctionDecl,
-    ImportDecl, Item, StructDecl,
+    ImportDecl, InterfaceDecl, Item, StructDecl,
 };
 use crate::types::*;
 use super::Lower;
@@ -17,6 +17,7 @@ impl Lower {
             Item::Function(f) => Some(HirItem::Function(self.lower_function(f))),
             Item::Struct(s) => Some(HirItem::Struct(self.lower_struct(s))),
             Item::Enum(e) => Some(HirItem::Enum(self.lower_enum(e))),
+            Item::Interface(i) => Some(HirItem::Interface(self.lower_interface(i))),
             Item::Import(i) => Some(HirItem::Import(self.lower_import(i))),
             Item::Policy(p) => Some(HirItem::Policy(self.lower_policy(p))),
             Item::Statement(_stmt) => {
@@ -31,6 +32,7 @@ impl Lower {
             Item::Function(f) => Some(HirItem::Function(self.lower_function_typed(f, registry))),
             Item::Struct(s) => Some(HirItem::Struct(self.lower_struct_typed(s, registry))),
             Item::Enum(e) => Some(HirItem::Enum(self.lower_enum_typed(e, registry))),
+            Item::Interface(i) => Some(HirItem::Interface(self.lower_interface_typed(i, registry))),
             Item::Import(i) => Some(HirItem::Import(self.lower_import(i))),
             Item::Policy(p) => Some(HirItem::Policy(self.lower_policy(p))),
             Item::Statement(_stmt) => {
@@ -70,6 +72,7 @@ impl Lower {
 
         HirFunction {
             name: func_name,
+            type_params: f.type_params.iter().map(|tp| tp.name.clone()).collect(),
             params,
             return_type: None,
             error_type: None,
@@ -96,6 +99,12 @@ impl Lower {
         }
         // Clear variable types for new function scope
         self.var_types.clear();
+
+        // Register type parameters as placeholders in the registry
+        for tp in &f.type_params {
+            registry.register_type_param(&tp.name);
+        }
+        let type_param_names: Vec<String> = f.type_params.iter().map(|tp| tp.name.clone()).collect();
 
         // For method functions (fn Type.method), resolve the receiver type
         let receiver_type_id = f
@@ -154,6 +163,7 @@ impl Lower {
 
         HirFunction {
             name: func_name,
+            type_params: type_param_names,
             params,
             return_type: f
                 .return_type
@@ -197,6 +207,7 @@ impl Lower {
 
         HirStruct {
             name: s.name.clone(),
+            type_params: s.type_params.iter().map(|tp| tp.name.clone()).collect(),
             fields,
             decorators,
             span: s.span,
@@ -254,6 +265,7 @@ impl Lower {
 
         HirStruct {
             name: s.name.clone(),
+            type_params: s.type_params.iter().map(|tp| tp.name.clone()).collect(),
             fields,
             decorators,
             span: s.span,
@@ -306,6 +318,95 @@ impl Lower {
             name: e.name.clone(),
             variants,
             span: e.span,
+        }
+    }
+
+    pub(crate) fn lower_interface(&mut self, i: &InterfaceDecl) -> HirInterface {
+        let methods = i
+            .methods
+            .iter()
+            .map(|m| HirInterfaceMethod {
+                name: m.name.clone(),
+                params: m
+                    .params
+                    .iter()
+                    .map(|(name, _type_ann)| HirParam {
+                        name: name.clone(),
+                        type_id: None,
+                        span: m.span,
+                    })
+                    .collect(),
+                return_type: None,
+                error_type: None,
+                span: m.span,
+            })
+            .collect();
+
+        HirInterface {
+            name: i.name.clone(),
+            methods,
+            span: i.span,
+        }
+    }
+
+    pub(crate) fn lower_interface_typed(
+        &mut self,
+        i: &InterfaceDecl,
+        registry: &mut TypeRegistry,
+    ) -> HirInterface {
+        let methods: Vec<HirInterfaceMethod> = i
+            .methods
+            .iter()
+            .map(|m| {
+                let params: Vec<HirParam> = m
+                    .params
+                    .iter()
+                    .map(|(name, type_ann)| {
+                        let type_id = type_ann
+                            .as_ref()
+                            .map(|t| self.resolve_type_expr(t, registry));
+                        HirParam {
+                            name: name.clone(),
+                            type_id,
+                            span: m.span,
+                        }
+                    })
+                    .collect();
+
+                HirInterfaceMethod {
+                    name: m.name.clone(),
+                    params,
+                    return_type: m
+                        .return_type
+                        .as_ref()
+                        .map(|t| self.resolve_type_expr(t, registry)),
+                    error_type: m
+                        .error_type
+                        .as_ref()
+                        .map(|t| self.resolve_type_expr(t, registry)),
+                    span: m.span,
+                }
+            })
+            .collect();
+
+        // Register the interface type in the registry
+        let method_sigs: Vec<(String, Vec<TypeId>, Option<TypeId>, Option<TypeId>)> = methods
+            .iter()
+            .map(|m| {
+                (
+                    m.name.clone(),
+                    m.params.iter().filter_map(|p| p.type_id).collect(),
+                    m.return_type,
+                    m.error_type,
+                )
+            })
+            .collect();
+        registry.define_interface(&i.name, method_sigs);
+
+        HirInterface {
+            name: i.name.clone(),
+            methods,
+            span: i.span,
         }
     }
 

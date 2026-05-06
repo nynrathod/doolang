@@ -14,11 +14,14 @@ pub trait ParserItems {
     fn parse_decorator(&mut self) -> ParseResult<Decorator>;
     fn parse_function(&mut self) -> ParseResult<FunctionDecl>;
     fn parse_function_name(&mut self) -> ParseResult<(String, Option<String>, Option<String>)>;
+    fn parse_type_params(&mut self) -> ParseResult<Vec<TypeParam>>;
     fn parse_param_list(&mut self) -> ParseResult<Vec<(String, Option<TypeExpr>)>>;
     fn parse_struct(&mut self) -> ParseResult<StructDecl>;
     fn parse_field_decl(&mut self) -> ParseResult<FieldDecl>;
     fn parse_enum(&mut self) -> ParseResult<EnumDecl>;
     fn parse_variant_decl(&mut self) -> ParseResult<VariantDecl>;
+    fn parse_interface(&mut self) -> ParseResult<InterfaceDecl>;
+    fn parse_interface_method(&mut self) -> ParseResult<InterfaceMethodDecl>;
     fn parse_import(&mut self) -> ParseResult<ImportDecl>;
     fn parse_policy(&mut self) -> ParseResult<PolicyDecl>;
     fn parse_policy_rule(&mut self) -> ParseResult<String>;
@@ -53,6 +56,11 @@ impl ParserItems for Parser {
                 // Decorators not supported on enums yet
                 drop(decorators);
                 Ok(Item::Enum(self.parse_enum()?))
+            }
+            TokenKind::Interface => {
+                // Decorators not supported on interfaces
+                drop(decorators);
+                Ok(Item::Interface(self.parse_interface()?))
             }
             TokenKind::Import => {
                 // Decorators not supported on imports
@@ -150,6 +158,9 @@ impl ParserItems for Parser {
         // Check for associated type: fn TypeName.methodName
         let (name, associated_type, receiver) = self.parse_function_name()?;
 
+        // Generic type parameters: fn name<T, U: Constraint>(...)
+        let type_params = self.parse_type_params()?;
+
         // Parameters
         self.expect(TokenKind::LParen)?;
         let params = self.parse_param_list()?;
@@ -242,6 +253,7 @@ impl ParserItems for Parser {
         Ok(FunctionDecl {
             name,
             is_public,
+            type_params,
             params,
             return_type,
             error_type,
@@ -268,6 +280,80 @@ impl ParserItems for Parser {
         } else {
             Ok((first, None, None))
         }
+    }
+
+    /// Parse generic type parameters: `<T>`, `<T: Constraint>`, `<A, B>`.
+    ///
+    /// Called after function/struct name. If no `<` is present, returns empty vec.
+    /// Contextually unambiguous: after `fn name` or `struct Name`, `<` can only
+    /// mean type parameters, never a comparison operator.
+    fn parse_type_params(&mut self) -> ParseResult<Vec<TypeParam>> {
+        if !self.check(TokenKind::Lt) {
+            return Ok(Vec::new());
+        }
+        self.advance(); // consume `<`
+
+        let mut params = Vec::new();
+        let mut seen_names: HashSet<String> = HashSet::new();
+
+        while !self.check(TokenKind::Gt) && !self.is_at_end() {
+            let param_span = self.current_span();
+            let name = self.expect_ident().map_err(|_| {
+                CompilerError::new(
+                    ErrorCode::ExpectedIdentifier,
+                    "expected type parameter name (e.g. T, A, B)",
+                    self.current_span(),
+                )
+                .with_suggestion("usage: fn name<T>(...) or struct Name<T> { ... }")
+            })?;
+
+            // Check for duplicate type parameter names
+            if !seen_names.insert(name.clone()) {
+                return Err(CompilerError::new(
+                    ErrorCode::DuplicateParameter,
+                    format!("duplicate type parameter '{}'", name),
+                    param_span,
+                )
+                .with_suggestion(format!("rename one of the '{}' type parameters", name)));
+            }
+
+            // Optional interface constraint: <T: Displayable>
+            let constraint = if self.check(TokenKind::Colon) {
+                self.advance();
+                Some(self.expect_ident().map_err(|_| {
+                    CompilerError::new(
+                        ErrorCode::ExpectedIdentifier,
+                        format!("expected interface name after ':' in type parameter '{}'", name),
+                        self.current_span(),
+                    )
+                    .with_suggestion("usage: <T: SomeInterface>")
+                })?)
+            } else {
+                None
+            };
+
+            let end = self.prev_span();
+            params.push(TypeParam {
+                name,
+                constraint,
+                span: param_span.merge(&end),
+            });
+
+            if !self.check(TokenKind::Gt) {
+                self.expect(TokenKind::Comma)?;
+            }
+        }
+
+        self.expect(TokenKind::Gt).map_err(|_| {
+            CompilerError::new(
+                ErrorCode::UnexpectedToken,
+                "expected `>` to close type parameter list",
+                self.current_span(),
+            )
+            .with_suggestion("usage: fn name<T>(...) or struct Name<T, U> { ... }")
+        })?;
+
+        Ok(params)
     }
 
     fn parse_param_list(&mut self) -> ParseResult<Vec<(String, Option<TypeExpr>)>> {
@@ -310,6 +396,10 @@ impl ParserItems for Parser {
         self.expect(TokenKind::Struct)?;
 
         let name = self.expect_ident()?;
+
+        // Generic type parameters: struct Name<T, U>(...)
+        let type_params = self.parse_type_params()?;
+
         self.expect(TokenKind::LBrace)?;
 
         let mut fields = Vec::new();
@@ -344,6 +434,7 @@ impl ParserItems for Parser {
         Ok(StructDecl {
             name,
             is_public,
+            type_params,
             fields,
             decorators: Vec::new(),
             span: start.merge(&end),
@@ -511,6 +602,110 @@ impl ParserItems for Parser {
             name,
             payload,
             decorators,
+            span: start.merge(&end),
+        })
+    }
+
+    fn parse_interface(&mut self) -> ParseResult<InterfaceDecl> {
+        let start = self.current_span();
+        self.expect(TokenKind::Interface)?;
+
+        let name = self.expect_ident()?;
+        self.expect(TokenKind::LBrace)?;
+
+        let mut methods = Vec::new();
+        let mut seen_methods: HashSet<String> = HashSet::new();
+        while !self.check(TokenKind::RBrace) && !self.is_at_end() {
+            let method = self.parse_interface_method()?;
+            if !seen_methods.insert(method.name.clone()) {
+                return Err(CompilerError::new(
+                    ErrorCode::DuplicateMethod,
+                    format!(
+                        "duplicate method '{}' in interface '{}'",
+                        method.name, name
+                    ),
+                    method.span,
+                )
+                .with_suggestion(format!("rename one of the '{}' methods", method.name)));
+            }
+            methods.push(method);
+        }
+
+        self.expect(TokenKind::RBrace)?;
+        let end = self.prev_span();
+
+        let is_public = name
+            .chars()
+            .next()
+            .map(|c| c.is_uppercase())
+            .unwrap_or(false);
+
+        Ok(InterfaceDecl {
+            name,
+            is_public,
+            methods,
+            span: start.merge(&end),
+        })
+    }
+
+    fn parse_interface_method(&mut self) -> ParseResult<InterfaceMethodDecl> {
+        let start = self.current_span();
+        self.expect(TokenKind::Fn)?;
+
+        let name = self.expect_ident()?;
+
+        // Parameters
+        self.expect(TokenKind::LParen)?;
+        let params = self.parse_param_list()?;
+        self.expect(TokenKind::RParen)?;
+
+        // Return type and error type (same as function parsing)
+        let (return_type, error_type) = if self.check(TokenKind::Arrow) {
+            self.advance();
+            if self.check(TokenKind::Bang) {
+                self.advance();
+                let err_type = self.parse_type_expr()?;
+                (None, Some(err_type))
+            } else {
+                let mut types = Vec::new();
+                types.push(self.parse_type_expr()?);
+                while self.check(TokenKind::Comma) {
+                    self.advance();
+                    types.push(self.parse_type_expr()?);
+                }
+                let ret_type = if types.len() == 1 {
+                    Some(types.remove(0))
+                } else {
+                    let end = self.prev_span();
+                    Some(TypeExpr::new(TypeExprKind::Tuple(types), start.merge(&end)))
+                };
+                let err_type = if self.check(TokenKind::Bang) {
+                    self.advance();
+                    Some(self.parse_type_expr()?)
+                } else {
+                    None
+                };
+                (ret_type, err_type)
+            }
+        } else if self.check(TokenKind::Bang) {
+            self.advance();
+            let err_type = self.parse_type_expr()?;
+            (None, Some(err_type))
+        } else {
+            (None, None)
+        };
+
+        // Optional semicolon terminator for interface methods
+        if self.check(TokenKind::Semi) {
+            self.advance();
+        }
+
+        let end = self.prev_span();
+        Ok(InterfaceMethodDecl {
+            name,
+            params,
+            return_type,
+            error_type,
             span: start.merge(&end),
         })
     }

@@ -104,6 +104,7 @@ pub enum ErrorCode {
     BreakOutsideLoop,       // E0418
     ContinueOutsideLoop,    // E0419
     ReturnOutsideFunction,  // E0420
+    DuplicateMethod,        // E0421  — duplicate method in interface
 
     // === Import Errors (E0500-E0599) ===
     ModuleNotFound,    // E0500
@@ -230,6 +231,7 @@ impl ErrorCode {
             Self::BreakOutsideLoop => "E0418",
             Self::ContinueOutsideLoop => "E0419",
             Self::ReturnOutsideFunction => "E0420",
+            Self::DuplicateMethod => "E0421",
 
             Self::ModuleNotFound => "E0500",
             Self::ImportNotFound => "E0501",
@@ -351,6 +353,7 @@ impl ErrorCode {
             "E0418" => Some(Self::BreakOutsideLoop),
             "E0419" => Some(Self::ContinueOutsideLoop),
             "E0420" => Some(Self::ReturnOutsideFunction),
+            "E0421" => Some(Self::DuplicateMethod),
 
             "E0500" => Some(Self::ModuleNotFound),
             "E0501" => Some(Self::ImportNotFound),
@@ -456,6 +459,7 @@ impl ErrorCode {
             Self::DuplicateParameter => "DUPLICATE PARAM",
             Self::DuplicateField => "DUPLICATE FIELD",
             Self::DuplicateVariant => "DUPLICATE VARIANT",
+            Self::DuplicateMethod => "DUPLICATE METHOD",
             Self::InvalidSignature => "INVALID SIGNATURE",
             Self::MissingReturn => "MISSING RETURN",
             Self::UnreachableCode => "UNREACHABLE CODE",

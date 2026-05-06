@@ -282,6 +282,41 @@ impl TypeChecker {
                         });
                     }
                 }
+                HirItem::Interface(i) => {
+                    // Register interface as a type in scope
+                    let iface_key = format!("__interface_{}", i.name);
+                    if self.scopes.lookup(&iface_key).is_some() {
+                        self.errors.push(TypeError {
+                            kind: TypeErrorKind::InvalidOp(format!(
+                                "interface '{}' is already defined",
+                                i.name
+                            )),
+                            span: i.span,
+                        });
+                    } else {
+                        self.define_symbol(Symbol {
+                            name: iface_key,
+                            kind: SymbolKind::Variable,
+                            type_id: None,
+                            mutable: false,
+                            span: i.span,
+                            used: false,
+                        });
+                    }
+                    // Also register the interface name as a known type so it can be
+                    // used in type annotations without triggering "undefined type" errors
+                    let type_id = self.registry.lookup(&i.name);
+                    if let Some(tid) = type_id {
+                        self.define_symbol(Symbol {
+                            name: i.name.clone(),
+                            kind: SymbolKind::Type,
+                            type_id: Some(tid),
+                            mutable: false,
+                            span: i.span,
+                            used: false,
+                        });
+                    }
+                }
                 _ => {}
             }
         }
@@ -349,6 +384,7 @@ impl TypeChecker {
                 // Skip common types that might be forward-declared by FFI or runtime
                 let struct_key = format!("__struct_{}", name);
                 let enum_key = format!("__enum_{}", name);
+                let interface_key = format!("__interface_{}", name);
                 // Skip built-in / FFI types that are always available
                 let is_builtin = matches!(
                     name.as_str(),
@@ -365,6 +401,7 @@ impl TypeChecker {
                 if !is_builtin
                     && self.scopes.lookup(&struct_key).is_none()
                     && self.scopes.lookup(&enum_key).is_none()
+                    && self.scopes.lookup(&interface_key).is_none()
                 {
                     self.errors.push(TypeError {
                         kind: TypeErrorKind::Undefined(name.clone(), None),

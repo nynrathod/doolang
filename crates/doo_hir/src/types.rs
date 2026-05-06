@@ -396,6 +396,7 @@ pub enum HirItem {
     Function(HirFunction),
     Struct(HirStruct),
     Enum(HirEnum),
+    Interface(HirInterface),
     Import(HirImport),
     /// RBAC policy block.
     Policy(HirPolicy),
@@ -419,6 +420,8 @@ pub struct HirPolicy {
 #[derive(Debug, Clone)]
 pub struct HirFunction {
     pub name: String,
+    /// Generic type parameter names (empty for non-generic functions).
+    pub type_params: Vec<String>,
     pub params: Vec<HirParam>,
     pub return_type: Option<TypeId>,
     pub error_type: Option<TypeId>,
@@ -440,6 +443,8 @@ pub struct HirParam {
 #[derive(Debug, Clone)]
 pub struct HirStruct {
     pub name: String,
+    /// Generic type parameter names (empty for non-generic structs).
+    pub type_params: Vec<String>,
     pub fields: Vec<HirField>,
     pub decorators: Vec<HirDecorator>,
     pub span: Span,
@@ -472,6 +477,24 @@ pub struct HirVariant {
     pub payload: Option<TypeId>,
     /// Decorators on this variant (e.g. @inherits(User)).
     pub decorators: Vec<HirDecorator>,
+    pub span: Span,
+}
+
+/// Interface definition.
+#[derive(Debug, Clone)]
+pub struct HirInterface {
+    pub name: String,
+    pub methods: Vec<HirInterfaceMethod>,
+    pub span: Span,
+}
+
+/// A method signature inside an interface.
+#[derive(Debug, Clone)]
+pub struct HirInterfaceMethod {
+    pub name: String,
+    pub params: Vec<HirParam>,
+    pub return_type: Option<TypeId>,
+    pub error_type: Option<TypeId>,
     pub span: Span,
 }
 

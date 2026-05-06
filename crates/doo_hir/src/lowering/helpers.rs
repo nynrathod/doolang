@@ -212,9 +212,18 @@ impl Lower {
 
     pub(crate) fn resolve_type_expr(&mut self, ty: &TypeExpr, registry: &mut TypeRegistry) -> TypeId {
         match &ty.kind {
-            doo_frontend::ast::TypeExprKind::Named(name) => registry
-                .lookup(name)
-                .unwrap_or_else(|| registry.declare_named(name)),
+            doo_frontend::ast::TypeExprKind::Named(name) => {
+                // Check if this name is a registered type parameter first.
+                // Type params are stored as "__typeparam_T" in the registry.
+                let tp_key = format!("__typeparam_{}", name);
+                if let Some(tp_id) = registry.lookup(&tp_key) {
+                    tp_id
+                } else {
+                    registry
+                        .lookup(name)
+                        .unwrap_or_else(|| registry.declare_named(name))
+                }
+            }
             doo_frontend::ast::TypeExprKind::Array(inner) => {
                 let elem = self.resolve_type_expr(inner, registry);
                 registry.register_array(elem)

@@ -177,6 +177,12 @@ pub enum TypeKind {
         name: String,
         variants: Vec<(String, Option<TypeId>)>,
     },
+    /// Interface type (like Go interface / Rust trait)
+    /// Methods: (name, param_types, return_type, error_type)
+    Interface {
+        name: String,
+        methods: Vec<(String, Vec<TypeId>, Option<TypeId>, Option<TypeId>)>,
+    },
     /// Function type
     Function {
         params: Vec<TypeId>,
@@ -188,6 +194,8 @@ pub enum TypeKind {
     Any,
     /// Error type
     Error,
+    /// Generic type parameter placeholder (substituted during monomorphization)
+    TypeParam { name: String },
 }
 
 // ============================================================================
@@ -210,7 +218,12 @@ impl TypeInfo {
     pub fn is_copy(&self) -> bool {
         matches!(
             self.kind,
-            TypeKind::Void | TypeKind::Bool | TypeKind::Int | TypeKind::Float
+            TypeKind::Void
+                | TypeKind::Bool
+                | TypeKind::Int
+                | TypeKind::Float
+                | TypeKind::Interface { .. }
+                | TypeKind::TypeParam { .. }  // Type params are opaque; treat as copy-safe placeholder
         )
     }
 
@@ -239,10 +252,12 @@ impl TypeInfo {
             TypeKind::Tuple { elements } => elements.len() * target.alignment,
             TypeKind::Struct { fields, .. } => fields.len() * target.alignment,
             TypeKind::Enum { .. } => target.alignment + target.pointer_size, // tag + max payload
+            TypeKind::Interface { .. } => target.pointer_size * 2, // data ptr + vtable ptr (fat pointer)
             TypeKind::Function { .. } => target.pointer_size,                // function pointer
             TypeKind::TypeRef { .. } => target.pointer_size,                 // Will be resolved
             TypeKind::Any => target.alignment + target.pointer_size,         // tag + ptr
             TypeKind::Error => target.pointer_size * 2,                      // ptr + len
+            TypeKind::TypeParam { .. } => target.pointer_size,               // Placeholder
         }
     }
 
@@ -261,10 +276,12 @@ impl TypeInfo {
             TypeKind::Tuple { .. } => "ptr",
             TypeKind::Struct { .. } => "ptr",
             TypeKind::Enum { .. } => "ptr",
-            TypeKind::Function { .. } => "ptr",
-            TypeKind::TypeRef { .. } => "ptr",
+            TypeKind::Interface { .. } => "ptr",
+            TypeKind::Function { .. } => "ptr",                // function pointer
+            TypeKind::TypeRef { .. } => "ptr",                 // Will be resolved
             TypeKind::Any => "ptr",
             TypeKind::Error => "ptr",
+            TypeKind::TypeParam { .. } => "ptr",               // Resolved before codegen
         }
     }
 }
@@ -474,6 +491,36 @@ impl TypeRegistry {
         self.register(&name, TypeKind::Result { ok, err })
     }
 
+    /// Register a type parameter placeholder.
+    /// Returns a unique TypeId for this type param within the current generic scope.
+    pub fn register_type_param(&mut self, name: &str) -> TypeId {
+        let tp_name = format!("__typeparam_{}", name);
+        if let Some(&id) = self.name_to_id.get(&tp_name) {
+            return id;
+        }
+        self.register(
+            &tp_name,
+            TypeKind::TypeParam {
+                name: name.to_string(),
+            },
+        )
+    }
+
+    /// Check if a TypeId refers to a type parameter.
+    pub fn is_type_param(&self, id: TypeId) -> bool {
+        self.get(id)
+            .map(|info| matches!(info.kind, TypeKind::TypeParam { .. }))
+            .unwrap_or(false)
+    }
+
+    /// Get the type parameter name if this TypeId is a TypeParam.
+    pub fn type_param_name(&self, id: TypeId) -> Option<&str> {
+        self.get(id).and_then(|info| match &info.kind {
+            TypeKind::TypeParam { name } => Some(name.as_str()),
+            _ => None,
+        })
+    }
+
     /// Register a struct type
     pub fn register_struct(&mut self, name: &str, fields: Vec<(String, TypeId, bool)>) -> TypeId {
         self.register(
@@ -492,6 +539,48 @@ impl TypeRegistry {
             TypeKind::Enum {
                 name: name.to_string(),
                 variants,
+            },
+        )
+    }
+
+    /// Define (or re-define) an interface type by name.
+    /// Methods: (name, param_types, return_type, error_type)
+    pub fn define_interface(
+        &mut self,
+        name: &str,
+        methods: Vec<(String, Vec<TypeId>, Option<TypeId>, Option<TypeId>)>,
+    ) -> TypeId {
+        let id = self.declare_named(name);
+        if std::env::var(crate::constants::env_vars::DOO_DEBUG_TYPES).is_ok() {
+            doo_debug!(
+                "TYPES",
+                "define_interface '{}' with id={:?}, {} methods",
+                name,
+                id,
+                methods.len()
+            );
+        }
+        if let Some(info) = self.types.get_mut(&id) {
+            info.kind = TypeKind::Interface {
+                name: name.to_string(),
+                methods,
+            };
+            info.name = name.to_string();
+        }
+        id
+    }
+
+    /// Register an interface type (without re-defining)
+    pub fn register_interface(
+        &mut self,
+        name: &str,
+        methods: Vec<(String, Vec<TypeId>, Option<TypeId>, Option<TypeId>)>,
+    ) -> TypeId {
+        self.register(
+            name,
+            TypeKind::Interface {
+                name: name.to_string(),
+                methods,
             },
         )
     }
@@ -577,6 +666,15 @@ impl TypeRegistry {
                     // T is assignable to Optional<T>
                     (_, TypeKind::Optional { inner: e_inner }) => {
                         self.is_compatible(actual, *e_inner)
+                    }
+                    // A concrete type is compatible with an interface if it satisfies it.
+                    // Full satisfaction checking is done in type_check.rs.
+                    // For the registry, any type is tentatively compatible with an interface;
+                    // the type checker validates actual method satisfaction.
+                    (_, TypeKind::Interface { .. }) => true,
+                    // An interface is compatible with itself
+                    (TypeKind::Interface { .. }, TypeKind::Interface { .. }) => {
+                        actual == expected
                     }
                     // TypeRef resolves to actual type (guard against self-referential TypeRefs)
                     (TypeKind::TypeRef { name }, _) => self

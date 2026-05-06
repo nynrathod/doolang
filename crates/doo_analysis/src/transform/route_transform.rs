@@ -526,6 +526,7 @@ fn extract_closures_from_expr(expr: &mut Expr, generated: &mut Vec<FunctionDecl>
                     let func_decl = FunctionDecl {
                         name: func_name.clone(),
                         is_public: false,
+                        type_params: vec![],
                         params: params
                             .iter()
                             .map(|(name, ty)| (name.clone(), ty.clone()))

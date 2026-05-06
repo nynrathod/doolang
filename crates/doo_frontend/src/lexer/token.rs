@@ -67,6 +67,8 @@ pub enum TokenKind {
     Struct,
     /// `enum`
     Enum,
+    /// `interface`
+    Interface,
     /// `if`
     If,
     /// `else`
@@ -244,6 +246,7 @@ impl TokenKind {
             Self::As => Some("as"),
             Self::Struct => Some("struct"),
             Self::Enum => Some("enum"),
+            Self::Interface => Some("interface"),
             Self::If => Some("if"),
             Self::Else => Some("else"),
             Self::For => Some("for"),
@@ -344,6 +347,7 @@ impl TokenKind {
             Self::As => "`as`",
             Self::Struct => "`struct`",
             Self::Enum => "`enum`",
+            Self::Interface => "`interface`",
             Self::If => "`if`",
             Self::Else => "`else`",
             Self::For => "`for`",

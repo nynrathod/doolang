@@ -404,11 +404,52 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 MirOperand::Temp(dest)
             } else {
                 let dest = builder.new_temp();
+
+                // Coerce arguments to interface types when needed.
+                // If a parameter expects an interface type but the argument is a
+                // concrete struct, emit InterfaceConstruct to build the fat pointer.
+                let mut coerced_args: Vec<MirOperand> = Vec::with_capacity(arg_ops.len());
+                for (i, arg_op) in arg_ops.into_iter().enumerate() {
+                    let needs_interface_coercion = param_types
+                        .as_ref()
+                        .and_then(|types| types.get(i).copied())
+                        .and_then(|param_type| {
+                            let is_interface = builder
+                                .type_registry
+                                .get(param_type)
+                                .map(|info| matches!(info.kind, TypeKind::Interface { .. }))
+                                .unwrap_or(false);
+                            if is_interface {
+                                let arg_type = builder.infer_operand_type(&arg_op);
+                                let is_concrete = arg_type != param_type;
+                                Some((arg_type, param_type))
+                            } else {
+                                None
+                            }
+                        });
+                    if let Some((arg_type, iface_type)) = needs_interface_coercion {
+                        let iface_dest = builder.new_temp();
+                        builder.emit(
+                            MirInstrKind::InterfaceConstruct {
+                                dest: iface_dest,
+                                value: arg_op,
+                                concrete_type: arg_type,
+                                interface_type: iface_type,
+                            },
+                            span,
+                        );
+                        builder.set_temp_type(iface_dest, iface_type);
+                        coerced_args.push(MirOperand::Temp(iface_dest));
+                    } else {
+                        coerced_args.push(arg_op);
+                    }
+                }
+
                 builder.emit(
                     MirInstrKind::Call {
                         dest: Some(dest),
                         func: sym(&resolved_func_name),
-                        args: arg_ops,
+                        args: coerced_args,
                     },
                     span,
                 );
@@ -640,6 +681,32 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 // Method functions are named _method_{TypeName}_{method}
                 // CRITICAL: Use receiver_type_name for static calls (e.g., Server.new())
                 // where receiver_type may be ANY but we know the type name from the receiver
+                
+                // For interface receivers, extract return type from the interface definition
+                if let Some(info) = builder.type_registry.get(receiver_type) {
+                    if let TypeKind::Interface { methods, .. } = &info.kind {
+                        for (mname, _params, ret, err) in methods {
+                            if mname == method {
+                                if let (Some(ok_type), Some(err_type)) = (ret, err) {
+                                    // Fallible method: return type is Result<ok, err>
+                                    // Look up the registered Result type
+                                    let ok_name = builder.type_registry.get(*ok_type)
+                                        .map(|t| t.name.clone()).unwrap_or_else(|| "?".to_string());
+                                    let err_name = builder.type_registry.get(*err_type)
+                                        .map(|t| t.name.clone()).unwrap_or_else(|| "?".to_string());
+                                    let result_name = format!("{} ! {}", ok_name, err_name);
+                                    if let Some(result_tid) = builder.type_registry.lookup(&result_name) {
+                                        return Some(result_tid);
+                                    }
+                                    // Fallback: return just the Ok type
+                                    return ret.clone();
+                                }
+                                return ret.clone();
+                            }
+                        }
+                    }
+                }
+                
                 let type_name = receiver_type_name.as_ref().cloned().or_else(|| {
                     builder.type_registry.get(receiver_type).and_then(|info| {
                         if let TypeKind::Struct { name, .. } = &info.kind {

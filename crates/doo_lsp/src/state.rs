@@ -493,5 +493,8 @@ fn extract_symbols_from_item(
         Item::Policy(_) => {
             // Policy blocks are not exposed as LSP symbols
         }
+        Item::Interface(_) => {
+            // Interface definitions are not exposed as LSP symbols
+        }
     }
 }

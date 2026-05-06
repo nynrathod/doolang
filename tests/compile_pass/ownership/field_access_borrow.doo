@@ -1,0 +1,44 @@
+// Test: struct field access should borrow, NOT move the struct
+// B5 ISSUE #8 fix — field access is a read, not a move
+
+struct Project {
+    Name: Str,
+    Region: Str,
+    RepoUrl: Str,
+    Id: Int,
+}
+
+fn GetProject() -> Project {
+    return Project {
+        Name: "DooCloud",
+        Region: "us-west1",
+        RepoUrl: "github.com/doo/doocloud",
+        Id: 42,
+    };
+}
+
+fn StartPipeline(name: Str, region: Str, url: Str) {
+    print("Pipeline:", name, region, url);
+}
+
+fn UpdateStatus(id: Int, status: Str) {
+    print("Status:", id, "->", status);
+}
+
+fn main() {
+    let project = GetProject();
+
+    // Use fields directly — should NOT consume project
+    StartPipeline(project.Name, project.Region, project.RepoUrl);
+    UpdateStatus(project.Id, "deploying");
+
+    // Still accessible after field accesses!
+    print("Deployed:", project.Name);
+    print("Region:", project.Region);
+    print("RepoUrl:", project.RepoUrl);
+    print("Id:", project.Id);
+
+    // Multiple field accesses of same field should work too
+    print("Name again:", project.Name);
+    print("Name third time:", project.Name);
+}

@@ -72,8 +72,39 @@ pub(crate) fn coerce_arg_to_param_type<'ctx>(
 
     // Special case: PointerValue passed where struct is expected
     // This happens when JSON.parse returns a pointer to enum but function expects struct by value
+    // OR when a concrete struct is passed where an interface fat pointer {ptr, ptr} is expected.
     if val.is_pointer_value() && expected.is_struct_type() {
-        // Load the struct from the pointer
+        let struct_type = expected.into_struct_type();
+        let field_types = struct_type.get_field_types();
+
+        // Check if this is an interface fat pointer: { i8*, i8* }
+        // Interface fat pointers have exactly 2 pointer fields.
+        let is_interface_fat_ptr = field_types.len() == 2
+            && field_types[0].is_pointer_type()
+            && field_types[1].is_pointer_type();
+
+        if is_interface_fat_ptr {
+            // Build interface fat pointer from concrete struct pointer.
+            // { data_ptr, vtable_ptr } where vtable_ptr = null for now.
+            let data_ptr = val.into_pointer_value();
+            let i8_ptr_type = ctx.context.i8_type().ptr_type(inkwell::AddressSpace::default());
+            let data_i8_ptr = ctx.builder
+                .build_pointer_cast(data_ptr, i8_ptr_type, "iface_data")
+                .ok()
+                .unwrap_or_else(|| i8_ptr_type.const_null());
+            let vtable_ptr = i8_ptr_type.const_null();
+
+            let mut fat_ptr = struct_type.get_undef();
+            if let Ok(s) = ctx.builder.build_insert_value(fat_ptr, data_i8_ptr, 0, "iface_data_field") {
+                fat_ptr = s.into_struct_value();
+            }
+            if let Ok(s) = ctx.builder.build_insert_value(fat_ptr, vtable_ptr, 1, "iface_vtable_field") {
+                fat_ptr = s.into_struct_value();
+            }
+            return fat_ptr.into();
+        }
+
+        // Normal case: load struct from pointer
         let loaded = ctx
             .builder
             .build_load(expected, val.into_pointer_value(), "arg_load")

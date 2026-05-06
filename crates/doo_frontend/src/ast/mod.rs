@@ -3,16 +3,16 @@
 //! The AST represents the syntactic structure of Doo programs after parsing.
 //! All nodes are typed with spans for precise error reporting.
 
-mod expr;
-mod stmt;
 mod decl;
+mod expr;
 mod pattern;
+mod stmt;
 mod types;
 
-pub use expr::*;
-pub use stmt::*;
 pub use decl::*;
+pub use expr::*;
 pub use pattern::*;
+pub use stmt::*;
 pub use types::*;
 
 use doo_core::Span;
@@ -41,6 +41,8 @@ pub enum Item {
     Struct(StructDecl),
     /// Enum declaration
     Enum(EnumDecl),
+    /// Interface declaration
+    Interface(InterfaceDecl),
     /// Import statement
     Import(ImportDecl),
     /// RBAC policy block
@@ -55,6 +57,7 @@ impl Item {
             Self::Function(f) => f.span,
             Self::Struct(s) => s.span,
             Self::Enum(e) => e.span,
+            Self::Interface(i) => i.span,
             Self::Import(i) => i.span,
             Self::Policy(p) => p.span,
             Self::Statement(s) => s.span(),
