@@ -17,8 +17,10 @@
 
 pub mod types;
 pub mod lowering;
+pub mod monomorphize;
 pub mod visitor;
 
 pub use types::*;
 pub use lowering::Lower;
+pub use monomorphize::Monomorphizer;
 pub use visitor::{HirVisitor, HirVisitorMut};

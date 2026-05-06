@@ -298,7 +298,15 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     let t = Instant::now();
     let mut type_registry = TypeRegistry::new();
     let mut lowerer = Lower::new();
-    let hir = lowerer.lower_program_typed(&program, &mut type_registry);
+    let mut hir = lowerer.lower_program_typed(&program, &mut type_registry);
+
+    // Phase 4.5: Monomorphization
+    // Transforms generic function/struct templates into concrete specializations.
+    // Must run BEFORE analysis (which doesn't understand TypeParam) and MIR building.
+    {
+        let mut mono = doo_hir::Monomorphizer::new(&mut type_registry);
+        mono.monomorphize(&mut hir);
+    }
 
     // Wrap in Arc for shared access
     let type_registry = Arc::new(type_registry);
@@ -2023,6 +2031,7 @@ mod tests {
                 span: test_span(),
                 decorators: vec![],
                 is_async: false,
+                type_params: vec![],
             })],
             span: test_span(),
         };
@@ -2093,6 +2102,7 @@ mod tests {
                 span: test_span(),
                 decorators: vec![],
                 is_async: false,
+                type_params: vec![],
             })],
             span: test_span(),
         };
