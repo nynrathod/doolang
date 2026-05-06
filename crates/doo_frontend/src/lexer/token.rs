@@ -98,6 +98,9 @@ pub enum TokenKind {
     /// `false`
     False,
 
+    /// `const`
+    Const,
+
     // === RBAC ===
     /// `policy`
     Policy,
@@ -239,6 +242,7 @@ impl TokenKind {
     /// Get the keyword for this token kind, if it's a keyword.
     pub fn keyword_str(&self) -> Option<&'static str> {
         match self {
+            Self::Const => Some("const"),
             Self::Let => Some("let"),
             Self::Mut => Some("mut"),
             Self::Fn => Some("fn"),
@@ -340,6 +344,7 @@ impl TokenKind {
         match self {
             Self::Eof => "end of file",
             Self::Error => "error",
+            Self::Const => "`const`",
             Self::Let => "`let`",
             Self::Mut => "`mut`",
             Self::Fn => "`fn`",

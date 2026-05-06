@@ -12,6 +12,7 @@ pub trait ParserItems {
     fn parse_item(&mut self) -> ParseResult<Item>;
     fn parse_decorators(&mut self) -> ParseResult<Vec<Decorator>>;
     fn parse_decorator(&mut self) -> ParseResult<Decorator>;
+    fn parse_const(&mut self) -> ParseResult<ConstDecl>;
     fn parse_function(&mut self) -> ParseResult<FunctionDecl>;
     fn parse_function_name(&mut self) -> ParseResult<(String, Option<String>, Option<String>)>;
     fn parse_type_params(&mut self) -> ParseResult<Vec<TypeParam>>;
@@ -35,6 +36,10 @@ impl ParserItems for Parser {
         let decorators = self.parse_decorators()?;
 
         match self.current().kind {
+            TokenKind::Const => {
+                drop(decorators);
+                Ok(Item::Const(self.parse_const()?))
+            }
             TokenKind::Fn => {
                 let mut func = self.parse_function()?;
                 func.decorators = decorators;
@@ -141,6 +146,52 @@ impl ParserItems for Parser {
     }
 
     // === Declarations ===
+
+    /// Parse `const Name = expr` — compile-time constant declaration.
+    ///
+    /// Syntax:
+    ///   const MaxItems = 10
+    ///   const FreePlan = "free"
+    ///   const Regions = { "us": "us-west1" }
+    fn parse_const(&mut self) -> ParseResult<ConstDecl> {
+        let start = self.current_span();
+        self.expect(TokenKind::Const)?;
+
+        let name = self.expect_ident().map_err(|_| {
+            CompilerError::new(
+                ErrorCode::ExpectedIdentifier,
+                "expected constant name after `const`",
+                self.current_span(),
+            )
+            .with_suggestion("usage: const MaxRetries = 3  or  const AppName = \"doo\"")
+        })?;
+
+        self.expect(TokenKind::Eq).map_err(|_| {
+            CompilerError::new(
+                ErrorCode::UnexpectedToken,
+                format!("expected `=` after const name `{}`", name),
+                self.current_span(),
+            )
+            .with_suggestion("usage: const Name = <value>")
+        })?;
+
+        let value = self.parse_expression().map_err(|_| {
+            CompilerError::new(
+                ErrorCode::InvalidConstExpr,
+                format!(
+                    "expected a compile-time constant expression for `const {}`",
+                    name
+                ),
+                self.current_span(),
+            )
+            .with_suggestion(
+                "const values must be literals, arrays/maps of literals, or const arithmetic",
+            )
+        })?;
+
+        let end = self.prev_span();
+        Ok(ConstDecl::new(name, value, start.merge(&end)))
+    }
 
     fn parse_function(&mut self) -> ParseResult<FunctionDecl> {
         let start = self.current_span();

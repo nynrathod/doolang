@@ -9,7 +9,7 @@ use doo_core::constants::ffi_names::{self, derive_ffi_symbol};
 use doo_core::doo_debug;
 use doo_core::types::{builtin, TypeKind, TypeRegistry};
 use doo_mir::sym::resolve;
-use doo_mir::{MirConst, MirFunction, MirOperand, MirProgram, MirTerminator};
+use doo_mir::{MirConst, MirFunction, MirGlobal, MirOperand, MirProgram, MirTerminator};
 use inkwell::basic_block::BasicBlock;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
@@ -458,6 +458,11 @@ impl<'ctx> CodegenBuilder<'ctx> {
             }
         }
 
+        // Emit LLVM global constants from MirGlobal entries (primitive consts)
+        for global in &mir.globals {
+            self.emit_global(&mut ctx, global);
+        }
+
         // First pass: declare all functions
         for func in &mir.functions {
             self.declare_function(&mut ctx, func);
@@ -469,6 +474,57 @@ impl<'ctx> CodegenBuilder<'ctx> {
         }
 
         ctx.module
+    }
+
+    /// Emit a single LLVM global constant from a `MirGlobal`.
+    ///
+    /// Primitive consts (Int, Float, Bool, Str) become LLVM global constants with
+    /// internal linkage. The value is stored in the context locals map so that
+    /// `operand_to_value` can resolve `MirOperand::Global(name)` if needed.
+    fn emit_global(&self, ctx: &mut CodegenContext<'ctx>, global: &MirGlobal) {
+        use inkwell::module::Linkage;
+
+        let name = resolve(global.name);
+        let value = match &global.value {
+            Some(v) => v,
+            None => return,
+        };
+
+        match value {
+            MirConst::Int(v) => {
+                // Store the i64 constant value directly as a temp — no LLVM global needed
+                // since constants are inlined. The global is for cross-module visibility.
+                let ty = ctx.context.i64_type();
+                let g = ctx.module.add_global(ty, None, &name);
+                g.set_initializer(&ty.const_int(*v as u64, true));
+                g.set_constant(true);
+                g.set_linkage(Linkage::Internal);
+                // Also cache the raw i64 value so operand_to_value returns it directly
+                ctx.set_temp(&name, ty.const_int(*v as u64, true).into());
+            }
+            MirConst::Float(v) => {
+                let ty = ctx.context.f64_type();
+                let g = ctx.module.add_global(ty, None, &name);
+                g.set_initializer(&ty.const_float(*v));
+                g.set_constant(true);
+                g.set_linkage(Linkage::Internal);
+                ctx.set_temp(&name, ty.const_float(*v).into());
+            }
+            MirConst::Bool(v) => {
+                let ty = ctx.context.i8_type();
+                let g = ctx.module.add_global(ty, None, &name);
+                g.set_initializer(&ty.const_int(*v as u64, false));
+                g.set_constant(true);
+                g.set_linkage(Linkage::Internal);
+                ctx.set_temp(&name, ty.const_int(*v as u64, false).into());
+            }
+            MirConst::Str(s) => {
+                if let Ok(g) = ctx.builder.build_global_string_ptr(s, &name) {
+                    ctx.set_temp(&name, g.as_pointer_value().into());
+                }
+            }
+            MirConst::Nil => {}
+        }
     }
 
     /// Pre-declare all struct types from the type registry.

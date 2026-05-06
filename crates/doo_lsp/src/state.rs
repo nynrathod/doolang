@@ -64,6 +64,7 @@ pub enum SymbolKind {
     Field,
     Variable,
     Import,
+    Const,
 }
 
 /// Global LSP server state.
@@ -479,6 +480,19 @@ fn extract_symbols_from_item(
             symbols.push(SymbolDef {
                 name: path_str,
                 kind: SymbolKind::Import,
+                line: line.saturating_sub(1),
+                col: col.saturating_sub(1),
+                type_info: None,
+                doc: None,
+                params: Vec::new(),
+                return_type: None,
+            });
+        }
+        Item::Const(c) => {
+            let (line, col) = line_index.line_col(c.span.start);
+            symbols.push(SymbolDef {
+                name: c.name.clone(),
+                kind: SymbolKind::Const,
                 line: line.saturating_sub(1),
                 col: col.saturating_sub(1),
                 type_info: None,

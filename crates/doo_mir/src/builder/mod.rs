@@ -349,6 +349,17 @@ impl<'a> MirBuilder<'a> {
 
         for item in &hir.items {
             match item {
+                HirItem::Const(c) => {
+                    // Only emit MirGlobal for primitive const types.
+                    // Complex types (arrays/maps) are inlined at every use site by HIR lowering.
+                    if let Some(ref prim) = c.value {
+                        program.globals.push(MirGlobal {
+                            name: sym(&c.name),
+                            type_id: c.type_id,
+                            value: Some(self.const_to_mir(prim)),
+                        });
+                    }
+                }
                 HirItem::Function(f) => {
                     // Skip generic functions — they're templates, not concrete code.
                     // Monomorphization will create concrete instantiations later.

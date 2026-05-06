@@ -19,7 +19,13 @@ impl Lower {
             ExprKind::StrLit(v) => HirExprKind::Const(ConstValue::Str(v.clone())),
             ExprKind::Nil => HirExprKind::Const(ConstValue::Nil),
 
-            ExprKind::Ident(name) => HirExprKind::Local { name: name.clone() },
+            ExprKind::Ident(name) => {
+                // Inline const at use site (untyped path)
+                if let Some(const_expr) = self.known_consts.get(name).cloned() {
+                    return self.lower_expr(&const_expr);
+                }
+                HirExprKind::Local { name: name.clone() }
+            }
 
             ExprKind::Binary { left, op, right } => HirExprKind::BinOp {
                 op: self.lower_binop(*op),
@@ -295,6 +301,10 @@ impl Lower {
             ExprKind::Nil => HirExprKind::Const(ConstValue::Nil),
 
             ExprKind::Ident(name) => {
+                // Inline compile-time constant if the name is a known const
+                if let Some(const_expr) = self.known_consts.get(name).cloned() {
+                    return self.lower_expr_typed(&const_expr, registry);
+                }
                 // Look up the variable type if tracked
                 let kind = HirExprKind::Local { name: name.clone() };
                 if let Some(&type_id) = self.var_types.get(name) {

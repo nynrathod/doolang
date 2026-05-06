@@ -25,6 +25,7 @@ fn keyword_map() -> &'static FxHashMap<&'static str, TokenKind> {
         let mut map = FxHashMap::default();
 
         // Declaration keywords
+        map.insert("const", TokenKind::Const);
         map.insert("let", TokenKind::Let);
         map.insert("mut", TokenKind::Mut);
         map.insert("fn", TokenKind::Fn);

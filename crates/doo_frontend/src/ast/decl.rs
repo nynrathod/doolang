@@ -1,9 +1,34 @@
 //! Declaration AST nodes.
 //!
-//! Top-level declarations: functions, structs, enums, imports.
+//! Top-level declarations: functions, structs, enums, imports, consts.
 
-use super::{Stmt, TypeExpr};
+use super::{Expr, Stmt, TypeExpr};
 use doo_core::Span;
+
+// ============================================================================
+// Const Declaration
+// ============================================================================
+
+/// A compile-time constant declaration: `const Name = expr`
+///
+/// - PascalCase name → public const (accessible via import)
+/// - camelCase name  → private const (module-internal)
+/// - Value must be a compile-time literal expression (no function calls, no structs)
+/// - Can hold: primitives (Int, Float, Bool, Str), arrays of primitives, maps of primitives
+#[derive(Debug, Clone)]
+pub struct ConstDecl {
+    pub name: String,
+    pub is_public: bool,
+    pub value: Expr,
+    pub span: Span,
+}
+
+impl ConstDecl {
+    pub fn new(name: String, value: Expr, span: Span) -> Self {
+        let is_public = name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
+        Self { name, is_public, value, span }
+    }
+}
 
 // ============================================================================
 // Generic Type Parameters

@@ -26,6 +26,17 @@ fn echo<T>(x: T) -> T {
     return x;
 }
 
+// === 6. Generic over array [T] ===
+fn first<T>(items: [T]) -> T {
+    return items[0];
+}
+
+// === 7. Generic struct ===
+struct Wrapper<T> {
+    Value: T,
+    Label: Str,
+}
+
 fn main() {
     // 1. Single type param with all primitive types
     let a = identity(42);
@@ -63,6 +74,24 @@ fn main() {
     // 5. Generic in expressions (not just let)
     print(identity(777));
     print(identity("inline"));
+
+    // 6. Generic over array [T] — primitive element types
+    let arrInt = first([10, 20, 30]);
+    print(arrInt);
+    let arrStr = first(["Alice", "Bob"]);
+    print(arrStr);
+    let arrFloat = first([1.5, 2.5]);
+    print(arrFloat);
+    let arrBool = first([true, false]);
+    print(arrBool);
+
+    // 7. Generic struct instantiation
+    let intBox = Wrapper { Value: 42, Label: "age" };
+    print("intBox",intBox.Value);
+    print(intBox.Label);
+    let strBox = Wrapper { Value: "hello", Label: "greeting" };
+    print(strBox.Value);
+    print(strBox.Label);
 
     print("All generic tests passed!");
 }

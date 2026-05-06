@@ -1,0 +1,54 @@
+// Extended generics test — covers cases beyond simple value identity.
+
+// === 1. Generic over array [T] ===
+fn first<T>(items: [T]) -> T {
+    return items[0];
+}
+
+// === 2. Generic over map {K: V} (using two type params) ===
+fn getOrDefault<K, V>(data: {K: V}, key: K, fallback: V) -> V {
+    return fallback;
+}
+
+// === 3. Generic Optional T? ===
+fn unwrapOr<T>(v: T?, fallback: T) -> T {
+    return fallback;
+}
+
+// === 4. Generic struct ===
+struct Wrapper<T> {
+    Value: T,
+    Label: Str,
+}
+
+fn main() {
+    // 1. Array of Int / Str / Float / Bool
+    let a = first([10, 20, 30]);
+    print(a);
+
+    let b = first(["Alice", "Bob"]);
+    print(b);
+
+    let c = first([1.5, 2.5]);
+    print(c);
+
+    let d = first([true, false]);
+    print(d);
+
+    // 2. Map with various key/value types
+    let age = getOrDefault({"alice": 25}, "missing", 0);
+    print(age);
+
+    let city = getOrDefault({"alice": "NYC"}, "missing", "unknown");
+    print(city);
+
+    // 3. Generic struct instantiation
+    let intBox = Wrapper { Value: 42, Label: "age" };
+    let strBox = Wrapper { Value: "hello", Label: "greeting" };
+    print(intBox.Value);
+    print(intBox.Label);
+    print(strBox.Value);
+    print(strBox.Label);
+
+    print("Extended generics passed!");
+}

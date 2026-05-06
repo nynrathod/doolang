@@ -41,6 +41,8 @@ pub enum SymbolKind {
     Import,
     /// Loop variable (for-in).
     LoopVar,
+    /// Compile-time constant.
+    Const,
 }
 
 /// A single scope with its symbols.

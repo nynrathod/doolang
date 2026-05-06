@@ -35,6 +35,8 @@ impl Program {
 /// Top-level items in a program.
 #[derive(Debug, Clone)]
 pub enum Item {
+    /// Compile-time constant declaration
+    Const(ConstDecl),
     /// Function declaration
     Function(FunctionDecl),
     /// Struct declaration
@@ -54,6 +56,7 @@ pub enum Item {
 impl Item {
     pub fn span(&self) -> Span {
         match self {
+            Self::Const(c) => c.span,
             Self::Function(f) => f.span,
             Self::Struct(s) => s.span,
             Self::Enum(e) => e.span,

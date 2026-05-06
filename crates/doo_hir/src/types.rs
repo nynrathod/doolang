@@ -393,6 +393,8 @@ pub struct HirProgram {
 /// Top-level items.
 #[derive(Debug, Clone)]
 pub enum HirItem {
+    /// Compile-time constant declaration.
+    Const(HirConst),
     Function(HirFunction),
     Struct(HirStruct),
     Enum(HirEnum),
@@ -400,6 +402,22 @@ pub enum HirItem {
     Import(HirImport),
     /// RBAC policy block.
     Policy(HirPolicy),
+}
+
+/// Compile-time constant declaration.
+///
+/// All const values must be evaluable at compile time: literals, arrays/maps of literals,
+/// or constant arithmetic expressions. The compiler inlines the value at every use site.
+#[derive(Debug, Clone)]
+pub struct HirConst {
+    pub name: String,
+    pub is_public: bool,
+    /// Resolved constant value (for primitives). None for complex types (arrays/maps).
+    pub value: Option<ConstValue>,
+    /// The full lowered expression (used for complex types inlined at use sites).
+    pub value_expr: HirExpr,
+    pub type_id: TypeId,
+    pub span: Span,
 }
 
 /// RBAC policy declaration.

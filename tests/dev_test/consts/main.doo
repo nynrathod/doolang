@@ -1,0 +1,71 @@
+// Test: Compile-time const declarations
+// Covers: int, float, string, bool, array, map, negation, cross-file import
+
+
+
+// Import public consts from lib.doo
+import lib::{MaxRetries, FreePlan, StatusLive, Pi, DebugMode, AllowedRoles, Regions, MinValue};
+
+// Local consts
+const LocalMax = 100
+const AppName = "doo"
+const IsEnabled = true
+
+// Private const (camelCase)
+const localSecret = "local-internal"
+
+fn main() {
+    // --- Integer const ---
+    print("MaxRetries", MaxRetries);
+    print("LocalMax", LocalMax);
+
+    // --- Float const ---
+    print("Pi", Pi);
+
+    // --- String const ---
+    print("FreePlan", FreePlan);
+    print("StatusLive", StatusLive);
+    print("AppName", AppName);
+
+    // --- Bool const ---
+    print("DebugMode", DebugMode);
+    print("IsEnabled", IsEnabled);
+
+    // --- Array const ---
+    print("AllowedRoles[0]", AllowedRoles[0]);
+    print("AllowedRoles[1]", AllowedRoles[1]);
+
+    // --- Map const ---
+    print("Regions.oregon", Regions["oregon"]);
+    print("Regions.ohio", Regions["ohio"]);
+
+    // --- Negative const ---
+    print("MinValue", MinValue);
+
+    // --- Private const accessible in same module ---
+    print("localSecret", localSecret);
+
+    // --- Const in condition ---
+    if MaxRetries > 0 {
+        print("condition", "MaxRetries is positive");
+    }
+
+    print("done", "all const tests passed");
+}
+
+// Expect: MaxRetries 3
+// Expect: LocalMax 100
+// Expect: Pi 3.14159
+// Expect: FreePlan free
+// Expect: StatusLive live
+// Expect: AppName doo
+// Expect: DebugMode true
+// Expect: IsEnabled true
+// Expect: AllowedRoles[0] admin
+// Expect: AllowedRoles[1] editor
+// Expect: Regions.oregon us-west1
+// Expect: Regions.ohio us-east4
+// Expect: MinValue -10
+// Expect: localSecret local-internal
+// Expect: condition MaxRetries is positive
+// Expect: done all const tests passed

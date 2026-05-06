@@ -13,8 +13,8 @@ use doo_core::{
     Span,
 };
 use doo_hir::{
-    HirBinOp, HirExpr, HirExprKind, HirFunction, HirItem, HirMatchPattern, HirProgram, HirStmt,
-    HirStmtKind,
+    ConstValue, HirBinOp, HirExpr, HirExprKind, HirFunction, HirItem, HirMatchPattern,
+    HirProgram, HirStmt, HirStmtKind,
 };
 
 /// Type checking error.
@@ -198,6 +198,38 @@ impl TypeChecker {
         self.scopes.enter_scope(super::scope::ScopeKind::Global);
         for item in &program.items {
             match item {
+                HirItem::Const(c) => {
+                    // Detect duplicate const names
+                    if self.scopes.lookup(&c.name).is_some() {
+                        self.errors.push(TypeError {
+                            kind: TypeErrorKind::InvalidOp(format!(
+                                "constant '{}' is already defined",
+                                c.name
+                            )),
+                            span: c.span,
+                        });
+                    } else {
+                        // Validate that the value is a compile-time constant expression
+                        if !is_const_evaluable(&c.value_expr) {
+                            self.errors.push(TypeError {
+                                kind: TypeErrorKind::InvalidOp(format!(
+                                    "const '{}' must be assigned a compile-time constant value \
+                                     (literal, const arithmetic, array/map of literals)",
+                                    c.name
+                                )),
+                                span: c.span,
+                            });
+                        }
+                        self.define_symbol(Symbol {
+                            name: c.name.clone(),
+                            kind: SymbolKind::Const,
+                            type_id: Some(c.type_id),
+                            mutable: false,
+                            span: c.span,
+                            used: false,
+                        });
+                    }
+                }
                 HirItem::Function(func) => {
                     let return_type = func.return_type.unwrap_or(builtin::VOID);
 
@@ -2354,5 +2386,29 @@ impl TypeChecker {
 
         // All elements matched - return the expected tuple type
         expected_type
+    }
+}
+
+/// Check whether a HIR expression is a valid compile-time constant expression.
+///
+/// Allowed:
+/// - Literal values (Int, Float, Bool, Str, Nil)
+/// - Negation of a literal
+/// - Arithmetic/comparison of two const-evaluable expressions
+/// - Arrays where all elements are const-evaluable
+/// - Maps where all keys and values are const-evaluable
+/// - Const references (already inlined by HIR lowering, appear as Const nodes)
+fn is_const_evaluable(expr: &HirExpr) -> bool {
+    match &expr.kind {
+        HirExprKind::Const(_) => true,
+        HirExprKind::UnaryOp { operand, .. } => is_const_evaluable(operand),
+        HirExprKind::BinOp { lhs, rhs, .. } => {
+            is_const_evaluable(lhs) && is_const_evaluable(rhs)
+        }
+        HirExprKind::Array(elements) => elements.iter().all(is_const_evaluable),
+        HirExprKind::Map(pairs) => pairs
+            .iter()
+            .all(|(k, v)| is_const_evaluable(k) && is_const_evaluable(v)),
+        _ => false,
     }
 }

@@ -242,6 +242,7 @@ fn handle_completion(
                 analysis::CompletionKind::Variable => CompletionItemKind::VARIABLE,
                 analysis::CompletionKind::Keyword => CompletionItemKind::KEYWORD,
                 analysis::CompletionKind::Module => CompletionItemKind::MODULE,
+                analysis::CompletionKind::Constant => CompletionItemKind::CONSTANT,
             };
 
             CompletionItem {
@@ -284,6 +285,7 @@ fn handle_document_symbols(
                 crate::state::SymbolKind::Field => LspSymbolKind::FIELD,
                 crate::state::SymbolKind::Variable => LspSymbolKind::VARIABLE,
                 crate::state::SymbolKind::Import => LspSymbolKind::MODULE,
+                crate::state::SymbolKind::Const => LspSymbolKind::CONSTANT,
             };
 
             let range = Range::new(

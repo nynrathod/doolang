@@ -45,6 +45,7 @@ pub enum ErrorCode {
     ExpectedExprAfterOp,    // E0023
     InvalidMatchSyntax,     // E0024
     InvalidForSyntax,       // E0025
+    InvalidConstExpr,       // E0026 — const must be a compile-time literal expression
 
     // === Type Errors (E0100-E0199) ===
     TypeMismatch,            // E0100
@@ -105,6 +106,7 @@ pub enum ErrorCode {
     ContinueOutsideLoop,    // E0419
     ReturnOutsideFunction,  // E0420
     DuplicateMethod,        // E0421  — duplicate method in interface
+    DuplicateConst,         // E0422  — duplicate const declaration
 
     // === Import Errors (E0500-E0599) ===
     ModuleNotFound,    // E0500
@@ -177,6 +179,7 @@ impl ErrorCode {
             Self::ExpectedExprAfterOp => "E0023",
             Self::InvalidMatchSyntax => "E0024",
             Self::InvalidForSyntax => "E0025",
+            Self::InvalidConstExpr => "E0026",
 
             Self::TypeMismatch => "E0100",
             Self::UnknownType => "E0101",
@@ -232,6 +235,7 @@ impl ErrorCode {
             Self::ContinueOutsideLoop => "E0419",
             Self::ReturnOutsideFunction => "E0420",
             Self::DuplicateMethod => "E0421",
+            Self::DuplicateConst => "E0422",
 
             Self::ModuleNotFound => "E0500",
             Self::ImportNotFound => "E0501",
@@ -299,6 +303,7 @@ impl ErrorCode {
             "E0023" => Some(Self::ExpectedExprAfterOp),
             "E0024" => Some(Self::InvalidMatchSyntax),
             "E0025" => Some(Self::InvalidForSyntax),
+            "E0026" => Some(Self::InvalidConstExpr),
 
             "E0100" => Some(Self::TypeMismatch),
             "E0101" => Some(Self::UnknownType),
@@ -354,6 +359,7 @@ impl ErrorCode {
             "E0419" => Some(Self::ContinueOutsideLoop),
             "E0420" => Some(Self::ReturnOutsideFunction),
             "E0421" => Some(Self::DuplicateMethod),
+            "E0422" => Some(Self::DuplicateConst),
 
             "E0500" => Some(Self::ModuleNotFound),
             "E0501" => Some(Self::ImportNotFound),
@@ -423,6 +429,7 @@ impl ErrorCode {
             Self::ExpectedExprAfterOp => "EXPECTED EXPRESSION",
             Self::InvalidMatchSyntax => "INVALID MATCH",
             Self::InvalidForSyntax => "INVALID FOR",
+            Self::InvalidConstExpr => "INVALID CONST EXPR",
 
             Self::TypeMismatch => "TYPE MISMATCH",
             Self::UnknownType => "UNKNOWN TYPE",
@@ -460,6 +467,7 @@ impl ErrorCode {
             Self::DuplicateField => "DUPLICATE FIELD",
             Self::DuplicateVariant => "DUPLICATE VARIANT",
             Self::DuplicateMethod => "DUPLICATE METHOD",
+            Self::DuplicateConst => "DUPLICATE CONST",
             Self::InvalidSignature => "INVALID SIGNATURE",
             Self::MissingReturn => "MISSING RETURN",
             Self::UnreachableCode => "UNREACHABLE CODE",

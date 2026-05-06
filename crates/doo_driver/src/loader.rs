@@ -693,6 +693,22 @@ pub fn resolve_imports(
                         result.items.push(item.clone());
                     }
                 }
+                Item::Const(c) => {
+                    let is_public = c
+                        .name
+                        .chars()
+                        .next()
+                        .map(|ch| ch.is_uppercase())
+                        .unwrap_or(false);
+                    let is_wanted = import_all || requested.contains_key(&c.name);
+                    if is_public && is_wanted && !imported_names.contains(&c.name) {
+                        if debug {
+                            doo_debug!("LOADER", "  Importing const: {}", c.name);
+                        }
+                        imported_names.insert(c.name.clone());
+                        result.items.push(item.clone());
+                    }
+                }
                 Item::Import(_) | Item::Statement(_) | Item::Policy(_) | Item::Interface(_) => {
                     // Don't re-export
                 }
@@ -1104,6 +1120,21 @@ pub fn resolve_imports(
                         result.items.push(item.clone());
                     }
                 }
+                Item::Const(c) => {
+                    let is_public = c
+                        .name
+                        .chars()
+                        .next()
+                        .map(|ch| ch.is_uppercase())
+                        .unwrap_or(false);
+                    if is_public && !imported_names.contains(&c.name) {
+                        if debug {
+                            doo_debug!("LOADER", "  Importing local const: {}", c.name);
+                        }
+                        imported_names.insert(c.name.clone());
+                        result.items.push(item.clone());
+                    }
+                }
                 Item::Import(_) | Item::Statement(_) | Item::Policy(_) | Item::Interface(_) => {
                     // Don't re-export
                 }
@@ -1258,7 +1289,24 @@ pub fn resolve_imports(
                             result.items.push(item.clone());
                         }
                     }
-                    Item::Import(_) | Item::Statement(_) | Item::Policy(_) | Item::Interface(_) => {}
+                    Item::Const(c) => {
+                        let is_public = c
+                            .name
+                            .chars()
+                            .next()
+                            .map(|ch| ch.is_uppercase())
+                            .unwrap_or(false);
+                        let is_wanted = import_all || requested.contains_key(&c.name);
+                        if is_public && is_wanted && !imported_names.contains(&c.name) {
+                            if debug {
+                                doo_debug!("LOADER", "  Importing nested-std const: {}", c.name);
+                            }
+                            imported_names.insert(c.name.clone());
+                            result.items.push(item.clone());
+                        }
+                    }
+                    Item::Import(_) | Item::Statement(_) | Item::Policy(_) | Item::Interface(_) => {
+                    }
                 }
             }
         }

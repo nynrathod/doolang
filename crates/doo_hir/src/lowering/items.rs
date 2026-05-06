@@ -1,44 +1,79 @@
-//! Item lowering: functions, structs, enums, imports, decorators.
+//! Item lowering: functions, structs, enums, imports, decorators, consts.
 
+use super::Lower;
+use crate::types::*;
 use doo_core::{
     doo_debug,
-    types::{TypeId, TypeKind, TypeRegistry},
+    types::{builtin, TypeId, TypeKind, TypeRegistry},
 };
 use doo_frontend::ast::{
-    self, Decorator, EnumDecl, FunctionDecl,
-    ImportDecl, InterfaceDecl, Item, StructDecl,
+    self, Decorator, EnumDecl, ExprKind, FunctionDecl, ImportDecl, InterfaceDecl, Item, StructDecl,
 };
-use crate::types::*;
-use super::Lower;
 
 impl Lower {
     pub(crate) fn lower_item(&mut self, item: &Item) -> Option<HirItem> {
         match item {
+            Item::Const(c) => Some(HirItem::Const(self.lower_const(c))),
             Item::Function(f) => Some(HirItem::Function(self.lower_function(f))),
             Item::Struct(s) => Some(HirItem::Struct(self.lower_struct(s))),
             Item::Enum(e) => Some(HirItem::Enum(self.lower_enum(e))),
             Item::Interface(i) => Some(HirItem::Interface(self.lower_interface(i))),
             Item::Import(i) => Some(HirItem::Import(self.lower_import(i))),
             Item::Policy(p) => Some(HirItem::Policy(self.lower_policy(p))),
-            Item::Statement(_stmt) => {
-                // Top-level statements not supported in HIR yet
-                None
-            }
+            Item::Statement(_stmt) => None,
         }
     }
 
-    pub(crate) fn lower_item_typed(&mut self, item: &Item, registry: &mut TypeRegistry) -> Option<HirItem> {
+    pub(crate) fn lower_item_typed(
+        &mut self,
+        item: &Item,
+        registry: &mut TypeRegistry,
+    ) -> Option<HirItem> {
         match item {
+            Item::Const(c) => Some(HirItem::Const(self.lower_const_typed(c, registry))),
             Item::Function(f) => Some(HirItem::Function(self.lower_function_typed(f, registry))),
             Item::Struct(s) => Some(HirItem::Struct(self.lower_struct_typed(s, registry))),
             Item::Enum(e) => Some(HirItem::Enum(self.lower_enum_typed(e, registry))),
             Item::Interface(i) => Some(HirItem::Interface(self.lower_interface_typed(i, registry))),
             Item::Import(i) => Some(HirItem::Import(self.lower_import(i))),
             Item::Policy(p) => Some(HirItem::Policy(self.lower_policy(p))),
-            Item::Statement(_stmt) => {
-                // Top-level statements not supported in HIR yet
-                None
-            }
+            Item::Statement(_stmt) => None,
+        }
+    }
+
+    /// Lower a const declaration without type resolution.
+    pub(crate) fn lower_const(&mut self, c: &ast::ConstDecl) -> HirConst {
+        let value_expr = self.lower_expr(&c.value);
+        let prim = extract_const_value(&value_expr);
+        let type_id = prim.as_ref().map(|v| v.type_id()).unwrap_or(builtin::ANY);
+        HirConst {
+            name: c.name.clone(),
+            is_public: c.is_public,
+            value: prim,
+            value_expr,
+            type_id,
+            span: c.span,
+        }
+    }
+
+    /// Lower a const declaration with full type resolution.
+    pub(crate) fn lower_const_typed(
+        &mut self,
+        c: &ast::ConstDecl,
+        registry: &mut TypeRegistry,
+    ) -> HirConst {
+        let value_expr = self.lower_expr_typed(&c.value, registry);
+        let prim = extract_const_value(&value_expr);
+        let type_id = value_expr
+            .type_id
+            .unwrap_or_else(|| prim.as_ref().map(|v| v.type_id()).unwrap_or(builtin::ANY));
+        HirConst {
+            name: c.name.clone(),
+            is_public: c.is_public,
+            value: prim,
+            value_expr,
+            type_id,
+            span: c.span,
         }
     }
 
@@ -104,7 +139,8 @@ impl Lower {
         for tp in &f.type_params {
             registry.register_type_param(&tp.name);
         }
-        let type_param_names: Vec<String> = f.type_params.iter().map(|tp| tp.name.clone()).collect();
+        let type_param_names: Vec<String> =
+            f.type_params.iter().map(|tp| tp.name.clone()).collect();
 
         // For method functions (fn Type.method), resolve the receiver type
         let receiver_type_id = f
@@ -214,7 +250,11 @@ impl Lower {
         }
     }
 
-    pub(crate) fn lower_struct_typed(&mut self, s: &StructDecl, registry: &mut TypeRegistry) -> HirStruct {
+    pub(crate) fn lower_struct_typed(
+        &mut self,
+        s: &StructDecl,
+        registry: &mut TypeRegistry,
+    ) -> HirStruct {
         let fields: Vec<HirField> = s
             .fields
             .iter()
@@ -279,7 +319,11 @@ impl Lower {
             .map(|v| HirVariant {
                 name: v.name.clone(),
                 payload: None,
-                decorators: v.decorators.iter().map(|d| self.lower_decorator(d)).collect(),
+                decorators: v
+                    .decorators
+                    .iter()
+                    .map(|d| self.lower_decorator(d))
+                    .collect(),
                 span: v.span,
             })
             .collect();
@@ -291,7 +335,11 @@ impl Lower {
         }
     }
 
-    pub(crate) fn lower_enum_typed(&mut self, e: &EnumDecl, registry: &mut TypeRegistry) -> HirEnum {
+    pub(crate) fn lower_enum_typed(
+        &mut self,
+        e: &EnumDecl,
+        registry: &mut TypeRegistry,
+    ) -> HirEnum {
         let variants: Vec<HirVariant> = e
             .variants
             .iter()
@@ -301,7 +349,11 @@ impl Lower {
                     .payload
                     .as_ref()
                     .map(|t| self.resolve_type_expr(t, registry)),
-                decorators: v.decorators.iter().map(|d| self.lower_decorator(d)).collect(),
+                decorators: v
+                    .decorators
+                    .iter()
+                    .map(|d| self.lower_decorator(d))
+                    .collect(),
                 span: v.span,
             })
             .collect();
@@ -447,5 +499,22 @@ impl Lower {
             rules: p.rules.clone(),
             span: p.span,
         }
+    }
+}
+
+/// Extract a primitive `ConstValue` from a lowered HIR expression, if possible.
+/// Returns `None` for complex types (arrays, maps) — those are handled as inline expressions.
+fn extract_const_value(expr: &HirExpr) -> Option<ConstValue> {
+    match &expr.kind {
+        HirExprKind::Const(cv) => Some(cv.clone()),
+        HirExprKind::UnaryOp {
+            op: HirUnaryOp::Neg,
+            operand,
+        } => match &operand.kind {
+            HirExprKind::Const(ConstValue::Int(v)) => Some(ConstValue::Int(-v)),
+            HirExprKind::Const(ConstValue::Float(v)) => Some(ConstValue::Float(-v)),
+            _ => None,
+        },
+        _ => None,
     }
 }

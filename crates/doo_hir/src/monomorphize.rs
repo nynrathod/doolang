@@ -40,6 +40,8 @@ pub struct Monomorphizer<'a> {
     /// can have their abstract (TypeParam-laden) type_ids overwritten with the
     /// concrete types inferred at the binding's RHS. Cleared per function.
     binding_types: FxHashMap<String, TypeId>,
+    /// Struct specialization cache: (generic_name, concrete_types) → (mangled, new_type_id).
+    struct_specializations: FxHashMap<(String, Vec<TypeId>), (String, TypeId)>,
 }
 
 impl<'a> Monomorphizer<'a> {
@@ -52,6 +54,7 @@ impl<'a> Monomorphizer<'a> {
             new_functions: Vec::new(),
             new_structs: Vec::new(),
             binding_types: FxHashMap::default(),
+            struct_specializations: FxHashMap::default(),
         }
     }
 
@@ -151,6 +154,179 @@ impl<'a> Monomorphizer<'a> {
             }
         }
         type_map
+    }
+
+    /// Same as build_type_map but for a generic struct's type params.
+    fn build_struct_type_map(
+        &self,
+        generic_struct: &HirStruct,
+        concrete_types: &[TypeId],
+    ) -> FxHashMap<TypeId, TypeId> {
+        let mut type_map: FxHashMap<TypeId, TypeId> = FxHashMap::default();
+        for (tp_name, &concrete_id) in generic_struct
+            .type_params
+            .iter()
+            .zip(concrete_types.iter())
+        {
+            let tp_key = format!("__typeparam_{}", tp_name);
+            if let Some(tp_id) = self.registry.lookup(&tp_key) {
+                type_map.insert(tp_id, concrete_id);
+            }
+        }
+        type_map
+    }
+
+    /// Infer the concrete types for a generic struct's type params from a literal's
+    /// field values. Each generic field whose declared type is (or contains) a
+    /// TypeParam is matched against the corresponding value's type to deduce T.
+    fn infer_types_from_struct_fields(
+        &self,
+        generic_struct: &HirStruct,
+        fields: &[(String, HirExpr)],
+    ) -> Option<Vec<TypeId>> {
+        let type_params = &generic_struct.type_params;
+        if type_params.is_empty() {
+            return None;
+        }
+
+        let mut substitution: FxHashMap<String, TypeId> = FxHashMap::default();
+
+        for (field_name, value_expr) in fields {
+            let Some(field_def) = generic_struct
+                .fields
+                .iter()
+                .find(|f| &f.name == field_name)
+            else {
+                continue;
+            };
+            let Some(field_tid) = field_def.type_id else {
+                continue;
+            };
+            let Some(value_tid) = value_expr.type_id else {
+                continue;
+            };
+            self.unify_type_param(field_tid, value_tid, &mut substitution);
+        }
+
+        let mut result = Vec::with_capacity(type_params.len());
+        for tp in type_params {
+            if let Some(&concrete) = substitution.get(tp) {
+                result.push(concrete);
+            } else {
+                result.push(doo_core::types::builtin::ANY);
+            }
+        }
+        Some(result)
+    }
+
+    /// Walk paired (declared, actual) types to discover TypeParam→concrete bindings.
+    /// Recurses into composites so `[T]` matched with `[Int]` yields T=Int.
+    fn unify_type_param(
+        &self,
+        decl: TypeId,
+        actual: TypeId,
+        out: &mut FxHashMap<String, TypeId>,
+    ) {
+        if let Some(name) = self.registry.type_param_name(decl) {
+            // Don't pollute the binding with another TypeParam or ANY.
+            if !self.registry.is_type_param(actual)
+                && actual != doo_core::types::builtin::ANY
+            {
+                out.insert(name.to_string(), actual);
+            }
+            return;
+        }
+        let Some(decl_kind) = self.registry.get(decl).map(|i| i.kind.clone()) else {
+            return;
+        };
+        let Some(actual_kind) = self.registry.get(actual).map(|i| i.kind.clone()) else {
+            return;
+        };
+        match (decl_kind, actual_kind) {
+            (TypeKind::Array { element: a }, TypeKind::Array { element: b }) => {
+                self.unify_type_param(a, b, out);
+            }
+            (
+                TypeKind::Map { key: k1, value: v1 },
+                TypeKind::Map { key: k2, value: v2 },
+            ) => {
+                self.unify_type_param(k1, k2, out);
+                self.unify_type_param(v1, v2, out);
+            }
+            (TypeKind::Tuple { elements: a }, TypeKind::Tuple { elements: b })
+                if a.len() == b.len() =>
+            {
+                for (x, y) in a.iter().zip(b.iter()) {
+                    self.unify_type_param(*x, *y, out);
+                }
+            }
+            (TypeKind::Optional { inner: a }, TypeKind::Optional { inner: b }) => {
+                self.unify_type_param(a, b, out);
+            }
+            (
+                TypeKind::Result { ok: o1, err: e1 },
+                TypeKind::Result { ok: o2, err: e2 },
+            ) => {
+                self.unify_type_param(o1, o2, out);
+                self.unify_type_param(e1, e2, out);
+            }
+            _ => {}
+        }
+    }
+
+    /// Get or create a concrete specialization of a generic struct.
+    /// Returns the mangled name and the new TypeId registered in the type registry.
+    fn get_or_create_struct_specialization(
+        &mut self,
+        generic_struct: &HirStruct,
+        concrete_types: &[TypeId],
+    ) -> (String, TypeId) {
+        let key = (generic_struct.name.clone(), concrete_types.to_vec());
+        if let Some(entry) = self.struct_specializations.get(&key) {
+            return entry.clone();
+        }
+
+        let type_names: Vec<String> = concrete_types
+            .iter()
+            .map(|tid| self.registry.display_name(*tid))
+            .collect();
+        let mangled = format!("{}__{}", generic_struct.name, type_names.join("_"));
+
+        let type_map = self.build_struct_type_map(generic_struct, concrete_types);
+
+        // Clone the generic struct, substitute field types, retire the type_params.
+        let mut specialized = generic_struct.clone();
+        specialized.name = mangled.clone();
+        specialized.type_params = vec![];
+        for field in &mut specialized.fields {
+            if let Some(ref mut tid) = field.type_id {
+                *tid = self.substitute_type_id(*tid, &type_map);
+            }
+            if let Some(ref mut def) = field.default {
+                self.substitute_expr(def, &type_map);
+            }
+        }
+
+        // Register the concretized struct in the type registry as a single source
+        // of truth. Codegen and the type system look it up via this TypeId.
+        let registry_fields: Vec<(String, TypeId, bool)> = specialized
+            .fields
+            .iter()
+            .map(|f| {
+                (
+                    f.name.clone(),
+                    f.type_id.unwrap_or(doo_core::types::builtin::ANY),
+                    f.is_public,
+                )
+            })
+            .collect();
+        let new_type_id = self.registry.register_struct(&mangled, registry_fields);
+
+        self.struct_specializations
+            .insert(key, (mangled.clone(), new_type_id));
+        self.new_structs.push(specialized);
+
+        (mangled, new_type_id)
     }
 
     /// Run monomorphization on the entire HIR program.
@@ -373,8 +549,22 @@ impl<'a> Monomorphizer<'a> {
                     self.process_expr(arg);
                 }
             }
-            HirExprKind::Field { object, .. } => {
+            HirExprKind::Field { object, field } => {
                 self.process_expr(object);
+                // After the receiver is concretized, refresh this field expr's
+                // type_id from the concrete struct definition. Otherwise it stays
+                // pinned to the generic-struct's TypeParam-typed field.
+                if let Some(obj_tid) = object.type_id {
+                    if let Some(info) = self.registry.get(obj_tid) {
+                        if let TypeKind::Struct { fields, .. } = &info.kind {
+                            if let Some((_, ftid, _)) =
+                                fields.iter().find(|(fname, _, _)| fname == field)
+                            {
+                                expr.type_id = Some(*ftid);
+                            }
+                        }
+                    }
+                }
             }
             HirExprKind::Index { object, index, .. } => {
                 self.process_expr(object);
@@ -396,9 +586,26 @@ impl<'a> Monomorphizer<'a> {
                     self.process_expr(el);
                 }
             }
-            HirExprKind::Struct { fields, .. } => {
-                for (_, val) in fields {
+            HirExprKind::Struct { name, fields } => {
+                // Process child values first so their type_ids are concretized.
+                for (_, val) in fields.iter_mut() {
                     self.process_expr(val);
+                }
+
+                // If this is a generic struct, infer the type-param substitution
+                // from the field values' types and rewrite to a specialized name.
+                if let Some(generic_struct) = self.generic_structs.get(name).cloned() {
+                    if let Some(concrete_types) =
+                        self.infer_types_from_struct_fields(&generic_struct, fields)
+                    {
+                        let (mangled, new_type_id) = self
+                            .get_or_create_struct_specialization(
+                                &generic_struct,
+                                &concrete_types,
+                            );
+                        *name = mangled;
+                        expr.type_id = Some(new_type_id);
+                    }
                 }
             }
             HirExprKind::EnumVariant { payload, .. } => {
@@ -497,6 +704,9 @@ impl<'a> Monomorphizer<'a> {
     ///   - x has type_id = TypeParam("T")
     ///   - arg[0] has type_id = Some(INT)
     ///   → T maps to INT
+    ///
+    /// Handles composite param types via `unify_type_param`, so e.g. `items: [T]`
+    /// matched against `[Int]` infers T=Int.
     fn infer_types_from_args(
         &self,
         generic_func: &HirFunction,
@@ -507,35 +717,19 @@ impl<'a> Monomorphizer<'a> {
             return None;
         }
 
-        // Build a mapping: type_param_name → concrete TypeId
         let mut substitution: FxHashMap<String, TypeId> = FxHashMap::default();
 
         for (param, arg) in generic_func.params.iter().zip(args.iter()) {
-            if let Some(param_type_id) = param.type_id {
-                // Check if the param type is a TypeParam
-                if let Some(tp_name) = self.registry.type_param_name(param_type_id) {
-                    // Get the argument's concrete type
-                    if let Some(arg_type) = arg.type_id {
-                        // Don't map to another TypeParam or to ANY
-                        if !self.registry.is_type_param(arg_type)
-                            && arg_type != doo_core::types::builtin::ANY
-                        {
-                            substitution.insert(tp_name.to_string(), arg_type);
-                        }
-                    }
-                }
-                // TODO: Handle compound types like Array<T>, Map<K,V>, etc.
-                // by recursively decomposing the param type and matching
+            if let (Some(param_tid), Some(arg_tid)) = (param.type_id, arg.type_id) {
+                self.unify_type_param(param_tid, arg_tid, &mut substitution);
             }
         }
 
-        // Build the result vector in type_params order
         let mut result = Vec::with_capacity(type_params.len());
         for tp in type_params {
             if let Some(&concrete) = substitution.get(tp) {
                 result.push(concrete);
             } else {
-                // Can't fully infer — fall back to ANY
                 result.push(doo_core::types::builtin::ANY);
             }
         }

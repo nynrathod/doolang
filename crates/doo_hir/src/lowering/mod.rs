@@ -22,7 +22,7 @@ use doo_core::{
     types::{TypeId, TypeRegistry},
     Span,
 };
-use doo_frontend::ast::{Item, Program};
+use doo_frontend::ast::{self, Item, Program};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::types::*;
@@ -46,6 +46,9 @@ pub struct Lower {
     /// Known qualified methods: maps (TypeName, MethodName) pairs for associated functions.
     /// e.g., Server.get -> ("Server", "get"), Database.Postgres -> ("Database", "Postgres")
     known_qualified_methods: FxHashMap<String, FxHashSet<String>>,
+    /// Compile-time constants declared at module level (name -> AST expression).
+    /// When an identifier resolves to a known const, its expression is inlined at the use site.
+    pub(crate) known_consts: FxHashMap<String, ast::Expr>,
 }
 
 /// Lowering error.
@@ -75,6 +78,7 @@ impl Lower {
             hoisted_items: Vec::new(),
             known_functions: FxHashSet::default(),
             known_qualified_methods: FxHashMap::default(),
+            known_consts: FxHashMap::default(),
         }
     }
 
@@ -291,6 +295,13 @@ impl Lower {
 
     /// Lower an entire program.
     pub fn lower_program(&mut self, program: &Program) -> HirProgram {
+        // Pre-collect const names and values for inline substitution at use sites
+        for item in &program.items {
+            if let Item::Const(c) = item {
+                self.known_consts.insert(c.name.clone(), c.value.clone());
+            }
+        }
+
         // Pre-collect function names for namespace-qualified call disambiguation
         for item in &program.items {
             if let Item::Function(f) = item {
@@ -327,6 +338,13 @@ impl Lower {
         program: &Program,
         registry: &mut TypeRegistry,
     ) -> HirProgram {
+        // Pre-collect const names and values for inline substitution at use sites
+        for item in &program.items {
+            if let Item::Const(c) = item {
+                self.known_consts.insert(c.name.clone(), c.value.clone());
+            }
+        }
+
         // Pre-collect all function names so we can disambiguate
         // Namespace::Func(args) from EnumVariant during expression lowering.
         for item in &program.items {
