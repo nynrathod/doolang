@@ -501,6 +501,19 @@ fn extract_symbols_from_item(
                 return_type: None,
             });
         }
+        Item::Static(s) => {
+            let (line, col) = line_index.line_col(s.span.start);
+            symbols.push(SymbolDef {
+                name: s.name.clone(),
+                kind: SymbolKind::Variable,
+                line: line.saturating_sub(1),
+                col: col.saturating_sub(1),
+                type_info: Some(format!("{:?}", s.type_expr.kind)),
+                doc: None,
+                params: Vec::new(),
+                return_type: None,
+            });
+        }
         Item::Statement(_) => {
             // Top-level let bindings could be extracted later
         }

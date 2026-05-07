@@ -336,6 +336,9 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
                 doo_frontend::ast::Item::Interface(i) => {
                     doo_debug!("DEBUG", "  Interface: {}", i.name)
                 }
+                doo_frontend::ast::Item::Static(s) => {
+                    doo_debug!("DEBUG", "  Static: {}", s.name)
+                }
             }
         }
         doo_debug!("DEBUG", "HIR items: {}", hir.items.len());
@@ -351,6 +354,9 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
                 }
                 doo_hir::HirItem::Interface(i) => {
                     doo_debug!("DEBUG", "  HIR Interface: {}", i.name)
+                }
+                doo_hir::HirItem::Static(s) => {
+                    doo_debug!("DEBUG", "  HIR Static: {}", s.name)
                 }
             }
         }

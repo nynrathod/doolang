@@ -20,7 +20,7 @@ pub trait HirVisitor {
     // === Items ===
     fn visit_item(&mut self, item: &HirItem) {
         match item {
-            HirItem::Const(_) => {}
+            HirItem::Const(_) | HirItem::Static(_) => {}
             HirItem::Function(f) => self.visit_function(f),
             HirItem::Struct(s) => self.visit_struct(s),
             HirItem::Enum(e) => self.visit_enum(e),
@@ -276,7 +276,7 @@ pub trait HirVisitorMut {
 
     fn visit_item_mut(&mut self, item: &mut HirItem) {
         match item {
-            HirItem::Const(_) => {}
+            HirItem::Const(_) | HirItem::Static(_) => {}
             HirItem::Function(f) => self.visit_function_mut(f),
             HirItem::Struct(s) => self.visit_struct_mut(s),
             HirItem::Enum(e) => self.visit_enum_mut(e),

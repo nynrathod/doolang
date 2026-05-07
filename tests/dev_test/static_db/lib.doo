@@ -1,0 +1,41 @@
+// Simulated database library — mimics the real DB FFI pattern.
+// In production, this would be the real doo_ffi_database package.
+
+struct User {
+    id: Int,
+    name: Str,
+    role: Str,
+}
+
+struct Database {
+    connection: Str,
+    connected: Bool,
+}
+
+// Static constructor: Database::Postgres()
+fn Database.Postgres() -> Database {
+    return Database {
+        connection: "postgres://localhost:5432",
+        connected: true,
+    }
+}
+
+// Instance method: DB.find(Type)
+fn Database.find(self: Database, modelName: Str) -> Database {
+    // Real impl would do SQL; we just return self for chaining
+    return self
+}
+
+// Instance method: .exec()
+fn Database.exec(self: Database) -> [User] {
+    // Real impl would run SQL; we return mock data
+    let users = [
+        User { id: 1, name: "Alice", role: "admin" },
+        User { id: 2, name: "Bob", role: "editor" },
+        User { id: 3, name: "Carol", role: "viewer" },
+    ];
+    return users
+}
+
+// Public static — the global DB instance
+static DB: Database

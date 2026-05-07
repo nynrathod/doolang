@@ -37,6 +37,8 @@ impl Program {
 pub enum Item {
     /// Compile-time constant declaration
     Const(ConstDecl),
+    /// Runtime global variable declaration (OnceLock semantics)
+    Static(StaticDecl),
     /// Function declaration
     Function(FunctionDecl),
     /// Struct declaration
@@ -57,6 +59,7 @@ impl Item {
     pub fn span(&self) -> Span {
         match self {
             Self::Const(c) => c.span,
+            Self::Static(s) => s.span,
             Self::Function(f) => f.span,
             Self::Struct(s) => s.span,
             Self::Enum(e) => e.span,

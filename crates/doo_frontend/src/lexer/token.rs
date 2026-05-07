@@ -100,6 +100,8 @@ pub enum TokenKind {
 
     /// `const`
     Const,
+    /// `static`
+    Static,
 
     // === RBAC ===
     /// `policy`
@@ -243,6 +245,7 @@ impl TokenKind {
     pub fn keyword_str(&self) -> Option<&'static str> {
         match self {
             Self::Const => Some("const"),
+            Self::Static => Some("static"),
             Self::Let => Some("let"),
             Self::Mut => Some("mut"),
             Self::Fn => Some("fn"),
@@ -345,6 +348,7 @@ impl TokenKind {
             Self::Eof => "end of file",
             Self::Error => "error",
             Self::Const => "`const`",
+            Self::Static => "`static`",
             Self::Let => "`let`",
             Self::Mut => "`mut`",
             Self::Fn => "`fn`",

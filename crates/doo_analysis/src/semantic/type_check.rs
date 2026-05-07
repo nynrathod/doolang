@@ -230,6 +230,38 @@ impl TypeChecker {
                         });
                     }
                 }
+                HirItem::Static(s) => {
+                    // Detect duplicate static names
+                    if self.scopes.lookup(&s.name).is_some() {
+                        self.errors.push(TypeError {
+                            kind: TypeErrorKind::InvalidOp(format!(
+                                "static '{}' is already defined",
+                                s.name
+                            )),
+                            span: s.span,
+                        });
+                    } else {
+                        // Validate that the static has a type annotation
+                        let type_id = s.type_id.unwrap_or(builtin::ANY);
+                        if type_id == builtin::ANY {
+                            self.errors.push(TypeError {
+                                kind: TypeErrorKind::InvalidOp(format!(
+                                    "static '{}' requires a type annotation",
+                                    s.name
+                                )),
+                                span: s.span,
+                            });
+                        }
+                        self.define_symbol(Symbol {
+                            name: s.name.clone(),
+                            kind: SymbolKind::Static,
+                            type_id: s.type_id,
+                            mutable: true, // Assignable once in main(); OnceLock enforces set-once
+                            span: s.span,
+                            used: false,
+                        });
+                    }
+                }
                 HirItem::Function(func) => {
                     let return_type = func.return_type.unwrap_or(builtin::VOID);
 

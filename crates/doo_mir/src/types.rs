@@ -62,11 +62,21 @@ pub struct MirProgram {
     pub entry_point: Option<Sym>,
 }
 
+/// Kind of global: compile-time const vs runtime static (OnceLock).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalKind {
+    /// Compile-time constant — value baked into binary, inlined at use sites.
+    Const,
+    /// Runtime static — OnceLock semantics, set exactly once in main(), immutable after.
+    Static,
+}
+
 /// Global constant or variable
 #[derive(Debug, Clone)]
 pub struct MirGlobal {
     pub name: Sym,
     pub type_id: TypeId,
+    pub kind: GlobalKind,
     pub value: Option<MirConst>,
 }
 

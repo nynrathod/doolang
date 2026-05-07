@@ -13,6 +13,7 @@ pub trait ParserItems {
     fn parse_decorators(&mut self) -> ParseResult<Vec<Decorator>>;
     fn parse_decorator(&mut self) -> ParseResult<Decorator>;
     fn parse_const(&mut self) -> ParseResult<ConstDecl>;
+    fn parse_static(&mut self) -> ParseResult<StaticDecl>;
     fn parse_function(&mut self) -> ParseResult<FunctionDecl>;
     fn parse_function_name(&mut self) -> ParseResult<(String, Option<String>, Option<String>)>;
     fn parse_type_params(&mut self) -> ParseResult<Vec<TypeParam>>;
@@ -39,6 +40,10 @@ impl ParserItems for Parser {
             TokenKind::Const => {
                 drop(decorators);
                 Ok(Item::Const(self.parse_const()?))
+            }
+            TokenKind::Static => {
+                drop(decorators);
+                Ok(Item::Static(self.parse_static()?))
             }
             TokenKind::Fn => {
                 let mut func = self.parse_function()?;
@@ -191,6 +196,45 @@ impl ParserItems for Parser {
 
         let end = self.prev_span();
         Ok(ConstDecl::new(name, value, start.merge(&end)))
+    }
+
+    /// Parse `static Name: Type` — runtime global variable declaration.
+    ///
+    /// Syntax:
+    ///   static DB: Database
+    ///   static Cache: Redis
+    ///
+    /// Rules:
+    ///   - Declared at top-level only
+    ///   - Type annotation is required
+    ///   - Set exactly once in main(), immutable after
+    ///   - PascalCase = public, camelCase = private
+    fn parse_static(&mut self) -> ParseResult<StaticDecl> {
+        let start = self.current_span();
+        self.expect(TokenKind::Static)?;
+
+        let name = self.expect_ident().map_err(|_| {
+            CompilerError::new(
+                ErrorCode::ExpectedIdentifier,
+                "expected static variable name after `static`",
+                self.current_span(),
+            )
+            .with_suggestion("usage: static DB: Database  or  static Cache: Redis")
+        })?;
+
+        self.expect(TokenKind::Colon).map_err(|_| {
+            CompilerError::new(
+                ErrorCode::UnexpectedToken,
+                format!("expected `:` after static name `{}`", name),
+                self.current_span(),
+            )
+            .with_suggestion("usage: static Name: Type  — type annotation is required")
+        })?;
+
+        let type_expr = self.parse_type_expr()?;
+
+        let end = self.prev_span();
+        Ok(StaticDecl::new(name, type_expr, start.merge(&end)))
     }
 
     fn parse_function(&mut self) -> ParseResult<FunctionDecl> {

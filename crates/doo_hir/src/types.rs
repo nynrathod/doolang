@@ -395,6 +395,8 @@ pub struct HirProgram {
 pub enum HirItem {
     /// Compile-time constant declaration.
     Const(HirConst),
+    /// Runtime global variable declaration (OnceLock semantics).
+    Static(HirStatic),
     Function(HirFunction),
     Struct(HirStruct),
     Enum(HirEnum),
@@ -417,6 +419,19 @@ pub struct HirConst {
     /// The full lowered expression (used for complex types inlined at use sites).
     pub value_expr: HirExpr,
     pub type_id: TypeId,
+    pub span: Span,
+}
+
+/// Runtime global variable declaration.
+///
+/// Declared at top-level with a type annotation: `static DB: Database`
+/// Set exactly once in main(), immutable after.
+/// Compiles to OnceLock behind the scenes for thread safety.
+#[derive(Debug, Clone)]
+pub struct HirStatic {
+    pub name: String,
+    pub is_public: bool,
+    pub type_id: Option<TypeId>,
     pub span: Span,
 }
 

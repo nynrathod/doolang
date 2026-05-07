@@ -43,6 +43,8 @@ pub enum SymbolKind {
     LoopVar,
     /// Compile-time constant.
     Const,
+    /// Runtime global variable (OnceLock semantics).
+    Static,
 }
 
 /// A single scope with its symbols.

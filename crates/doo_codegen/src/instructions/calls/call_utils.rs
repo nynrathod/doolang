@@ -17,12 +17,55 @@ pub(crate) fn operand_to_value<'ctx>(
         MirOperand::Const(c) => Some(const_to_value(ctx, c)),
         MirOperand::Local(name) | MirOperand::Temp(name) | MirOperand::Global(name) => {
             let name_str = resolve(*name);
+            // Check if this is a static global — directly read from OnceLock global
+            if let Some(_) = ctx.static_globals.get(&name_str) {
+                if let Some(once_lock) = ctx.module.get_global(&name_str) {
+                    let once_lock_ptr = once_lock.as_pointer_value();
+                    let once_lock_type = ctx.context.struct_type(
+                        &[
+                            ctx.context.bool_type().into(),
+                            ctx.context.ptr_type(inkwell::AddressSpace::default()).into(),
+                        ],
+                        false,
+                    );
+                    let ptr_field = ctx.builder.build_struct_gep(
+                        once_lock_type,
+                        once_lock_ptr,
+                        1,
+                        "static_get_ptr",
+                    );
+                    if let Ok(ptr_field) = ptr_field {
+                        let loaded = ctx.builder.build_load(
+                            ctx.context.ptr_type(inkwell::AddressSpace::default()),
+                            ptr_field,
+                            "static_val",
+                        ).ok();
+                        if let Some(loaded_val) = loaded {
+                            return Some(loaded_val);
+                        }
+                    }
+                }
+                return Some(
+                    ctx.context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .const_null()
+                        .into(),
+                );
+            }
+            // Check if this is a type name — return null ptr for static method calls
+            if ctx.type_registry.lookup(&name_str).is_some() {
+                return Some(
+                    ctx.context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .const_null()
+                        .into(),
+                );
+            }
             // First try to get as a value (local variable, temp, etc.)
             if let Some(val) = ctx.get_value(&name_str) {
                 return Some(val);
             }
             // Fall back to function reference - convert function to pointer value
-            // This handles cases like passing `getUserHandler` as a callback argument
             if let Some(func) = ctx.get_function(&name_str) {
                 return Some(func.as_global_value().as_pointer_value().into());
             }

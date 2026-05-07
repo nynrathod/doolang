@@ -99,6 +99,11 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
         HirExprKind::Const(cv) => MirOperand::Const(builder.const_to_mir(cv)),
 
         HirExprKind::Local { name } => {
+            // Static globals: emit Global operand for OnceLock-backed statics
+            if builder.static_names.contains(name) {
+                return MirOperand::Global(sym(name));
+            }
+
             // Built-in modules (JSON, Math, File, etc.) are treated as globals, not locals
             if builder.is_module_name(name) {
                 return MirOperand::Global(sym(name));

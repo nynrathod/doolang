@@ -139,6 +139,10 @@ pub struct MirBuilder<'a> {
     /// Query builder errors collected during MIR lowering.
     /// Surfaced to the driver after `build()` completes.
     pub query_errors: Vec<CompilerError>,
+
+    /// Static global names (declared with `static Name: Type`).
+    /// Used in build_expr to emit MirOperand::Global instead of Local.
+    pub(crate) static_names: FxHashSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,6 +177,7 @@ impl<'a> MirBuilder<'a> {
             imported_modules: FxHashSet::default(),
             struct_metas: FxHashMap::default(),
             query_errors: Vec::new(),
+            static_names: FxHashSet::default(),
         }
     }
 
@@ -204,6 +209,7 @@ impl<'a> MirBuilder<'a> {
             imported_modules: FxHashSet::default(),
             struct_metas: FxHashMap::default(),
             query_errors: Vec::new(),
+            static_names: FxHashSet::default(),
         }
     }
 
@@ -356,9 +362,23 @@ impl<'a> MirBuilder<'a> {
                         program.globals.push(MirGlobal {
                             name: sym(&c.name),
                             type_id: c.type_id,
+                            kind: GlobalKind::Const,
                             value: Some(self.const_to_mir(prim)),
                         });
                     }
+                }
+                HirItem::Static(s) => {
+                    // Runtime static global with OnceLock semantics.
+                    // No initial value — set once in main() at runtime.
+                    // Generates { i1, ptr } global + __static_set_X / __static_get_X helpers.
+                    program.globals.push(MirGlobal {
+                        name: sym(&s.name),
+                        type_id: s.type_id.unwrap_or(builtin::ANY),
+                        kind: GlobalKind::Static,
+                        value: None, // No compile-time value; set at runtime
+                    });
+                    // Track static name so build_expr emits MirOperand::Global
+                    self.static_names.insert(s.name.clone());
                 }
                 HirItem::Function(f) => {
                     // Skip generic functions — they're templates, not concrete code.

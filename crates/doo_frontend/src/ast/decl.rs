@@ -25,8 +25,52 @@ pub struct ConstDecl {
 
 impl ConstDecl {
     pub fn new(name: String, value: Expr, span: Span) -> Self {
-        let is_public = name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
-        Self { name, is_public, value, span }
+        let is_public = name
+            .chars()
+            .next()
+            .map(|c| c.is_uppercase())
+            .unwrap_or(false);
+        Self {
+            name,
+            is_public,
+            value,
+            span,
+        }
+    }
+}
+
+// ============================================================================
+// Static Declaration
+// ============================================================================
+
+/// A runtime global variable declaration: `static Name: Type`
+///
+/// - PascalCase name → public static (accessible across files)
+/// - camelCase name  → private static (module-internal)
+/// - Type annotation is required (compiler needs to allocate OnceLock)
+/// - Set exactly once in main(), immutable after
+/// - Compiles to OnceLock behind the scenes for thread safety
+#[derive(Debug, Clone)]
+pub struct StaticDecl {
+    pub name: String,
+    pub is_public: bool,
+    pub type_expr: TypeExpr,
+    pub span: Span,
+}
+
+impl StaticDecl {
+    pub fn new(name: String, type_expr: TypeExpr, span: Span) -> Self {
+        let is_public = name
+            .chars()
+            .next()
+            .map(|c| c.is_uppercase())
+            .unwrap_or(false);
+        Self {
+            name,
+            is_public,
+            type_expr,
+            span,
+        }
     }
 }
 

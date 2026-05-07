@@ -7,13 +7,15 @@ use doo_core::{
     types::{builtin, TypeId, TypeKind, TypeRegistry},
 };
 use doo_frontend::ast::{
-    self, Decorator, EnumDecl, ExprKind, FunctionDecl, ImportDecl, InterfaceDecl, Item, StructDecl,
+    self, Decorator, EnumDecl, ExprKind, FunctionDecl, ImportDecl, InterfaceDecl, Item, StaticDecl,
+    StructDecl,
 };
 
 impl Lower {
     pub(crate) fn lower_item(&mut self, item: &Item) -> Option<HirItem> {
         match item {
             Item::Const(c) => Some(HirItem::Const(self.lower_const(c))),
+            Item::Static(s) => Some(HirItem::Static(self.lower_static(s))),
             Item::Function(f) => Some(HirItem::Function(self.lower_function(f))),
             Item::Struct(s) => Some(HirItem::Struct(self.lower_struct(s))),
             Item::Enum(e) => Some(HirItem::Enum(self.lower_enum(e))),
@@ -31,6 +33,7 @@ impl Lower {
     ) -> Option<HirItem> {
         match item {
             Item::Const(c) => Some(HirItem::Const(self.lower_const_typed(c, registry))),
+            Item::Static(s) => Some(HirItem::Static(self.lower_static_typed(s, registry))),
             Item::Function(f) => Some(HirItem::Function(self.lower_function_typed(f, registry))),
             Item::Struct(s) => Some(HirItem::Struct(self.lower_struct_typed(s, registry))),
             Item::Enum(e) => Some(HirItem::Enum(self.lower_enum_typed(e, registry))),
@@ -74,6 +77,31 @@ impl Lower {
             value_expr,
             type_id,
             span: c.span,
+        }
+    }
+
+    /// Lower a static declaration without type resolution.
+    pub(crate) fn lower_static(&mut self, s: &StaticDecl) -> HirStatic {
+        HirStatic {
+            name: s.name.clone(),
+            is_public: s.is_public,
+            type_id: None, // Resolved later
+            span: s.span,
+        }
+    }
+
+    /// Lower a static declaration with full type resolution.
+    pub(crate) fn lower_static_typed(
+        &mut self,
+        s: &StaticDecl,
+        registry: &mut TypeRegistry,
+    ) -> HirStatic {
+        let type_id = self.resolve_type_expr(&s.type_expr, registry);
+        HirStatic {
+            name: s.name.clone(),
+            is_public: s.is_public,
+            type_id: Some(type_id),
+            span: s.span,
         }
     }
 

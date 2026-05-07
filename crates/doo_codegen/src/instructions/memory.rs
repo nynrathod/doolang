@@ -97,6 +97,50 @@ impl<'ctx> InstructionHandler<'ctx> for MemoryHandler {
             MirInstrKind::Assign { dest, value } => {
                 let val = operand_to_value(ctx, value)?;
                 let dest_str = resolve(*dest);
+                // Check if assigning to a static global — directly write to OnceLock global
+                if ctx.static_globals.contains_key(&dest_str) {
+                    // Direct store to the OnceLock { i1 flag, ptr value } global
+                    if let Some(once_lock) = ctx.module.get_global(&dest_str) {
+                        let once_lock_ptr = once_lock.as_pointer_value();
+                        let once_lock_type = ctx.context.struct_type(
+                            &[
+                                ctx.context.bool_type().into(),
+                                ctx.context.ptr_type(inkwell::AddressSpace::default()).into(),
+                            ],
+                            false,
+                        );
+                        // GEP to field 1 (ptr) and store the value
+                        if let Ok(ptr_field) = ctx.builder.build_struct_gep(
+                            once_lock_type,
+                            once_lock_ptr,
+                            1,
+                            "static_ptr_field",
+                        ) {
+                            let ptr_val = if val.is_pointer_value() {
+                                val.into_pointer_value()
+                            } else if val.is_int_value() {
+                                ctx.builder.build_int_to_ptr(
+                                    val.into_int_value(),
+                                    ctx.context.ptr_type(inkwell::AddressSpace::default()),
+                                    "int_to_ptr",
+                                ).ok().unwrap_or_else(|| ctx.context.ptr_type(inkwell::AddressSpace::default()).const_null())
+                            } else {
+                                ctx.context.ptr_type(inkwell::AddressSpace::default()).const_null()
+                            };
+                            ctx.builder.build_store(ptr_field, ptr_val).ok();
+                        }
+                        // GEP to field 0 (i1 flag) and set to true
+                        if let Ok(flag_field) = ctx.builder.build_struct_gep(
+                            once_lock_type,
+                            once_lock_ptr,
+                            0,
+                            "static_flag_field",
+                        ) {
+                            ctx.builder.build_store(flag_field, ctx.context.bool_type().const_int(1, false)).ok();
+                        }
+                    }
+                    return Some(val);
+                }
                 // Propagate struct type association if present
                 if let Some(src_name) = get_operand_name(value) {
                     // First try temp_struct_type (most specific)
@@ -133,6 +177,14 @@ impl<'ctx> InstructionHandler<'ctx> for MemoryHandler {
                 let src_str = resolve(*src);
                 let dest_str = resolve(*dest);
                 let val = ctx.get_value(&src_str)?;
+                // Propagate struct type from source to borrow dest (needed for FieldGet)
+                let struct_name = ctx.get_temp_struct_type(&src_str).cloned().or_else(|| {
+                    ctx.get_variable_type(&src_str)
+                        .and_then(|tid| ctx.get_struct_name_from_type_id(tid))
+                });
+                if let Some(name) = struct_name {
+                    ctx.set_temp_struct_type(&dest_str, &name);
+                }
                 ctx.set_local(dest_str.clone(), val);
                 // Track borrow origin so mutating operations can store back
                 ctx.set_borrow_origin(&dest_str, &src_str);

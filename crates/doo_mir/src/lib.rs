@@ -17,7 +17,7 @@ pub mod sym;
 pub use sym::Sym;
 pub use types::{
     // Program structure
-    MirProgram, MirFunction, MirBlock, MirGlobal,
+    MirProgram, MirFunction, MirBlock, MirGlobal, GlobalKind,
     // Instructions
     MirInstr, MirInstrKind, MirTerminator,
     // Operands

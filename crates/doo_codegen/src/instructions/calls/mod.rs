@@ -307,18 +307,14 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     }
                 }
 
-                let recv_val = operand_to_value(ctx, receiver);
-                if recv_val.is_none()
-                    && std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok()
-                {
-                    doo_debug!(
-                        "CODEGEN",
-                        "MethodCall: failed to get receiver value for {:?}",
-                        receiver
-                    );
-                    return None;
-                }
-                let recv_val = recv_val?;
+                let recv_val = operand_to_value(ctx, receiver)
+                    .unwrap_or_else(|| {
+                        doo_debug!("CODEGEN", "MethodCall: receiver not found, using null ptr");
+                        ctx.context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .const_null()
+                            .into()
+                    });
 
                 let arg_vals: Vec<_> = args
                     .iter()
@@ -534,75 +530,94 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
 
                 // Fallback: lookup method function, prepend receiver to args
                 // Format: _method_{TypeName}_{MethodName}
-                let type_name = if let Some(kind) = ctx.get_type_kind(*receiver_type) {
-                    match kind {
-                        TypeKind::Struct { name, .. } => Some(name),
-                        TypeKind::Enum { name, .. } => Some(name),
-                        TypeKind::TypeRef { name } => {
-                            // Resolve TypeRef to its underlying struct/enum name
-                            if let Some(resolved_tid) = ctx.type_registry.lookup(&name) {
-                                if let Some(resolved_kind) = ctx.get_type_kind(resolved_tid) {
-                                    match resolved_kind {
-                                        TypeKind::Struct { name: n, .. } => Some(n),
-                                        TypeKind::Enum { name: n, .. } => Some(n),
-                                        _ => Some(name),
+                let receiver_name_str = match receiver {
+                    MirOperand::Global(name) | MirOperand::Local(name) | MirOperand::Temp(name) => Some(resolve(*name)),
+                    _ => None,
+                };
+                let type_name = (|| -> Option<String> {
+                    // Try receiver_type first
+                    if let Some(kind) = ctx.get_type_kind(*receiver_type) {
+                        match kind {
+                            TypeKind::Struct { name, .. } => return Some(name),
+                            TypeKind::Enum { name, .. } => return Some(name),
+                            TypeKind::TypeRef { name } => {
+                                if let Some(tid) = ctx.type_registry.lookup(&name) {
+                                    if let Some(k) = ctx.get_type_kind(tid) {
+                                        match k {
+                                            TypeKind::Struct { name: n, .. } => return Some(n),
+                                            TypeKind::Enum { name: n, .. } => return Some(n),
+                                            _ => {}
+                                        }
                                     }
-                                } else {
-                                    Some(name)
                                 }
-                            } else {
-                                Some(name)
+                                return Some(name);
+                            }
+                            _ => {}
+                        }
+                    }
+                    // Fallback: lookup receiver name in type registry
+                    if let Some(ref name) = receiver_name_str {
+                        if let Some(tid) = ctx.type_registry.lookup(name) {
+                            if let Some(kind) = ctx.get_type_kind(tid) {
+                                match kind {
+                                    TypeKind::Struct { name: n, .. } => return Some(n),
+                                    TypeKind::Enum { name: n, .. } => return Some(n),
+                                    TypeKind::TypeRef { name: n } => return Some(n),
+                                    _ => {}
+                                }
                             }
                         }
-                        _ => None,
+                        // Also check static_globals: receiver may be a static, not a type
+                        if let Some(&static_type_id) = ctx.static_globals.get(name) {
+                            if let Some(kind) = ctx.get_type_kind(static_type_id) {
+                                match kind {
+                                    TypeKind::Struct { name: n, .. } => return Some(n),
+                                    TypeKind::Enum { name: n, .. } => return Some(n),
+                                    _ => {}
+                                }
+                            }
+                        }
                     }
-                } else {
                     None
-                };
+                })();
 
                 if let Some(tname) = type_name {
                     let method_name = format!("_method_{}_{}", tname, method_s);
                     if let Some(func_val) = ctx.get_function(&method_name) {
-                        // CRITICAL FIX: Apply type coercion to method call arguments
-                        // Get parameter types from function signature for proper coercion
+                        // Get LLVM parameter types to determine calling convention.
+                        // If arg count matches param count → static method (no self param).
+                        // If args + 1 matches param count → instance method (prepend receiver).
                         let param_types = func_val.get_type().get_param_types();
+                        let needs_self = arg_vals.len() + 1 == param_types.len();
 
-                        // Receiver is always first param (self), args follow
                         let mut all_args: Vec<inkwell::values::BasicMetadataValueEnum> =
-                            Vec::with_capacity(1 + arg_vals.len());
+                            if needs_self {
+                                Vec::with_capacity(1 + arg_vals.len())
+                            } else {
+                                Vec::with_capacity(arg_vals.len())
+                            };
 
-                        // Coerce receiver (self)
-                        let recv_param_type: Option<BasicTypeEnum> =
-                            param_types.get(0).and_then(|t| match t {
-                                inkwell::types::BasicMetadataTypeEnum::ArrayType(t) => {
-                                    Some((*t).into())
-                                }
-                                inkwell::types::BasicMetadataTypeEnum::FloatType(t) => {
-                                    Some((*t).into())
-                                }
-                                inkwell::types::BasicMetadataTypeEnum::IntType(t) => {
-                                    Some((*t).into())
-                                }
-                                inkwell::types::BasicMetadataTypeEnum::PointerType(t) => {
-                                    Some((*t).into())
-                                }
-                                inkwell::types::BasicMetadataTypeEnum::StructType(t) => {
-                                    Some((*t).into())
-                                }
-                                inkwell::types::BasicMetadataTypeEnum::VectorType(t) => {
-                                    Some((*t).into())
-                                }
-                                inkwell::types::BasicMetadataTypeEnum::ScalableVectorType(t) => {
-                                    Some((*t).into())
-                                }
-                                inkwell::types::BasicMetadataTypeEnum::MetadataType(_) => None,
-                            });
-                        all_args.push(coerce_arg_to_param_type(ctx, recv_val, recv_param_type));
+                        if needs_self {
+                            // Instance method: prepend receiver (self)
+                            let recv_param_type: Option<BasicTypeEnum> =
+                                param_types.get(0).and_then(|t| match t {
+                                    inkwell::types::BasicMetadataTypeEnum::ArrayType(t) => Some((*t).into()),
+                                    inkwell::types::BasicMetadataTypeEnum::FloatType(t) => Some((*t).into()),
+                                    inkwell::types::BasicMetadataTypeEnum::IntType(t) => Some((*t).into()),
+                                    inkwell::types::BasicMetadataTypeEnum::PointerType(t) => Some((*t).into()),
+                                    inkwell::types::BasicMetadataTypeEnum::StructType(t) => Some((*t).into()),
+                                    inkwell::types::BasicMetadataTypeEnum::VectorType(t) => Some((*t).into()),
+                                    inkwell::types::BasicMetadataTypeEnum::ScalableVectorType(t) => Some((*t).into()),
+                                    inkwell::types::BasicMetadataTypeEnum::MetadataType(_) => None,
+                                });
+                            all_args.push(coerce_arg_to_param_type(ctx, recv_val, recv_param_type));
+                        }
 
                         // Coerce remaining args
                         for (i, v) in arg_vals.iter().enumerate() {
+                            let param_idx = if needs_self { i + 1 } else { i };
                             let param_type: Option<BasicTypeEnum> =
-                                param_types.get(i + 1).and_then(|t| match t {
+                                param_types.get(param_idx).and_then(|t| match t {
                                     inkwell::types::BasicMetadataTypeEnum::ArrayType(t) => {
                                         Some((*t).into())
                                     }

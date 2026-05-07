@@ -476,54 +476,76 @@ impl<'ctx> CodegenBuilder<'ctx> {
         ctx.module
     }
 
-    /// Emit a single LLVM global constant from a `MirGlobal`.
+    /// Emit a single LLVM global from a `MirGlobal`.
     ///
-    /// Primitive consts (Int, Float, Bool, Str) become LLVM global constants with
-    /// internal linkage. The value is stored in the context locals map so that
-    /// `operand_to_value` can resolve `MirOperand::Global(name)` if needed.
+    /// - `GlobalKind::Const`: Emits a compile-time constant global (inlined at use sites).
+    /// - `GlobalKind::Static`: Emits a OnceLock-style `{ i1, ptr }` global + set/get helpers.
     fn emit_global(&self, ctx: &mut CodegenContext<'ctx>, global: &MirGlobal) {
+        use doo_mir::GlobalKind;
         use inkwell::module::Linkage;
 
         let name = resolve(global.name);
-        let value = match &global.value {
-            Some(v) => v,
-            None => return,
-        };
 
-        match value {
-            MirConst::Int(v) => {
-                // Store the i64 constant value directly as a temp — no LLVM global needed
-                // since constants are inlined. The global is for cross-module visibility.
-                let ty = ctx.context.i64_type();
-                let g = ctx.module.add_global(ty, None, &name);
-                g.set_initializer(&ty.const_int(*v as u64, true));
-                g.set_constant(true);
-                g.set_linkage(Linkage::Internal);
-                // Also cache the raw i64 value so operand_to_value returns it directly
-                ctx.set_temp(&name, ty.const_int(*v as u64, true).into());
-            }
-            MirConst::Float(v) => {
-                let ty = ctx.context.f64_type();
-                let g = ctx.module.add_global(ty, None, &name);
-                g.set_initializer(&ty.const_float(*v));
-                g.set_constant(true);
-                g.set_linkage(Linkage::Internal);
-                ctx.set_temp(&name, ty.const_float(*v).into());
-            }
-            MirConst::Bool(v) => {
-                let ty = ctx.context.i8_type();
-                let g = ctx.module.add_global(ty, None, &name);
-                g.set_initializer(&ty.const_int(*v as u64, false));
-                g.set_constant(true);
-                g.set_linkage(Linkage::Internal);
-                ctx.set_temp(&name, ty.const_int(*v as u64, false).into());
-            }
-            MirConst::Str(s) => {
-                if let Ok(g) = ctx.builder.build_global_string_ptr(s, &name) {
-                    ctx.set_temp(&name, g.as_pointer_value().into());
+        match global.kind {
+            GlobalKind::Const => {
+                let value = match &global.value {
+                    Some(v) => v,
+                    None => return,
+                };
+                match value {
+                    MirConst::Int(v) => {
+                        let ty = ctx.context.i64_type();
+                        let g = ctx.module.add_global(ty, None, &name);
+                        g.set_initializer(&ty.const_int(*v as u64, true));
+                        g.set_constant(true);
+                        g.set_linkage(Linkage::Internal);
+                        ctx.set_temp(&name, ty.const_int(*v as u64, true).into());
+                    }
+                    MirConst::Float(v) => {
+                        let ty = ctx.context.f64_type();
+                        let g = ctx.module.add_global(ty, None, &name);
+                        g.set_initializer(&ty.const_float(*v));
+                        g.set_constant(true);
+                        g.set_linkage(Linkage::Internal);
+                        ctx.set_temp(&name, ty.const_float(*v).into());
+                    }
+                    MirConst::Bool(v) => {
+                        let ty = ctx.context.i8_type();
+                        let g = ctx.module.add_global(ty, None, &name);
+                        g.set_initializer(&ty.const_int(*v as u64, false));
+                        g.set_constant(true);
+                        g.set_linkage(Linkage::Internal);
+                        ctx.set_temp(&name, ty.const_int(*v as u64, false).into());
+                    }
+                    MirConst::Str(s) => {
+                        if let Ok(g) = ctx.builder.build_global_string_ptr(s, &name) {
+                            ctx.set_temp(&name, g.as_pointer_value().into());
+                        }
+                    }
+                    MirConst::Nil => {}
                 }
             }
-            MirConst::Nil => {}
+            GlobalKind::Static => {
+                // Register as a static global for set/get codegen
+                ctx.static_globals.insert(name.clone(), global.type_id);
+
+                // Create OnceLock-style global: { i1 initialized, ptr value }
+                let once_lock_type = ctx.context.struct_type(
+                    &[
+                        ctx.context.bool_type().into(),
+                        ctx.context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .into(),
+                    ],
+                    false,
+                );
+                let once_lock_global =
+                    ctx.module
+                        .add_global(once_lock_type, None, &name);
+                once_lock_global.set_initializer(&once_lock_type.const_zero());
+                once_lock_global.set_constant(false);
+                once_lock_global.set_linkage(Linkage::Internal);
+            }
         }
     }
 
@@ -1077,6 +1099,10 @@ impl<'ctx> CodegenBuilder<'ctx> {
 
         // Create allocas for all assigned variables (for proper loop handling)
         for (name, type_id) in &assigned_vars {
+            // Skip static globals — they are OnceLock globals, not stack allocas
+            if ctx.static_globals.contains_key(name) {
+                continue;
+            }
             if ctx.get_local(name).is_none() {
                 let var_type = ctx.get_llvm_type(*type_id);
                 ctx.create_local(name, var_type);
@@ -1116,32 +1142,72 @@ impl<'ctx> CodegenBuilder<'ctx> {
             }
 
             // Generate instructions
+            let mut instr_count = 0;
             for instr in &mir_block.instructions {
+                instr_count += 1;
                 if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                     doo_debug!("CODEGEN", "  Instr: {:?}", instr);
                 }
-                // Use custom emit for Assign to store in alloca
+                // Use custom emit for Assign to store in alloca.
+                // Also handles static globals (OnceLock set-once semantics).
                 if let doo_mir::MirInstrKind::Assign { dest, value } = &instr.kind {
                     let dest_str = resolve(*dest);
                     if let Some(val) = operand_to_value(ctx, value) {
-                        // Propagate struct type association if present
-                        if let Some(src_name) = get_operand_name(value) {
-                            if let Some(struct_name) = ctx.get_temp_struct_type(&src_name).cloned()
-                            {
-                                ctx.set_temp_struct_type(&dest_str, &struct_name);
+                        // Check if assigning to a static global — direct OnceLock write
+                        if ctx.static_globals.contains_key(&dest_str) {
+                            if let Some(once_lock) = ctx.module.get_global(&dest_str) {
+                                let once_lock_ptr = once_lock.as_pointer_value();
+                                let once_lock_type = ctx.context.struct_type(
+                                    &[
+                                        ctx.context.bool_type().into(),
+                                        ctx.context.ptr_type(inkwell::AddressSpace::default()).into(),
+                                    ],
+                                    false,
+                                );
+                                if let Ok(ptr_field) = ctx.builder.build_struct_gep(
+                                    once_lock_type,
+                                    once_lock_ptr,
+                                    1,
+                                    "static_ptr_field",
+                                ) {
+                                    let ptr_val = if val.is_pointer_value() {
+                                        val.into_pointer_value()
+                                    } else if val.is_int_value() {
+                                        ctx.builder.build_int_to_ptr(
+                                            val.into_int_value(),
+                                            ctx.context.ptr_type(inkwell::AddressSpace::default()),
+                                            "int_to_ptr",
+                                        ).ok().unwrap_or_else(|| ctx.context.ptr_type(inkwell::AddressSpace::default()).const_null())
+                                    } else {
+                                        ctx.context.ptr_type(inkwell::AddressSpace::default()).const_null()
+                                    };
+                                    ctx.builder.build_store(ptr_field, ptr_val).ok();
+                                }
+                                if let Ok(flag_field) = ctx.builder.build_struct_gep(
+                                    once_lock_type,
+                                    once_lock_ptr,
+                                    0,
+                                    "static_flag_field",
+                                ) {
+                                    ctx.builder.build_store(flag_field, ctx.context.bool_type().const_int(1, false)).ok();
+                                }
                             }
-                            // Also propagate the variable type from source to dest
-                            if let Some(src_type) = ctx.get_variable_type(&src_name) {
-                                ctx.set_variable_type(&dest_str, src_type);
+                        } else {
+                            // Propagate struct type association if present
+                            if let Some(src_name) = get_operand_name(value) {
+                                if let Some(struct_name) = ctx.get_temp_struct_type(&src_name).cloned()
+                                {
+                                    ctx.set_temp_struct_type(&dest_str, &struct_name);
+                                }
+                                if let Some(src_type) = ctx.get_variable_type(&src_name) {
+                                    ctx.set_variable_type(&dest_str, src_type);
+                                }
+                                if let Some(&elem_type) = ctx.array_element_types.get(&src_name) {
+                                    ctx.array_element_types.insert(dest_str.clone(), elem_type);
+                                }
                             }
-                            // Propagate array element types from temp to local for map/filter/slice
-                            // Critical for correct printing of float/int arrays returned from lambdas
-                            if let Some(&elem_type) = ctx.array_element_types.get(&src_name) {
-                                ctx.array_element_types.insert(dest_str.clone(), elem_type);
-                            }
+                            ctx.set_local(dest_str, val);
                         }
-                        // Use set_local which handles type mismatch detection for shadowed variables
-                        ctx.set_local(dest_str, val);
                     }
                 } else {
                     dispatcher.emit(ctx, instr);

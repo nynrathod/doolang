@@ -326,6 +326,16 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                         span,
                     );
                 }
+                HirExprKind::Global { name } => {
+                    // Assignment to static global: `DB = Database::Postgres()?`
+                    builder.emit(
+                        MirInstrKind::Assign {
+                            dest: sym(name),
+                            value: val_operand,
+                        },
+                        span,
+                    );
+                }
                 HirExprKind::Field { object, field } => {
                     // For field assignment like `obj.field = value`
                     let obj_operand = builder.build_expr(object);

@@ -1,0 +1,33 @@
+// Test: Runtime static global variables with cross-file usage
+// Covers: declaration, set-once in main(), cross-file import, private static
+
+import lib::{AppService, Service};
+
+// Local static
+static LocalSvc: Service;
+
+fn main() {
+    // --- Set public static imported from lib.doo ---
+    AppService = Service.new("MainApp", 8080);
+
+    // --- Set local static ---
+    LocalSvc = Service.new("LocalWorker", 9090);
+
+    // --- Read and use statics ---
+    let appName = AppService.describe();
+    let localName = LocalSvc.describe();
+
+    print("AppService.name", appName);
+    print("LocalSvc.name", localName);
+
+    // --- Local static can be read again (borrow, not consumed) ---
+    let again = LocalSvc.describe();
+    print("LocalSvc again", again);
+
+    print("done", "all static tests passed");
+}
+
+// Expect: AppService.name MainApp
+// Expect: LocalSvc.name LocalWorker
+// Expect: LocalSvc again LocalWorker
+// Expect: done all static tests passed

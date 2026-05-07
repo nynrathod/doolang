@@ -709,6 +709,17 @@ pub fn resolve_imports(
                         result.items.push(item.clone());
                     }
                 }
+                Item::Static(s) => {
+                    let is_public = s.is_public;
+                    let is_wanted = import_all || requested.contains_key(&s.name);
+                    if is_public && is_wanted && !imported_names.contains(&s.name) {
+                        if debug {
+                            doo_debug!("LOADER", "  Importing static: {}", s.name);
+                        }
+                        imported_names.insert(s.name.clone());
+                        result.items.push(item.clone());
+                    }
+                }
                 Item::Import(_) | Item::Statement(_) | Item::Policy(_) | Item::Interface(_) => {
                     // Don't re-export
                 }
@@ -1135,6 +1146,16 @@ pub fn resolve_imports(
                         result.items.push(item.clone());
                     }
                 }
+                Item::Static(s) => {
+                    let is_public = s.is_public;
+                    if is_public && !imported_names.contains(&s.name) {
+                        if debug {
+                            doo_debug!("LOADER", "  Importing local static: {}", s.name);
+                        }
+                        imported_names.insert(s.name.clone());
+                        result.items.push(item.clone());
+                    }
+                }
                 Item::Import(_) | Item::Statement(_) | Item::Policy(_) | Item::Interface(_) => {
                     // Don't re-export
                 }
@@ -1302,6 +1323,17 @@ pub fn resolve_imports(
                                 doo_debug!("LOADER", "  Importing nested-std const: {}", c.name);
                             }
                             imported_names.insert(c.name.clone());
+                            result.items.push(item.clone());
+                        }
+                    }
+                    Item::Static(s) => {
+                        let is_public = s.is_public;
+                        let is_wanted = import_all || requested.contains_key(&s.name);
+                        if is_public && is_wanted && !imported_names.contains(&s.name) {
+                            if debug {
+                                doo_debug!("LOADER", "  Importing nested-std static: {}", s.name);
+                            }
+                            imported_names.insert(s.name.clone());
                             result.items.push(item.clone());
                         }
                     }
