@@ -1,0 +1,83 @@
+// Multi-line string tests
+
+fn main() {
+    // Test 1: Basic multi-line string
+    let greeting = """
+        Hello, World!
+        This is a multi-line string.
+    """;
+    print("Test 1 - basic:");
+    print(greeting);
+
+    // Test 2: Multi-line string with interpolation
+    let name = "Alice";
+    let count = 42;
+    let msg = """
+        Hello ${name},
+        You have ${count} messages.
+        Welcome to DooCloud.
+    """;
+    print("Test 2 - interpolation:");
+    print(msg);
+
+    // Test 3: SQL query example
+    let table = "projects";
+    let userId = 1;
+    let sql = """
+        SELECT p.id, p.name, p.slug
+        FROM ${table} p
+        WHERE p.userid = ${userId}
+        ORDER BY p.created_at DESC
+    """;
+    print("Test 3 - SQL:");
+    print(sql);
+
+    // Test 4: Dockerfile generation
+    let port = 8080;
+    let dockerfile = """
+        FROM doolang/runtime:latest
+        WORKDIR /app
+        COPY . .
+        RUN doo build main.doo
+        EXPOSE ${port}
+        CMD ["./output"]
+    """;
+    print("Test 4 - Dockerfile:");
+    print(dockerfile);
+
+    // Test 5: Auto-trimming — closing indent determines trim
+    let indented = """
+            This line has 12 spaces indent.
+                This one has 16.
+            Back to 12.
+    """;
+    print("Test 5 - auto-trim:");
+    print(indented);
+
+    // Test 6: Minimal indent (closing """ at column 0)
+    let minimal = """
+line1
+line2
+line3
+""";
+    print("Test 6 - minimal indent:");
+    print(minimal);
+
+    // Test 7: Empty multi-line string
+    let empty = """""";
+    print("Test 7 - empty:", empty);
+
+    // Test 8: Multi-line with escape sequences
+    let escaped = """
+        First line\nSecond line after escape
+        Tab\there
+        Quote: \"hello\"
+    """;
+    print("Test 8 - escapes:");
+    print(escaped);
+
+    // Test 9: Multi-line with only interpolation
+    let x = 100;
+    let onlyInterp = """${x}""";
+    print("Test 9 - only interpolation:", onlyInterp);
+}
