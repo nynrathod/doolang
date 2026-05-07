@@ -563,7 +563,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
             .filter_map(|type_id| {
                 if let Some(type_info) = ctx.type_registry.get(type_id) {
                     match &type_info.kind {
-                        doo_core::types::TypeKind::Struct { name, fields } => {
+                        doo_core::types::TypeKind::Struct { name, fields, .. } => {
                             return Some((name.clone(), fields.clone()));
                         }
                         // Handle TypeRef to import struct types from other modules
@@ -575,7 +575,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                             // The struct might be registered under a different type_id
                             for other_tid in ctx.type_registry.all_type_ids().collect::<Vec<_>>() {
                                 if let Some(other_info) = ctx.type_registry.get(other_tid) {
-                                    if let doo_core::types::TypeKind::Struct { name, fields } =
+                                    if let doo_core::types::TypeKind::Struct { name, fields, .. } =
                                         &other_info.kind
                                     {
                                         if name == ref_name {

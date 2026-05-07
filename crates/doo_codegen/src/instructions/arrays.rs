@@ -290,7 +290,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 let val = match ctx.get_type_kind(*elem_type) {
                     Some(doo_core::types::TypeKind::Struct {
                         ref name,
-                        ref fields,
+                        ref fields, ..
                     }) => {
                         if val.is_pointer_value() {
                             let field_pairs: Vec<_> =

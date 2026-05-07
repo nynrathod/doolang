@@ -763,7 +763,7 @@ let builtin_result = match kind {
                                         );
                                     }
                                 }
-                                TypeKind::Struct { name, fields } => {
+                                TypeKind::Struct { name, fields, .. } => {
                                     if v.is_pointer_value() {
                                         // Extract just name and type for printing (visibility not needed)
                                         let field_pairs: Vec<_> = fields

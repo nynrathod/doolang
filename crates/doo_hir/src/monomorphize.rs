@@ -320,7 +320,9 @@ impl<'a> Monomorphizer<'a> {
                 )
             })
             .collect();
-        let new_type_id = self.registry.register_struct(&mangled, registry_fields);
+        let new_type_id = self
+            .registry
+            .register_struct(&mangled, registry_fields, std::collections::HashMap::new());
 
         self.struct_specializations
             .insert(key, (mangled.clone(), new_type_id));
@@ -413,8 +415,13 @@ impl<'a> Monomorphizer<'a> {
                 self.process_expr(value);
                 // Inherit the (possibly concretized) type from the value so the
                 // Let binding's recorded type matches what RHS produced.
+                // BUT: only overwrite if the value type is known (not Any).
+                // Any is a sentinel for "unknown type" — the type annotation
+                // (if present) should take priority.
                 if let Some(value_tid) = value.type_id {
-                    *type_id = Some(value_tid);
+                    if value_tid != doo_core::types::builtin::ANY {
+                        *type_id = Some(value_tid);
+                    }
                 }
                 if let Some(tid) = *type_id {
                     self.binding_types.insert(name.clone(), tid);

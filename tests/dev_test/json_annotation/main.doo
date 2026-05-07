@@ -1,0 +1,78 @@
+//
+// JSON @json Annotation Test Suite
+// Tests @json("field_name") decorator on struct fields
+// for mapping between Doo PascalCase and external API snake_case JSON keys.
+//
+
+// Payment struct simulates external API (Dodo Payments, GitHub, GCP)
+// that returns snake_case JSON
+// NOTE: @json decorator goes AFTER the type annotation on each field
+struct Payment {
+    PaymentId: Str @json("payment_id"),
+    CustomerEmail: Str @json("customer_email"),
+    AmountCents: Int @json("amount_cents"),
+}
+
+// User struct with mixed annotations — some fields use @json, some don't
+struct ApiUser {
+    UserId: Int @json("user_id"),
+    UserName: Str @json("user_name"),
+    Email: Str,           // No @json — uses Doo field name "Email"
+    IsActive: Bool @json("is_active"),
+}
+
+fn main() {
+    print("=== JSON @json Annotation Test Suite ===\n");
+
+    // ============================================================
+    // TEST 1: Parse snake_case JSON into @json-annotated struct
+    // ============================================================
+    print("--- Test 1: Parse snake_case JSON ---");
+    let paymentJson = "{\"payment_id\":\"pay_123\",\"customer_email\":\"a@b.com\",\"amount_cents\":500}";
+    print("Input JSON:", paymentJson);
+
+    let payment: Payment = JSON.parse(paymentJson);
+    print("PaymentId:", payment.PaymentId);
+    print("CustomerEmail:", payment.CustomerEmail);
+    print("AmountCents:", payment.AmountCents);
+
+    // ============================================================
+    // TEST 2: Stringify struct with @json — output should use json names
+    // ============================================================
+    print("\n--- Test 2: Stringify with @json names ---");
+    let p2 = Payment {
+        PaymentId: "pay_456",
+        CustomerEmail: "x@y.com",
+        AmountCents: 999,
+    };
+    let jsonOut = JSON.stringify(p2);
+    print("Stringify output:", jsonOut);
+    // Should produce: {"payment_id":"pay_456","customer_email":"x@y.com","amount_cents":999}
+
+    // ============================================================
+    // TEST 3: Roundtrip — parse then stringify preserves json names
+    // ============================================================
+    print("\n--- Test 3: Roundtrip ---");
+    let inputJson = "{\"payment_id\":\"round_789\",\"customer_email\":\"round@test.com\",\"amount_cents\":1500}";
+    let parsed: Payment = JSON.parse(inputJson);
+    let outputJson = JSON.stringify(parsed);
+    print("Roundtrip input:", inputJson);
+    print("Roundtrip output:", outputJson);
+    // Both should use snake_case keys
+
+    // ============================================================
+    // TEST 4: Mixed — some fields with @json, some without
+    // ============================================================
+    print("\n--- Test 4: Mixed annotations ---");
+    let userJson = "{\"user_id\":42,\"user_name\":\"Alice\",\"Email\":\"alice@doo.dev\",\"is_active\":true}";
+    let user: ApiUser = JSON.parse(userJson);
+    print("UserId:", user.UserId);
+    print("UserName:", user.UserName);
+    print("Email:", user.Email);
+    print("IsActive:", user.IsActive);
+
+    let userOut = JSON.stringify(user);
+    print("Mixed stringify:", userOut);
+
+    print("\n=== All @json annotation tests complete ===");
+}

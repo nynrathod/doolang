@@ -258,7 +258,7 @@ fn emit_deep_clone<'ctx>(
         }
 
         // Struct: allocate new struct and clone fields
-        Some(TypeKind::Struct { name, fields }) => {
+        Some(TypeKind::Struct { name, fields, .. }) => {
             // Propagate struct type association
             ctx.set_temp_struct_type(dest, name);
             if val.is_pointer_value() {
@@ -616,7 +616,7 @@ pub(crate) fn clone_struct<'ctx>(
             }
             Some(TypeKind::Struct {
                 ref name,
-                ref fields,
+                ref fields, ..
             }) if src_val.is_pointer_value() => {
                 // Deep-clone nested struct fields to prevent use-after-free
                 let fp: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
@@ -740,7 +740,7 @@ fn clone_array<'ctx>(
     // struct elements. Without this, clone_array does a shallow pointer copy
     // and the original array's drop frees the structs — leaving dangling ptrs.
     let struct_info: Option<(String, Vec<(String, doo_core::types::TypeId)>)> = match &type_kind {
-        Some(doo_core::types::TypeKind::Struct { name, fields }) => {
+        Some(doo_core::types::TypeKind::Struct { name, fields, .. }) => {
             let field_pairs: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
             Some((name.clone(), field_pairs))
         }
@@ -1186,7 +1186,7 @@ pub(crate) fn emit_drop<'ctx>(ctx: &mut CodegenContext<'ctx>, var_name: &str) {
         }
 
         // Struct: drop each field, then free
-        Some(TypeKind::Struct { name, fields }) => {
+        Some(TypeKind::Struct { name, fields, .. }) => {
             // Extract just name and type for drop_struct (visibility not needed)
             let field_pairs: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
             drop_struct(ctx, ptr, name, &field_pairs);
@@ -1378,7 +1378,7 @@ fn drop_struct<'ctx>(
                         }
                         Some(TypeKind::Struct {
                             name: nested_name,
-                            fields: nested_fields,
+                            fields: nested_fields, ..
                         }) => {
                             let nested_name = nested_name.clone();
                             // Extract just name and type for nested drop_struct
@@ -1561,7 +1561,7 @@ fn drop_array<'ctx>(
                     // Drop based on element type
                     match &type_kind {
                         Some(TypeKind::Str) => drop_string(ctx, elem_ptr_val),
-                        Some(TypeKind::Struct { name, fields }) => {
+                        Some(TypeKind::Struct { name, fields, .. }) => {
                             let name = name.clone();
                             let pairs: Vec<_> =
                                 fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
@@ -1842,7 +1842,7 @@ fn drop_by_type_kind<'ctx>(
 ) {
     match kind {
         Some(TypeKind::Str) => drop_string(ctx, ptr),
-        Some(TypeKind::Struct { name, fields }) => {
+        Some(TypeKind::Struct { name, fields, .. }) => {
             let name = name.clone();
             let pairs: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
             drop_struct(ctx, ptr, &name, &pairs);

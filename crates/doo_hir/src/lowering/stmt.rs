@@ -1,14 +1,12 @@
 //! Statement lowering and desugaring.
 
+use super::Lower;
+use crate::types::*;
 use doo_core::{
     doo_debug,
     types::{builtin, TypeId, TypeKind, TypeRegistry},
 };
-use doo_frontend::ast::{
-    self, ElseBranch, ExprKind, IncDecOp, PatternKind, Stmt, StmtKind,
-};
-use crate::types::*;
-use super::Lower;
+use doo_frontend::ast::{self, ElseBranch, ExprKind, IncDecOp, PatternKind, Stmt, StmtKind};
 
 impl Lower {
     pub(crate) fn lower_stmt(&mut self, stmt: &Stmt) -> HirStmt {

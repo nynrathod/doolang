@@ -109,16 +109,14 @@ impl JsonBuiltins {
             // Resolve TypeRef before dispatch
             let (resolved_ty, resolved_kind) = Self::resolve_type_ref(ctx, ty);
             let kind = resolved_kind;
-            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-            }
             match kind {
-                Some(TypeKind::Struct { name, fields }) => {
+                Some(TypeKind::Struct { name, fields, field_json_names }) => {
                     if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                     }
                     // Extract just name and type for parsing (visibility not needed)
                     let field_pairs: Vec<_> =
                         fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
-                    return Self::emit_parse_struct(ctx, val, ty, &name, &field_pairs);
+                    return Self::emit_parse_struct(ctx, val, ty, &name, &field_pairs, &field_json_names);
                 }
                 Some(TypeKind::Enum { name, variants }) => {
                     if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
@@ -129,7 +127,7 @@ impl JsonBuiltins {
                     let (_resolved_elem, resolved_elem_kind) =
                         Self::resolve_type_ref(ctx, elem_type);
                     match resolved_elem_kind {
-                        Some(TypeKind::Struct { name, fields }) => {
+                        Some(TypeKind::Struct { name, fields, field_json_names }) => {
                             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                             }
                             let field_pairs: Vec<_> =
@@ -140,6 +138,7 @@ impl JsonBuiltins {
                                 elem_type,
                                 &name,
                                 &field_pairs,
+                                &field_json_names,
                             );
                         }
                         Some(TypeKind::Enum { name, variants }) => {
@@ -273,6 +272,7 @@ impl JsonBuiltins {
         _ty: TypeId,
         name: &str,
         fields: &[(String, TypeId)],
+        field_json_names: &std::collections::HashMap<String, String>,
     ) -> Option<BasicValueEnum<'ctx>> {
         let i8_ptr = ctx.context.i8_type().ptr_type(AddressSpace::default());
         let i64_type = ctx.i64_type();
@@ -364,7 +364,9 @@ impl JsonBuiltins {
 
         // ── For each field, use typed extraction (zero re-serialization for primitives) ──
         for (i, (fname, fty)) in fields.iter().enumerate() {
-            let field_name_str = ctx.const_string(fname);
+            // Use @json name if present, else Doo field name
+            let json_key = field_json_names.get(fname).cloned().unwrap_or_else(|| fname.clone());
+            let field_name_str = ctx.const_string(&json_key);
             let (_, kind_raw) = Self::resolve_type_ref(ctx, *fty);
             let kind = kind_raw;
 
@@ -583,6 +585,7 @@ impl JsonBuiltins {
         elem_ty: TypeId,
         struct_name: &str,
         struct_fields: &[(String, TypeId)],
+        field_json_names: &std::collections::HashMap<String, String>,
     ) -> Option<BasicValueEnum<'ctx>> {
         let i64_type = ctx.i64_type();
         let ptr_type = ctx.ptr_type();
@@ -643,7 +646,7 @@ impl JsonBuiltins {
 
         // Parse element into typed struct (this generates inline codegen, may create basic blocks)
         let struct_ptr =
-            Self::emit_parse_struct(ctx, elem_json, elem_ty, struct_name, struct_fields)?;
+            Self::emit_parse_struct(ctx, elem_json, elem_ty, struct_name, struct_fields, field_json_names)?;
 
         // Store struct pointer at data[idx]
         let elem_slot = unsafe {
@@ -1239,6 +1242,7 @@ impl JsonBuiltins {
             TypeKind::Struct {
                 name: struct_name,
                 fields,
+                field_json_names,
             } => {
                 let start_fn = Self::get_or_declare_start_object(ctx);
                 let end_fn = Self::get_or_declare_end_object(ctx);
@@ -1272,8 +1276,9 @@ impl JsonBuiltins {
                             .ok()?;
                     }
 
-                    // Write Key
-                    let key_str = ctx.const_string(fname);
+                    // Write Key — use @json name if present, else Doo field name
+                    let json_key = field_json_names.get(fname).cloned().unwrap_or_else(|| fname.clone());
+                    let key_str = ctx.const_string(&json_key);
                     ctx.builder
                         .build_call(key_fn, &[writer.into(), key_str.into()], "")
                         .ok()?;

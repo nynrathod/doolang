@@ -151,9 +151,7 @@ impl Lower {
         f: &FunctionDecl,
         registry: &mut TypeRegistry,
     ) -> HirFunction {
-        for (i, stmt) in f.body.iter().enumerate() {
-
-        }
+        for (i, stmt) in f.body.iter().enumerate() {}
         // Clear variable types for new function scope
         self.var_types.clear();
 
@@ -311,12 +309,28 @@ impl Lower {
             })
             .collect();
 
+        // Build field_json_names from @json("key") decorators on fields
+        let mut field_json_names: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for f in &fields {
+            for d in &f.decorators {
+                if d.name == "json" {
+                    if let Some(arg) = d.args.first() {
+                        if let HirExprKind::Const(ConstValue::Str(json_name)) = &arg.kind {
+                            field_json_names.insert(f.name.clone(), json_name.clone());
+                        }
+                    }
+                }
+            }
+        }
+
         registry.define_struct(
             &s.name,
             fields
                 .iter()
                 .filter_map(|f| f.type_id.map(|id| (f.name.clone(), id, f.is_public)))
                 .collect(),
+            field_json_names,
         );
 
         let decorators = s

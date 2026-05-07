@@ -706,7 +706,7 @@ impl ArrayBuiltins {
         // to avoid double-free when both source and sliced arrays are dropped.
         let elem_kind = ctx.get_type_kind(elem_type);
         match &elem_kind {
-            Some(doo_core::types::TypeKind::Struct { name, fields }) => {
+            Some(doo_core::types::TypeKind::Struct { name, fields, .. }) => {
                 if val.is_pointer_value() {
                     let field_pairs: Vec<_> =
                         fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
@@ -1478,7 +1478,7 @@ impl ArrayBuiltins {
         // to avoid double-free when both source and filtered arrays are dropped.
         let elem_kind = ctx.get_type_kind(elem_type_id);
         match &elem_kind {
-            Some(doo_core::types::TypeKind::Struct { name, fields }) => {
+            Some(doo_core::types::TypeKind::Struct { name, fields, .. }) => {
                 if elem.is_pointer_value() {
                     let field_pairs: Vec<_> =
                         fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();

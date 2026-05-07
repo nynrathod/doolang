@@ -581,7 +581,7 @@ fn clone_capture_for_spawn<'ctx>(
             match kind {
                 TypeKind::Struct {
                     ref name,
-                    ref fields,
+                    ref fields, ..
                 } => {
                     let field_pairs: Vec<_> =
                         fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();

@@ -225,7 +225,7 @@ impl<'ctx> CodegenContext<'ctx> {
                 if let Some(info) = self.type_registry.get(type_id) {
                     if let TypeKind::Struct {
                         name: sname,
-                        fields,
+                        fields, ..
                     } = &info.kind
                     {
                         if sname == name {
@@ -260,7 +260,7 @@ impl<'ctx> CodegenContext<'ctx> {
             if let Some(info) = self.type_registry.get(type_id) {
                 if let TypeKind::Struct {
                     name: sname,
-                    fields,
+                    fields, ..
                 } = &info.kind
                 {
                     if sname == name {

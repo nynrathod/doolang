@@ -317,7 +317,7 @@ impl TypeInference {
                     match &info.kind {
                         TypeKind::Struct {
                             name: struct_name,
-                            fields,
+                            fields, ..
                         } => {
                             for (fname, ftype, is_public) in fields {
                                 if fname == field {

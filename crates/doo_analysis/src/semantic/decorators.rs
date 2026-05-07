@@ -45,6 +45,8 @@ pub enum DecoratorKind {
     Role,
     Owner,
     Inherits,
+    // JSON field name mapping
+    Json,
     Unknown(String),
 }
 
@@ -73,6 +75,8 @@ impl DecoratorKind {
             "role" => Self::Role,
             "owner" => Self::Owner,
             "inherits" => Self::Inherits,
+            // JSON field name mapping
+            "json" => Self::Json,
             other => Self::Unknown(other.to_string()),
         }
     }
@@ -133,6 +137,11 @@ impl DecoratorKind {
                 type_constraint: TypeConstraint::StructLevel,
                 args: ArgRule::None,
             },
+            // JSON field name mapping — any type, exactly 1 string arg
+            Self::Json => DecoratorRule {
+                type_constraint: TypeConstraint::Any,
+                args: ArgRule::Exactly(1),
+            },
             // Unknown
             Self::Unknown(_) => DecoratorRule {
                 type_constraint: TypeConstraint::Any,
@@ -164,6 +173,7 @@ impl DecoratorKind {
             Self::Role => "role",
             Self::Owner => "owner",
             Self::Inherits => "inherits",
+            Self::Json => "json",
             Self::Unknown(n) => n,
         }
     }

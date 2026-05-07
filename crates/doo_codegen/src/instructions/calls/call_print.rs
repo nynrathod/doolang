@@ -279,7 +279,7 @@ pub(super) fn emit_print_value<'ctx>(
                     }
                     return;
                 }
-                TypeKind::Struct { name, fields } => {
+                TypeKind::Struct { name, fields, .. } => {
                     // Extract just name and type for printing (visibility not needed)
                     let field_pairs: Vec<_> =
                         fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
