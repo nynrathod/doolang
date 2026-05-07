@@ -50,6 +50,35 @@ impl ParserTypes for Parser {
             let end = self.prev_span();
             TypeExpr::new(TypeExprKind::Tuple(types), start.merge(&end))
 
+        // Function type: fn(T) -> U  or  fn(T1, T2) -> U  or  fn() -> U
+        } else if self.check(TokenKind::Fn) {
+            self.advance();
+            self.expect(TokenKind::LParen)?;
+            let mut params = Vec::new();
+            while !self.check(TokenKind::RParen) && !self.is_at_end() {
+                params.push(self.parse_type_expr()?);
+                if !self.check(TokenKind::RParen) {
+                    self.expect(TokenKind::Comma)?;
+                }
+            }
+            self.expect(TokenKind::RParen)?;
+            // Optional: -> ReturnType
+            let returns = if self.check(TokenKind::Arrow) {
+                self.advance();
+                self.parse_type_expr()?
+            } else {
+                // Default to Void if no return type specified
+                TypeExpr::void(self.current_span())
+            };
+            let end = self.prev_span();
+            TypeExpr::new(
+                TypeExprKind::Function {
+                    params,
+                    returns: Box::new(returns),
+                },
+                start.merge(&end),
+            )
+
         // Named type: T or T?
         } else {
             let name = self.expect_ident().map_err(|_| {

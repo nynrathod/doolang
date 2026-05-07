@@ -374,6 +374,242 @@ impl Lower {
             _ => builtin::ANY,
         }
     }
+
+    /// Walk the HIR program and infer closure types from function call context.
+    /// This handles closures passed as arguments to regular functions (not just array methods).
+    pub fn infer_closure_types_in_program(
+        &mut self,
+        program: &mut HirProgram,
+        registry: &mut TypeRegistry,
+    ) {
+        // Collect function signatures: name -> Vec<(param_name, param_type)>
+        let mut fn_sigs: FxHashMap<String, Vec<(String, Option<TypeId>)>> = FxHashMap::default();
+        for item in &program.items {
+            if let HirItem::Function(f) = item {
+                let params: Vec<(String, Option<TypeId>)> = f
+                    .params
+                    .iter()
+                    .map(|p| (p.name.clone(), p.type_id))
+                    .collect();
+                fn_sigs.insert(f.name.clone(), params);
+            }
+        }
+
+        // Walk all expressions in function bodies
+        for item in &mut program.items {
+            if let HirItem::Function(f) = item {
+                for stmt in &mut f.body {
+                    self.infer_closure_types_in_stmt(stmt, &fn_sigs, registry);
+                }
+            }
+        }
+    }
+
+    /// Recursively walk an expression and infer closure types from call context.
+    fn infer_closure_types_in_expr(
+        &mut self,
+        expr: &mut HirExpr,
+        fn_sigs: &FxHashMap<String, Vec<(String, Option<TypeId>)>>,
+        registry: &mut TypeRegistry,
+    ) {
+        match &mut expr.kind {
+            HirExprKind::Call { func, args } => {
+                // Check if func is a known function name
+                let fn_name = match &func.kind {
+                    HirExprKind::Local { name } => name.clone(),
+                    _ => String::new(),
+                };
+
+                if let Some(param_types) = fn_sigs.get(&fn_name) {
+                    // For each argument that is a closure, infer types from expected param type
+                    for (i, arg) in args.iter_mut().enumerate() {
+                        if matches!(arg.kind, HirExprKind::Closure { .. }) {
+                            // Extract expected parameter/return types from the function signature
+                            let expected_info: Option<(Vec<TypeId>, Option<TypeId>)> =
+                                param_types.get(i).and_then(|(_, opt_type)| {
+                                    opt_type.and_then(|param_type| {
+                                        registry.get(param_type).and_then(|info| {
+                                            if let TypeKind::Function {
+                                                params: ref expected_params,
+                                                returns,
+                                            } = &info.kind
+                                            {
+                                                Some((expected_params.clone(), Some(*returns)))
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                    })
+                                });
+
+                            if let Some((expected_params, expected_returns)) = expected_info {
+                                self.apply_closure_signature(
+                                    arg,
+                                    &expected_params,
+                                    expected_returns,
+                                    registry,
+                                );
+                            }
+                        }
+                        // Recurse into arguments (they might contain nested closures)
+                        self.infer_closure_types_in_expr(arg, fn_sigs, registry);
+                    }
+                }
+                // Recurse into func (might be a complex expression)
+                self.infer_closure_types_in_expr(func, fn_sigs, registry);
+            }
+
+            HirExprKind::Closure { body, .. } => {
+                // Recurse into closure body
+                self.infer_closure_types_in_expr(body, fn_sigs, registry);
+            }
+
+            HirExprKind::Block { stmts, expr: block_expr } => {
+                for stmt in stmts.iter_mut() {
+                    self.infer_closure_types_in_stmt(stmt, fn_sigs, registry);
+                }
+                if let Some(e) = block_expr {
+                    self.infer_closure_types_in_expr(e, fn_sigs, registry);
+                }
+            }
+
+            HirExprKind::BinOp { lhs, rhs, .. } => {
+                self.infer_closure_types_in_expr(lhs, fn_sigs, registry);
+                self.infer_closure_types_in_expr(rhs, fn_sigs, registry);
+            }
+
+            HirExprKind::UnaryOp { operand, .. } => {
+                self.infer_closure_types_in_expr(operand, fn_sigs, registry);
+            }
+
+            HirExprKind::If { condition, then_expr, else_expr } => {
+                self.infer_closure_types_in_expr(condition, fn_sigs, registry);
+                self.infer_closure_types_in_expr(then_expr, fn_sigs, registry);
+                if let Some(e) = else_expr {
+                    self.infer_closure_types_in_expr(e, fn_sigs, registry);
+                }
+            }
+
+            HirExprKind::Array(elements) => {
+                for elem in elements.iter_mut() {
+                    self.infer_closure_types_in_expr(elem, fn_sigs, registry);
+                }
+            }
+
+            HirExprKind::Map(entries) => {
+                for (k, v) in entries.iter_mut() {
+                    self.infer_closure_types_in_expr(k, fn_sigs, registry);
+                    self.infer_closure_types_in_expr(v, fn_sigs, registry);
+                }
+            }
+
+            HirExprKind::MethodCall { receiver, args, .. } => {
+                self.infer_closure_types_in_expr(receiver, fn_sigs, registry);
+                for arg in args.iter_mut() {
+                    self.infer_closure_types_in_expr(arg, fn_sigs, registry);
+                }
+            }
+
+            HirExprKind::Match { values, arms } => {
+                for v in values.iter_mut() {
+                    self.infer_closure_types_in_expr(v, fn_sigs, registry);
+                }
+                for arm in arms.iter_mut() {
+                    self.infer_closure_types_in_expr(&mut arm.body, fn_sigs, registry);
+                }
+            }
+
+            HirExprKind::Struct { fields, .. } => {
+                for (_, v) in fields.iter_mut() {
+                    self.infer_closure_types_in_expr(v, fn_sigs, registry);
+                }
+            }
+
+            HirExprKind::Field { object, .. } => {
+                self.infer_closure_types_in_expr(object, fn_sigs, registry);
+            }
+
+            HirExprKind::Index { object, index } => {
+                self.infer_closure_types_in_expr(object, fn_sigs, registry);
+                self.infer_closure_types_in_expr(index, fn_sigs, registry);
+            }
+
+            HirExprKind::Cast { value, .. } => {
+                self.infer_closure_types_in_expr(value, fn_sigs, registry);
+            }
+
+            HirExprKind::Try(inner)
+            | HirExprKind::Clone(inner)
+            | HirExprKind::Move(inner)
+            | HirExprKind::Borrow { expr: inner, .. }
+            | HirExprKind::Spread(inner)
+            | HirExprKind::Await(inner)
+            | HirExprKind::Ok(inner)
+            | HirExprKind::Err(inner) => {
+                self.infer_closure_types_in_expr(inner, fn_sigs, registry);
+            }
+
+            HirExprKind::Range { start, end, .. } => {
+                self.infer_closure_types_in_expr(start, fn_sigs, registry);
+                self.infer_closure_types_in_expr(end, fn_sigs, registry);
+            }
+
+            HirExprKind::UnwrapOrPanic { expr: inner, message } => {
+                self.infer_closure_types_in_expr(inner, fn_sigs, registry);
+                self.infer_closure_types_in_expr(message, fn_sigs, registry);
+            }
+
+            HirExprKind::Tuple(elements) => {
+                for elem in elements.iter_mut() {
+                    self.infer_closure_types_in_expr(elem, fn_sigs, registry);
+                }
+            }
+
+            HirExprKind::Spawn { body } => {
+                self.infer_closure_types_in_expr(body, fn_sigs, registry);
+            }
+
+            HirExprKind::ScopeBlock { stmts } => {
+                for stmt in stmts.iter_mut() {
+                    self.infer_closure_types_in_stmt(stmt, fn_sigs, registry);
+                }
+            }
+
+            // Expressions that don't contain sub-expressions
+            HirExprKind::Const(_)
+            | HirExprKind::Local { .. }
+            | HirExprKind::Global { .. }
+            | HirExprKind::RouteBlock { .. } => {}
+
+            _ => {}
+        }
+    }
+
+    /// Helper to recurse into statements.
+    fn infer_closure_types_in_stmt(
+        &mut self,
+        stmt: &mut HirStmt,
+        fn_sigs: &FxHashMap<String, Vec<(String, Option<TypeId>)>>,
+        registry: &mut TypeRegistry,
+    ) {
+        match &mut stmt.kind {
+            HirStmtKind::Let { value, .. } => {
+                self.infer_closure_types_in_expr(value, fn_sigs, registry);
+            }
+            HirStmtKind::Expr(e) => {
+                self.infer_closure_types_in_expr(e, fn_sigs, registry);
+            }
+            HirStmtKind::Return(values) => {
+                for v in values.iter_mut() {
+                    self.infer_closure_types_in_expr(v, fn_sigs, registry);
+                }
+            }
+            HirStmtKind::Assign { value, .. } => {
+                self.infer_closure_types_in_expr(value, fn_sigs, registry);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Unwrap Optional/Result types to get the inner value type.

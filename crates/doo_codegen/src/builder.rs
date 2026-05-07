@@ -539,9 +539,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                     ],
                     false,
                 );
-                let once_lock_global =
-                    ctx.module
-                        .add_global(once_lock_type, None, &name);
+                let once_lock_global = ctx.module.add_global(once_lock_type, None, &name);
                 once_lock_global.set_initializer(&once_lock_type.const_zero());
                 once_lock_global.set_constant(false);
                 once_lock_global.set_linkage(Linkage::Internal);
@@ -569,25 +567,23 @@ impl<'ctx> CodegenBuilder<'ctx> {
                         // Handle TypeRef to import struct types from other modules
                         // The TypeRef references struct types from imported modules
                         doo_core::types::TypeKind::TypeRef { name: ref_name } => {
-                            if debug {
-                            }
+                            if debug {}
                             // Iterate through ALL types to find the struct definition
                             // The struct might be registered under a different type_id
                             for other_tid in ctx.type_registry.all_type_ids().collect::<Vec<_>>() {
                                 if let Some(other_info) = ctx.type_registry.get(other_tid) {
-                                    if let doo_core::types::TypeKind::Struct { name, fields, .. } =
-                                        &other_info.kind
+                                    if let doo_core::types::TypeKind::Struct {
+                                        name, fields, ..
+                                    } = &other_info.kind
                                     {
                                         if name == ref_name {
-                                            if debug {
-                                            }
+                                            if debug {}
                                             return Some((name.clone(), fields.clone()));
                                         }
                                     }
                                 }
                             }
-                            if debug {
-                            }
+                            if debug {}
                         }
                         _ => {}
                     }
@@ -611,8 +607,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
             let field_names: Vec<String> = fields.iter().map(|(n, _, _)| n.clone()).collect();
             ctx.register_struct_metadata(&name, field_names);
 
-            if debug {
-            }
+            if debug {}
         }
     }
 
@@ -620,8 +615,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
     fn declare_function(&self, ctx: &mut CodegenContext<'ctx>, func: &MirFunction) {
         let debug = std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok();
         let func_name = resolve(func.name);
-        if debug {
-        }
+        if debug {}
 
         // Closure functions have special calling convention: (env: ptr, params...) -> return_type
         // Use actual types for parameters and return type (no i64 boxing)
@@ -813,8 +807,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
         ctx.is_closure_function = func.is_closure;
 
         if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-            for local in &func.locals {
-            }
+            for local in &func.locals {}
         }
 
         // Collect all assigned variables from MIR to create allocas
@@ -896,7 +889,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
             let param_value = match llvm_func.get_nth_param(llvm_param_idx) {
                 Some(p) => p,
                 None => {
-continue;
+                    continue;
                 }
             };
             let param_type = ctx.get_llvm_type(param.type_id);
@@ -904,7 +897,7 @@ continue;
 
             // Store param directly - closures now use actual types
             if let Err(_) = ctx.builder.build_store(alloca, param_value) {
-continue;
+                continue;
             }
 
             // Track parameter type for Clone/Drop
@@ -917,7 +910,7 @@ continue;
                 match kind {
                     TypeKind::Struct { name, .. } => {
                         ctx.set_temp_struct_type(&param_name, &name);
-}
+                    }
                     // CRITICAL: Handle TypeRef for imported/cross-module types
                     // The TypeRef name IS the struct name, use it directly
                     TypeKind::TypeRef { name: ref_name } => {
@@ -940,15 +933,12 @@ continue;
 
                         if let Some(name) = struct_name {
                             ctx.set_temp_struct_type(&param_name, &name);
-}
-                    }
-                    other => {
-                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                         }
                     }
+                    other => if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {},
                 }
             } else {
-}
+            }
         }
 
         // Create allocas for local variables from MIR
@@ -967,7 +957,7 @@ continue;
                     match kind {
                         TypeKind::Struct { name, .. } => {
                             ctx.set_temp_struct_type(&local_name, &name);
-}
+                        }
                         // CRITICAL: Handle TypeRef for imported/cross-module types
                         // The TypeRef name IS the struct name, use it directly
                         TypeKind::TypeRef { name: ref_name } => {
@@ -987,7 +977,7 @@ continue;
 
                             if let Some(name) = struct_name {
                                 ctx.set_temp_struct_type(&local_name, &name);
-}
+                            }
                         }
                         _ => {}
                     }
@@ -1006,9 +996,7 @@ continue;
                 ctx.create_local(name, var_type);
                 // Track assigned variable type for Clone/Drop
                 ctx.set_variable_type(name, *type_id);
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-
-                }
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
             }
         }
 
@@ -1021,6 +1009,7 @@ continue;
                 &capture_names,
                 llvm_func,
                 func.captures_by_value,
+                false, // closures are multi-use; env freed when closure dropped
             );
         }
 
@@ -1030,16 +1019,13 @@ continue;
             let bb = block_map[&block_label];
             ctx.builder.position_at_end(bb);
 
-            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-            }
+            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
 
             // Generate instructions
             let mut instr_count = 0;
             for instr in &mir_block.instructions {
                 instr_count += 1;
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-
-                }
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                 // Use custom emit for Assign to store in alloca.
                 // Also handles static globals (OnceLock set-once semantics).
                 if let doo_mir::MirInstrKind::Assign { dest, value } = &instr.kind {
@@ -1052,7 +1038,9 @@ continue;
                                 let once_lock_type = ctx.context.struct_type(
                                     &[
                                         ctx.context.bool_type().into(),
-                                        ctx.context.ptr_type(inkwell::AddressSpace::default()).into(),
+                                        ctx.context
+                                            .ptr_type(inkwell::AddressSpace::default())
+                                            .into(),
                                     ],
                                     false,
                                 );
@@ -1065,13 +1053,23 @@ continue;
                                     let ptr_val = if val.is_pointer_value() {
                                         val.into_pointer_value()
                                     } else if val.is_int_value() {
-                                        ctx.builder.build_int_to_ptr(
-                                            val.into_int_value(),
-                                            ctx.context.ptr_type(inkwell::AddressSpace::default()),
-                                            "int_to_ptr",
-                                        ).ok().unwrap_or_else(|| ctx.context.ptr_type(inkwell::AddressSpace::default()).const_null())
+                                        ctx.builder
+                                            .build_int_to_ptr(
+                                                val.into_int_value(),
+                                                ctx.context
+                                                    .ptr_type(inkwell::AddressSpace::default()),
+                                                "int_to_ptr",
+                                            )
+                                            .ok()
+                                            .unwrap_or_else(|| {
+                                                ctx.context
+                                                    .ptr_type(inkwell::AddressSpace::default())
+                                                    .const_null()
+                                            })
                                     } else {
-                                        ctx.context.ptr_type(inkwell::AddressSpace::default()).const_null()
+                                        ctx.context
+                                            .ptr_type(inkwell::AddressSpace::default())
+                                            .const_null()
                                     };
                                     ctx.builder.build_store(ptr_field, ptr_val).ok();
                                 }
@@ -1081,13 +1079,19 @@ continue;
                                     0,
                                     "static_flag_field",
                                 ) {
-                                    ctx.builder.build_store(flag_field, ctx.context.bool_type().const_int(1, false)).ok();
+                                    ctx.builder
+                                        .build_store(
+                                            flag_field,
+                                            ctx.context.bool_type().const_int(1, false),
+                                        )
+                                        .ok();
                                 }
                             }
                         } else {
                             // Propagate struct type association if present
                             if let Some(src_name) = get_operand_name(value) {
-                                if let Some(struct_name) = ctx.get_temp_struct_type(&src_name).cloned()
+                                if let Some(struct_name) =
+                                    ctx.get_temp_struct_type(&src_name).cloned()
                                 {
                                     ctx.set_temp_struct_type(&dest_str, &struct_name);
                                 }
@@ -1122,8 +1126,7 @@ continue;
             let mut maybe_bb = llvm_func.get_first_basic_block();
             while let Some(bb) = maybe_bb {
                 if bb.get_terminator().is_none() {
-                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                    }
+                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                     ctx.builder.position_at_end(bb);
 
                     // Check if this is a Result-returning function (has error_type).
@@ -1173,9 +1176,7 @@ continue;
         term: &MirTerminator,
         block_map: &HashMap<String, BasicBlock<'ctx>>,
     ) {
-        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-
-        }
+        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
 
         match term {
             MirTerminator::Return { values } => {
@@ -1270,15 +1271,13 @@ continue;
                         _ => operand_to_value(ctx, &values[0]),
                     };
                     if let Some(val) = return_val {
-                        if debug {
-                        }
+                        if debug {}
                         // Convert value to expected return type if needed
                         // Closures now use actual types, no i64 conversion needed
                         let final_val = convert_return_value(ctx, val);
                         ctx.builder.build_return(Some(&final_val)).ok();
                     } else {
-                        if debug {
-                        }
+                        if debug {}
                         // CRITICAL: If function has error_type, return a default Result struct
                         if ctx.current_function_has_error_type {
                             let result_struct_type = ctx.context.struct_type(
@@ -1309,7 +1308,7 @@ continue;
 
                     if llvm_values.len() != values.len() {
                         // Some values couldn't be converted
-ctx.builder.build_return(None).ok();
+                        ctx.builder.build_return(None).ok();
                     } else {
                         // Get element types
                         let element_types: Vec<_> =
@@ -1397,7 +1396,6 @@ ctx.builder.build_return(None).ok();
                 if let Some(target_bb) = block_map.get(&target_str) {
                     ctx.builder.build_unconditional_branch(*target_bb).ok();
                 } else if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-
                 }
             }
             MirTerminator::Branch {
@@ -1408,14 +1406,10 @@ ctx.builder.build_return(None).ok();
                 let then_str = resolve(*then_block);
                 let else_str = resolve(*else_block);
                 if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-
-                    if let Some(bb) = ctx.builder.get_insert_block() {
-                    }
+                    if let Some(bb) = ctx.builder.get_insert_block() {}
                 }
                 if let Some(cond_val) = operand_to_value(ctx, cond) {
-                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-
-                    }
+                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                     // LLVM conditional branch requires i1 condition.
                     // Bool type is i8 (for C ABI), comparison results are i1.
                     // Convert any non-i1 integer to i1 via icmp ne 0.
@@ -1442,13 +1436,11 @@ ctx.builder.build_return(None).ok();
                     if let (Some(then_bb), Some(else_bb)) =
                         (block_map.get(&then_str), block_map.get(&else_str))
                     {
-let result = ctx
+                        let result = ctx
                             .builder
                             .build_conditional_branch(cond_bool, *then_bb, *else_bb);
                         if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                            if let Err(e) = &result {
-
-                            }
+                            if let Err(e) = &result {}
                         }
                         result.ok();
                     } else if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {

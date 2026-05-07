@@ -338,6 +338,49 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
         }
 
         HirExprKind::Call { func, args } => {
+            // Check if this is a closure variable call (e.g., `action(item)` where `action` is a closure)
+            // If func is a Local/Global whose type is a Function, emit ClosureCall instead of Call
+            let is_closure_call = match &func.kind {
+                HirExprKind::Local { .. } | HirExprKind::Global { .. } => {
+                    func.type_id.map_or(false, |tid| {
+                        builder.type_registry.get(tid)
+                            .map_or(false, |info| matches!(info.kind, TypeKind::Function { .. }))
+                    })
+                }
+                _ => false,
+            };
+
+            if is_closure_call {
+                // Build the closure operand (the closure value itself)
+                let closure_op = builder.build_expr(func);
+                let dest = builder.new_temp();
+
+                // Build arguments
+                let arg_ops: Vec<_> = args.iter()
+                    .map(|a| builder.build_expr(a))
+                    .collect();
+
+                builder.emit(
+                    MirInstrKind::ClosureCall {
+                        dest: Some(dest),
+                        closure: closure_op,
+                        args: arg_ops,
+                    },
+                    span,
+                );
+
+                // Set return type on dest if we can infer it from the function type
+                if let Some(func_type) = func.type_id {
+                    if let Some(info) = builder.type_registry.get(func_type) {
+                        if let TypeKind::Function { returns, .. } = &info.kind {
+                            builder.set_temp_type(dest, *returns);
+                        }
+                    }
+                }
+
+                return MirOperand::Temp(dest);
+            }
+
             let func_name = builder.expr_to_name(func);
             // Resolve alias to get canonical function name
             let resolved_func_name = builder.resolve_function_name(&func_name);
@@ -1853,31 +1896,67 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             let closure_name = format!("__closure_{}", builder.closure_counter);
             builder.closure_counter += 1;
 
+            // Collect free variables from the body — these must be captured
+            // from the outer scope (same approach as Spawn handling).
+            // Closure params are NOT captures — pass them as initial_defined.
+            let param_names: std::collections::HashSet<String> =
+                params.iter().map(|(n, _)| n.clone()).collect();
+            let captures = super::capture::collect_free_vars(body, builder, &param_names);
+
+            // Look up actual types for each captured variable from the outer scope.
+            let captures_with_types: Vec<(String, CoreTypeId)> = captures
+                .iter()
+                .map(|name| {
+                    let type_id = builder
+                        .current_func
+                        .as_ref()
+                        .and_then(|f| {
+                            f.locals
+                                .iter()
+                                .find(|l| resolve(l.name) == *name)
+                                .map(|l| l.type_id)
+                        })
+                        .or_else(|| builder.temp_types.get(&sym(name)).copied())
+                        .unwrap_or(builtin::INT);
+                    (name.clone(), type_id)
+                })
+                .collect();
+
             // Store the closure for later processing (don't build body inline!)
-            // The body will be built as a separate MIR function
-            builder
-                .pending_closures
-                .push((closure_name.clone(), params.clone(), body.clone(), Vec::new(), false));
+            // The body will be built as a separate MIR function with captures injected
+            // as additional locals in build_closure_function
+            builder.pending_closures.push((
+                closure_name.clone(),
+                params.clone(),
+                body.clone(),
+                captures_with_types.clone(),
+                true, // closures capture by value (copied into the env)
+            ));
 
             // Emit ClosureCreate instruction that references the closure function
             let dest = builder.new_temp();
             let span = builder.convert_span(expr.span);
-            
+
             // Set the closure's function type on the temp if HIR provided it
-            // This enables proper type inference for lambda methods like map/filter/reduce
             if let Some(func_type) = expr.type_id {
                 builder.set_temp_type(dest, func_type);
             }
-            // If HIR didn't provide type, the body type might still be set
-            // Store closure info for later type lookup
             let return_type = body.type_id.unwrap_or(builtin::ANY);
-            builder.closure_return_types.insert(closure_name.clone(), return_type);
-            
+            builder
+                .closure_return_types
+                .insert(closure_name.clone(), return_type);
+
+            // Build capture operands from the outer scope
+            let capture_operands: Vec<MirOperand> = captures
+                .iter()
+                .map(|name| MirOperand::Local(sym(name)))
+                .collect();
+
             builder.emit(
                 MirInstrKind::ClosureCreate {
                     dest,
                     func: sym(&closure_name),
-                    captures: Vec::new(), // TODO: capture analysis
+                    captures: capture_operands,
                 },
                 span,
             );
@@ -1960,7 +2039,12 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             builder.closure_counter += 1;
 
             // Collect free variables from the body — these must be captured
-            let captures = super::capture::collect_free_vars(body, builder);
+            // Spawn body has no params, so initial_defined is empty
+            let captures = super::capture::collect_free_vars(
+                body,
+                builder,
+                &std::collections::HashSet::new(),
+            );
 
             // Look up actual types for each captured variable from the outer scope.
             // This is critical: Bool is i8, Int is i64, Str is ptr, etc.

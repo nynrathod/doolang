@@ -581,7 +581,8 @@ fn clone_capture_for_spawn<'ctx>(
             match kind {
                 TypeKind::Struct {
                     ref name,
-                    ref fields, ..
+                    ref fields,
+                    ..
                 } => {
                     let field_pairs: Vec<_> =
                         fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
@@ -662,6 +663,7 @@ pub fn emit_env_unpack<'ctx>(
     captures: &[String],
     llvm_func: inkwell::values::FunctionValue<'ctx>,
     by_value: bool,
+    free_env: bool,
 ) {
     if captures.is_empty() {
         return;
@@ -752,11 +754,14 @@ pub fn emit_env_unpack<'ctx>(
         }
     }
 
-    // Free the env struct
-    let free_fn = get_or_declare_free(ctx);
-    let _ = ctx
-        .builder
-        .build_call(free_fn, &[env_ptr.into()], "env_free");
+    // Free the env struct (only for single-use environments like goroutines;
+    // closures are multi-use and the env is freed when the closure is dropped)
+    if free_env {
+        let free_fn = get_or_declare_free(ctx);
+        let _ = ctx
+            .builder
+            .build_call(free_fn, &[env_ptr.into()], "env_free");
+    }
 }
 
 /// `malloc(size: i64) -> ptr`

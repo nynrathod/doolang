@@ -308,6 +308,12 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
         mono.monomorphize(&mut hir);
     }
 
+    // Phase 4.6: Closure Type Inference
+    // Infer closure parameter/return types from function call context.
+    // e.g., fn applyToAll(items: [Int], action: fn(Int) -> Int) → closure (x) => x*2
+    //       infers x: Int from the expected fn(Int) -> Int type.
+    lowerer.infer_closure_types_in_program(&mut hir, &mut type_registry);
+
     // Wrap in Arc for shared access
     let type_registry = Arc::new(type_registry);
 
