@@ -523,5 +523,30 @@ fn extract_symbols_from_item(
         Item::Interface(_) => {
             // Interface definitions are not exposed as LSP symbols
         }
+        Item::Impl(impl_decl) => {
+            // Impl blocks are desugared to individual methods — expose the methods
+            for method in &impl_decl.methods {
+                let (line, col) = line_index.line_col(method.span.start);
+                let params: Vec<ParamInfo> = method
+                    .params
+                    .iter()
+                    .map(|(name, type_expr)| ParamInfo {
+                        name: name.clone(),
+                        type_name: type_expr.as_ref().map(|t| format!("{:?}", t.kind)),
+                    })
+                    .collect();
+                let return_type = method.return_type.as_ref().map(|t| format!("{:?}", t.kind));
+                symbols.push(SymbolDef {
+                    name: format!("{}::{}", impl_decl.struct_name, method.name),
+                    kind: SymbolKind::Function,
+                    line: line.saturating_sub(1),
+                    col: col.saturating_sub(1),
+                    type_info: return_type.clone(),
+                    doc: None,
+                    params,
+                    return_type,
+                });
+            }
+        }
     }
 }

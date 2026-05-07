@@ -102,6 +102,8 @@ pub enum TokenKind {
     Const,
     /// `static`
     Static,
+    /// `impl`
+    Impl,
 
     // === RBAC ===
     /// `policy`
@@ -246,6 +248,7 @@ impl TokenKind {
         match self {
             Self::Const => Some("const"),
             Self::Static => Some("static"),
+            Self::Impl => Some("impl"),
             Self::Let => Some("let"),
             Self::Mut => Some("mut"),
             Self::Fn => Some("fn"),
@@ -349,6 +352,7 @@ impl TokenKind {
             Self::Error => "error",
             Self::Const => "`const`",
             Self::Static => "`static`",
+            Self::Impl => "`impl`",
             Self::Let => "`let`",
             Self::Mut => "`mut`",
             Self::Fn => "`fn`",

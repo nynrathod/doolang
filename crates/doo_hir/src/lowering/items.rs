@@ -22,6 +22,13 @@ impl Lower {
             Item::Interface(i) => Some(HirItem::Interface(self.lower_interface(i))),
             Item::Import(i) => Some(HirItem::Import(self.lower_import(i))),
             Item::Policy(p) => Some(HirItem::Policy(self.lower_policy(p))),
+            Item::Impl(impl_decl) => {
+                for method in &impl_decl.methods {
+                    let hir_func = self.lower_function(method);
+                    self.hoisted_items.push(HirItem::Function(hir_func));
+                }
+                None
+            }
             Item::Statement(_stmt) => None,
         }
     }
@@ -40,6 +47,13 @@ impl Lower {
             Item::Interface(i) => Some(HirItem::Interface(self.lower_interface_typed(i, registry))),
             Item::Import(i) => Some(HirItem::Import(self.lower_import(i))),
             Item::Policy(p) => Some(HirItem::Policy(self.lower_policy(p))),
+            Item::Impl(impl_decl) => {
+                for method in &impl_decl.methods {
+                    let hir_func = self.lower_function_typed(method, registry);
+                    self.hoisted_items.push(HirItem::Function(hir_func));
+                }
+                None
+            }
             Item::Statement(_stmt) => None,
         }
     }

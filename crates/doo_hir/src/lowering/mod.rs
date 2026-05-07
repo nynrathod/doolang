@@ -348,17 +348,30 @@ impl Lower {
         // Pre-collect all function names so we can disambiguate
         // Namespace::Func(args) from EnumVariant during expression lowering.
         for item in &program.items {
-            if let Item::Function(f) = item {
-                if let Some(ref assoc_type) = f.associated_type {
-                    // Associated method: track under its type namespace
-                    self.known_qualified_methods
-                        .entry(assoc_type.clone())
-                        .or_default()
-                        .insert(f.name.clone());
-                } else {
-                    // Standalone function only
-                    self.known_functions.insert(f.name.clone());
+            match item {
+                Item::Function(f) => {
+                    if let Some(ref assoc_type) = f.associated_type {
+                        // Associated method: track under its type namespace
+                        self.known_qualified_methods
+                            .entry(assoc_type.clone())
+                            .or_default()
+                            .insert(f.name.clone());
+                    } else {
+                        // Standalone function only
+                        self.known_functions.insert(f.name.clone());
+                    }
                 }
+                Item::Impl(impl_decl) => {
+                    // Impl block methods are associated methods
+                    for method in &impl_decl.methods {
+                        self.known_qualified_methods
+                            .entry(impl_decl.struct_name.clone())
+                            .or_default()
+                            .insert(method.name.clone());
+                        self.known_functions.insert(method.name.clone());
+                    }
+                }
+                _ => {}
             }
         }
 

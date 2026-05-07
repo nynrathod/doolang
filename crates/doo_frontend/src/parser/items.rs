@@ -20,6 +20,7 @@ pub trait ParserItems {
     fn parse_param_list(&mut self) -> ParseResult<Vec<(String, Option<TypeExpr>)>>;
     fn parse_struct(&mut self) -> ParseResult<StructDecl>;
     fn parse_field_decl(&mut self) -> ParseResult<FieldDecl>;
+    fn parse_impl(&mut self) -> ParseResult<ImplDecl>;
     fn parse_enum(&mut self) -> ParseResult<EnumDecl>;
     fn parse_variant_decl(&mut self) -> ParseResult<VariantDecl>;
     fn parse_interface(&mut self) -> ParseResult<InterfaceDecl>;
@@ -81,6 +82,11 @@ impl ParserItems for Parser {
                 // Decorators not supported on policy blocks
                 drop(decorators);
                 Ok(Item::Policy(self.parse_policy()?))
+            }
+            TokenKind::Impl => {
+                let mut impl_block = self.parse_impl()?;
+                impl_block.decorators = decorators;
+                Ok(Item::Impl(impl_block))
             }
             _ => {
                 // Treat as statement - decorators not supported
@@ -418,7 +424,10 @@ impl ParserItems for Parser {
                 Some(self.expect_ident().map_err(|_| {
                     CompilerError::new(
                         ErrorCode::ExpectedIdentifier,
-                        format!("expected interface name after ':' in type parameter '{}'", name),
+                        format!(
+                            "expected interface name after ':' in type parameter '{}'",
+                            name
+                        ),
                         self.current_span(),
                     )
                     .with_suggestion("usage: <T: SomeInterface>")
@@ -581,6 +590,86 @@ impl ParserItems for Parser {
         })
     }
 
+    fn parse_impl(&mut self) -> ParseResult<ImplDecl> {
+        let start = self.current_span();
+        self.expect(TokenKind::Impl)?;
+
+        let struct_name = self.expect_ident().map_err(|_| {
+            CompilerError::new(
+                ErrorCode::ExpectedIdentifier,
+                "expected struct name after `impl`",
+                self.current_span(),
+            )
+            .with_suggestion("usage: impl StructName { fn method(self) -> ... }")
+        })?;
+
+        self.expect(TokenKind::LBrace).map_err(|_| {
+            CompilerError::new(
+                ErrorCode::UnexpectedToken,
+                format!("expected `{{` after `impl {}`", struct_name),
+                self.current_span(),
+            )
+        })?;
+
+        let mut methods = Vec::new();
+        let mut seen_methods: HashSet<String> = HashSet::new();
+
+        while !self.check(TokenKind::RBrace) && !self.is_at_end() {
+            // Each method must start with `fn`
+            let mut func = self.parse_function().map_err(|e| {
+                CompilerError::new(
+                    ErrorCode::UnexpectedToken,
+                    format!("invalid method in impl {}: {}", struct_name, e.message),
+                    e.span,
+                )
+            })?;
+
+            // Set the associated type for the method
+            func.associated_type = Some(struct_name.clone());
+
+            // Verify method has 'self' as first parameter
+            if func.params.is_empty() || func.params[0].0 != "self" {
+                return Err(CompilerError::new(
+                    ErrorCode::MissingFunctionBody,
+                    format!(
+                        "method '{}' in impl {} must have 'self' as its first parameter",
+                        func.name, struct_name
+                    ),
+                    func.span,
+                )
+                .with_suggestion(format!("add `self` parameter: fn {}(self, ...)", func.name)));
+            }
+
+            // Check for duplicate method names
+            if !seen_methods.insert(func.name.clone()) {
+                return Err(CompilerError::new(
+                    ErrorCode::DuplicateMethod,
+                    format!("duplicate method '{}' in impl {}", func.name, struct_name),
+                    func.span,
+                )
+                .with_suggestion(format!("rename one of the '{}' methods", func.name)));
+            }
+
+            methods.push(func);
+        }
+
+        self.expect(TokenKind::RBrace).map_err(|_| {
+            CompilerError::new(
+                ErrorCode::UnexpectedToken,
+                format!("expected `}}` to close impl {}", struct_name),
+                self.current_span(),
+            )
+        })?;
+
+        let end = self.prev_span();
+        Ok(ImplDecl {
+            struct_name,
+            methods,
+            decorators: Vec::new(),
+            span: start.merge(&end),
+        })
+    }
+
     fn parse_enum(&mut self) -> ParseResult<EnumDecl> {
         let start = self.current_span();
         self.expect(TokenKind::Enum)?;
@@ -715,10 +804,7 @@ impl ParserItems for Parser {
             if !seen_methods.insert(method.name.clone()) {
                 return Err(CompilerError::new(
                     ErrorCode::DuplicateMethod,
-                    format!(
-                        "duplicate method '{}' in interface '{}'",
-                        method.name, name
-                    ),
+                    format!("duplicate method '{}' in interface '{}'", method.name, name),
                     method.span,
                 )
                 .with_suggestion(format!("rename one of the '{}' methods", method.name)));

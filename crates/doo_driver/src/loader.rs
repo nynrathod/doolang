@@ -686,7 +686,7 @@ pub fn resolve_imports(
                         result.items.push(item.clone());
                     }
                 }
-                Item::Import(_) | Item::Statement(_) | Item::Policy(_) | Item::Interface(_) => {
+                Item::Import(_) | Item::Statement(_) | Item::Policy(_) | Item::Interface(_) | Item::Impl(_) => {
                     // Don't re-export
                 }
             }
@@ -1098,7 +1098,7 @@ pub fn resolve_imports(
                         result.items.push(item.clone());
                     }
                 }
-                Item::Import(_) | Item::Statement(_) | Item::Policy(_) | Item::Interface(_) => {
+                Item::Import(_) | Item::Statement(_) | Item::Policy(_) | Item::Interface(_) | Item::Impl(_) => {
                     // Don't re-export
                 }
             }
@@ -1269,7 +1269,7 @@ pub fn resolve_imports(
                             result.items.push(item.clone());
                         }
                     }
-                    Item::Import(_) | Item::Statement(_) | Item::Policy(_) | Item::Interface(_) => {
+                    Item::Import(_) | Item::Statement(_) | Item::Policy(_) | Item::Interface(_) | Item::Impl(_) => {
                     }
                 }
             }

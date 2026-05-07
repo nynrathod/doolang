@@ -183,6 +183,31 @@ impl StructDecl {
     }
 }
 
+/// Impl block for struct methods.
+/// Desugars to individual `fn TypeName.method()` items during lowering.
+#[derive(Debug, Clone)]
+pub struct ImplDecl {
+    /// Target struct name.
+    pub struct_name: String,
+    /// Methods defined in the impl block.
+    pub methods: Vec<FunctionDecl>,
+    /// Impl-level decorators.
+    pub decorators: Vec<Decorator>,
+    /// Source location.
+    pub span: Span,
+}
+
+impl ImplDecl {
+    pub fn new(struct_name: String, span: Span) -> Self {
+        Self {
+            struct_name,
+            methods: Vec::new(),
+            decorators: Vec::new(),
+            span,
+        }
+    }
+}
+
 /// A struct field declaration.
 #[derive(Debug, Clone)]
 pub struct FieldDecl {

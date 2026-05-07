@@ -339,6 +339,9 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
                 doo_frontend::ast::Item::Static(s) => {
                     doo_debug!("DEBUG", "  Static: {}", s.name)
                 }
+                doo_frontend::ast::Item::Impl(i) => {
+                    doo_debug!("DEBUG", "  Impl for {}", i.struct_name)
+                }
             }
         }
         doo_debug!("DEBUG", "HIR items: {}", hir.items.len());
