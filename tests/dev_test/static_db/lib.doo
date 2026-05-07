@@ -17,13 +17,13 @@ fn Database.Postgres() -> Database {
     return Database {
         connection: "postgres://localhost:5432",
         connected: true,
-    }
+    };
 }
 
 // Instance method: DB.find(Type)
 fn Database.find(self: Database, modelName: Str) -> Database {
     // Real impl would do SQL; we just return self for chaining
-    return self
+    return self;
 }
 
 // Instance method: .exec()
@@ -34,8 +34,8 @@ fn Database.exec(self: Database) -> [User] {
         User { id: 2, name: "Bob", role: "editor" },
         User { id: 3, name: "Carol", role: "viewer" },
     ];
-    return users
+    return users;
 }
 
 // Public static — the global DB instance
-static DB: Database
+static DB: Database;

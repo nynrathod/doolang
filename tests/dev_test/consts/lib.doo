@@ -2,19 +2,19 @@
 // PascalCase = public, camelCase = private (module-internal).
 
 // Public consts — importable
-const MaxRetries = 3
-const FreePlan = "free"
-const StatusLive = "live"
-const Pi = 3.14159
-const DebugMode = true
-const AllowedRoles = ["admin", "editor", "viewer"]
+const MaxRetries = 3;
+const FreePlan = "free";
+const StatusLive = "live";
+const Pi = 3.14159;
+const DebugMode = true;
+const AllowedRoles = ["admin", "editor", "viewer"];
 const Regions = {
     "oregon": "us-west1",
     "ohio": "us-east4",
 }
 
 // Private const — NOT importable
-const internalKey = "secret-internal-value"
+const internalKey = "secret-internal-value";
 
 // Negative int const
-const MinValue = -10
+const MinValue = -10;

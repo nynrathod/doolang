@@ -7,12 +7,12 @@
 import lib::{MaxRetries, FreePlan, StatusLive, Pi, DebugMode, AllowedRoles, Regions, MinValue};
 
 // Local consts
-const LocalMax = 100
-const AppName = "doo"
-const IsEnabled = true
+const LocalMax = 100;
+const AppName = "doo";
+const IsEnabled = true;
 
 // Private const (camelCase)
-const localSecret = "local-internal"
+const localSecret = "local-internal";
 
 fn main() {
     // --- Integer const ---

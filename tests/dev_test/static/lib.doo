@@ -18,7 +18,7 @@ fn Service.describe(self: Service) -> Str {
 
 // Public static — accessible from other files via import
 // PascalCase = public, camelCase = private
-static AppService: Service
+static AppService: Service;
 
 // Private static — NOT importable
-static internalCache: Service
+static internalCache: Service;

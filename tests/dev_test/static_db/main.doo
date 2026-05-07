@@ -10,13 +10,13 @@
 //       return Ok DB.find(User).exec()?
 //   }
 
-import lib::{DB, Database, User}
+import lib::{DB, Database, User};
 
 // Other statics (future-proof pattern)
-static LogLevel: Str
+static LogLevel: Str;
 
 // Compile-time constant
-const MaxUsers = 100
+const MaxUsers = 100;
 
 fn main() {
     // --- Step 1: Initialize the global DB (set-once, like OnceLock) ---
@@ -45,12 +45,12 @@ fn main() {
 
 // Handler — DB just works. No import. No injection.
 fn GetUsers() -> [User] {
-    return DB.find("User").exec()
+    return DB.find("User").exec();
 }
 
 // Another handler — uses DB again
 fn CountUsers(users: [User]) -> Int {
-    return users.len()
+    return users.len();
 }
 
 // CleanupUser from spec — DB used 4 times
@@ -58,9 +58,9 @@ fn CleanupUser(userId: Int) -> Str {
     // Simulating: DB.rawWithParams("DELETE FROM ...", [userId])
     // In real code this would be 4 FFI calls to DB
     if userId > 0 {
-        return "cleaned"
+        return "cleaned";
     }
-    return "skipped"
+    return "skipped";
 }
 
 // Expect: UserCount 3
