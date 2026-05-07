@@ -1,0 +1,101 @@
+fn main() {
+    print("=== Multi-line String Tests ===");
+
+    // Test 1: Simple multi-line string (SQL example)
+    print("\n--- Test 1: SQL Query ---");
+    let sql = """
+        SELECT id, name
+        FROM users
+        WHERE active = true;
+    """;
+    print(sql);
+
+    // Test 2: With interpolation
+    print("\n--- Test 2: Interpolation ---");
+    let name = "Alice";
+    let greeting = """
+        Hello ${name},
+        Welcome to Doo!
+    """;
+    print(greeting);
+
+    // Test 3: Dockerfile generation
+    print("\n--- Test 3: Dockerfile ---");
+    let port = 8080;
+    let dockerfile = """
+        FROM doolang/runtime:latest
+        WORKDIR /app
+        COPY . .
+        EXPOSE ${port}
+        CMD ["./output"]
+    """;
+    print(dockerfile);
+
+    // Test 4: Edge case - empty string
+    print("\n--- Test 4: Empty String ---");
+    let empty = """""";
+    print("Empty: '${empty}'");
+
+    // Test 5: Edge case - string with only whitespace
+    print("\n--- Test 5: Whitespace Only ---");
+    let whitespace = """
+        
+        
+    """;
+    print("Whitespace: '${whitespace}'");
+
+    // Test 6: Edge case - content on first line
+    print("\n--- Test 6: Content on First Line ---");
+    let first_line = """Hello
+        World
+    """;
+    print(first_line);
+
+    // Test 7: Mixed indentation (some lines more indented)
+    print("\n--- Test 7: Mixed Indentation ---");
+    let mixed_indent = """
+        Top Level
+            - Indented Level 1
+                - Indented Level 2
+    """;
+    print(mixed_indent);
+
+    print("\n=== All multi-line string tests passed! ===");
+}
+
+// EXPECT: === Multi-line String Tests ===
+// EXPECT: 
+// EXPECT: --- Test 1: SQL Query ---
+// EXPECT: SELECT id, name
+// EXPECT: FROM users
+// EXPECT: WHERE active = true;
+// EXPECT: 
+// EXPECT: --- Test 2: Interpolation ---
+// EXPECT: Hello Alice,
+// EXPECT: Welcome to Doo!
+// EXPECT: 
+// EXPECT: --- Test 3: Dockerfile ---
+// EXPECT: FROM doolang/runtime:latest
+// EXPECT: WORKDIR /app
+// EXPECT: COPY . .
+// EXPECT: EXPOSE 8080
+// EXPECT: CMD ["./output"]
+// EXPECT: 
+// EXPECT: --- Test 4: Empty String ---
+// EXPECT: Empty: ''
+// EXPECT: 
+// EXPECT: --- Test 5: Whitespace Only ---
+// EXPECT: Whitespace: '
+// EXPECT: 
+// EXPECT: '
+// EXPECT: 
+// EXPECT: --- Test 6: Content on First Line ---
+// EXPECT: Hello
+// EXPECT: World
+// EXPECT: 
+// EXPECT: --- Test 7: Mixed Indentation ---
+// EXPECT: Top Level
+// EXPECT:     - Indented Level 1
+// EXPECT:         - Indented Level 2
+// EXPECT: 
+// EXPECT: === All multi-line string tests passed! ===
