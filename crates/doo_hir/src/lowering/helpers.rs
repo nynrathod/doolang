@@ -93,7 +93,7 @@ impl Lower {
             BinaryOp::Or => HirBinOp::Or,
             BinaryOp::BitAnd => HirBinOp::BitAnd,
             BinaryOp::BitOr => HirBinOp::BitOr,
-            BinaryOp::NullCoalesce => HirBinOp::Or, // Simplify for now
+            BinaryOp::NullCoalesce => HirBinOp::NullCoalesce,
             BinaryOp::In => HirBinOp::In,
         }
     }

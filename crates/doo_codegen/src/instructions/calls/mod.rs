@@ -164,11 +164,6 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 let func_val = match ctx.get_function(&func_s) {
                     Some(f) => f,
                     None => {
-                        doo_debug!(
-                            "CODEGEN",
-                            "warning: undefined function '{}' — call silently dropped",
-                            func_s
-                        );
                         return None;
                     }
                 };
@@ -183,11 +178,6 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                         let val = match operand_to_value(ctx, a) {
                             Some(v) => v,
                             None => {
-                                doo_debug!(
-                                    "CODEGEN",
-                                    "WARNING: Call to '{}' — arg {} ({:?}) resolved to None, dropping",
-                                    func_s, i, a
-                                );
                                 return None;
                             }
                         };
@@ -253,17 +243,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
             } => {
                 let method_s = resolve(*method);
                 let dest_s = dest.as_ref().map(|d| resolve(*d));
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                    doo_debug!(
-                        "CODEGEN",
-                        "MethodCall: {:?}.{} -> {:?}, return_type={:?}",
-                        receiver,
-                        method_s,
-                        dest,
-                        return_type
-                    );
-                }
-                // Intercept JSON.stringify and JSON.parse (Static Specialization)
+// Intercept JSON.stringify and JSON.parse (Static Specialization)
                 // Check for both Local("JSON") and Global("JSON") for module calls
                 let is_json_module = matches!(receiver,
                     MirOperand::Local(name) | MirOperand::Global(name) if resolve(*name) == ffi_names::MODULE_JSON);
@@ -271,12 +251,6 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok()
                     && method_s == "parse"
                 {
-                    doo_debug!(
-                        "CODEGEN",
-                        "JSON.parse check: is_json_module={}, receiver={:?}",
-                        is_json_module,
-                        receiver
-                    );
                 }
 
                 if is_json_module {
@@ -309,7 +283,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
 
                 let recv_val = operand_to_value(ctx, receiver)
                     .unwrap_or_else(|| {
-                        doo_debug!("CODEGEN", "MethodCall: receiver not found, using null ptr");
+
                         ctx.context
                             .ptr_type(inkwell::AddressSpace::default())
                             .const_null()
@@ -328,28 +302,13 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 let receiver_name = receiver_name_owned.as_deref();
 
                 if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                    doo_debug!(
-                        "CODEGEN",
-                        "MethodCall: recv_val type: is_pointer={}, is_int={}, recv_val={:?}",
-                        recv_val.is_pointer_value(),
-                        recv_val.is_int_value(),
-                        recv_val
-                    );
                 }
 
                 // Builtin dispatch (single source of truth via TypeRegistry)
                 if recv_val.is_pointer_value() {
                     let recv_ptr = recv_val.into_pointer_value();
                     if let Some(kind) = ctx.get_type_kind(*receiver_type) {
-                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                            doo_debug!(
-                                "CODEGEN",
-                                "MethodCall: receiver type {:?} -> kind {:?}",
-                                receiver_type,
-                                kind
-                            );
-                        }
-                        let builtin_result = match kind {
+let builtin_result = match kind {
                             TypeKind::Str => StringBuiltins::dispatch(
                                 ctx,
                                 dest_s.as_deref(),
@@ -410,7 +369,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     } else {
                         // Fallback for unknown type
                         if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                            doo_debug!("CODEGEN", "MethodCall: fallback to array dispatch for {} (receiver_type: {:?})", method_s, receiver_type);
+
                         }
                         if matches!(
                             method_s.as_str(),
@@ -426,11 +385,6 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                                 &arg_vals,
                             );
                             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                                doo_debug!(
-                                    "CODEGEN",
-                                    "MethodCall: array dispatch result: {:?}",
-                                    result.is_some()
-                                );
                             }
                             if result.is_some() {
                                 return result;
@@ -523,7 +477,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                         }
                         return None;
                     } else {
-                        doo_debug!("CODEGEN", "Interface {} has no method {}", iface_name, method_s);
+
                         return None;
                     }
                 }
@@ -730,16 +684,6 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                                 .builder
                                 .get_insert_block()
                                 .map(|b| b.get_name().to_string_lossy().to_string());
-                            doo_debug!(
-                                "CODEGEN",
-                                "Print value {}: {:?} type={:?} kind={:?} llvm_type={:?} in block {:?}",
-                                i,
-                                val,
-                                ty,
-                                type_kind,
-                                v.get_type(),
-                                blk
-                            );
                         }
 
                         // Check array_element_types first for accurate element type
@@ -876,12 +820,6 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                                 .ok();
                         }
                     } else if debug {
-                        doo_debug!(
-                            "CODEGEN",
-                            "WARNING: Print value {} operand_to_value returned None for {:?}",
-                            i,
-                            val
-                        );
                     }
                 }
 
@@ -1027,22 +965,6 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                         .build_extract_value(result_struct, 0, "result_tag")
                         .ok()?
                         .into_int_value();
-
-                    // DEBUG: Print tag value at runtime to diagnose ABI issues
-                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        let printf = ctx.get_function(ffi_names::PRINTF).unwrap_or_else(|| {
-                            let printf_type =
-                                ctx.i32_type().fn_type(&[ctx.ptr_type().into()], true);
-                            ctx.module
-                                .add_function(ffi_names::PRINTF, printf_type, None)
-                        });
-                        let fmt = ctx.const_string("[DEBUG] IsOk: tag=%lld\n");
-                        let _ = ctx.builder.build_call(
-                            printf,
-                            &[fmt.into(), tag.into()],
-                            "debug_print",
-                        );
-                    }
 
                     // Check if tag == 0 (Ok) - use i64 constant to match tag type
                     let is_ok = ctx
@@ -1210,15 +1132,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 if error_name_s != "_" {
                     if let Some(TypeKind::Struct { name, .. }) = ctx.get_type_kind(*err_type) {
                         ctx.set_temp_struct_type(&error_name_s, &name);
-                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                            doo_debug!(
-                                "CODEGEN",
-                                "Registered error {} as struct type {}",
-                                error_name_s,
-                                name
-                            );
-                        }
-                    }
+}
                     ctx.set_variable_type(&error_name_s, effective_err_type);
                 }
 
@@ -1551,7 +1465,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                                 .unwrap_or(i8_ptr_type.const_null());
                             fn_ptrs.push(cast);
                         } else {
-                            doo_debug!("CODEGEN", "WARNING: vtable method {} not found for {}", mangled, cname);
+
                             fn_ptrs.push(i8_ptr_type.const_null());
                         }
                     }

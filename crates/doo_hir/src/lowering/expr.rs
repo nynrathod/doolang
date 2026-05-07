@@ -1,11 +1,12 @@
 //! Expression lowering.
 
 use super::{hir_binop_to_kind, hir_unaryop_to_kind};
+use super::type_infer::unwrap_optional_type;
 use super::{Lower, LowerError};
 use crate::types::*;
 use doo_core::{
     constants::ffi_names,
-    infer::{infer_binop_result_type, infer_unaryop_result_type},
+    infer::{infer_binop_result_type, infer_unaryop_result_type, BinOpKind},
     types::{builtin, TypeId, TypeKind, TypeRegistry},
 };
 use doo_frontend::ast::{Expr, ExprKind};
@@ -776,7 +777,12 @@ impl Lower {
                 let lhs_type = lhs.type_id.unwrap_or(builtin::ANY);
                 let rhs_type = rhs.type_id.unwrap_or(builtin::ANY);
                 let op_kind = hir_binop_to_kind(*op);
-                out.type_id = Some(infer_binop_result_type(op_kind, lhs_type, rhs_type));
+                let mut inferred = infer_binop_result_type(op_kind, lhs_type, rhs_type);
+                // NullCoalesce (??): unwrap Optional/Result from the inferred type
+                if op_kind == BinOpKind::NullCoalesce {
+                    inferred = unwrap_optional_type(registry, inferred);
+                }
+                out.type_id = Some(inferred);
             }
             HirExprKind::Field { object, field } => {
                 // Infer field access type from struct type, resolving TypeRef chains

@@ -674,6 +674,7 @@ fn hir_binop_to_kind(op: HirBinOp) -> BinOpKind {
         // In and BitAnd/BitOr don't have direct equivalents, default to appropriate
         HirBinOp::In => BinOpKind::Eq, // Comparison semantics
         HirBinOp::BitAnd | HirBinOp::BitOr => BinOpKind::And, // Logical semantics for type inference
+        HirBinOp::NullCoalesce => BinOpKind::NullCoalesce,
     }
 }
 

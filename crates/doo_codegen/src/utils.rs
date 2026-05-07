@@ -317,10 +317,6 @@ fn emit_eq_by_llvm_type<'ctx>(
     // If types don't match, try to handle common mismatches gracefully
     // For example, one might be int and other might be pointer (shouldn't happen in well-typed code)
     // Return None to signal failure
-    doo_debug!("CODEGEN", "emit_eq_by_llvm_type: mismatched types lhs={:?} rhs={:?}",
-        lhs.get_type(),
-        rhs.get_type()
-    );
     None
 }
 

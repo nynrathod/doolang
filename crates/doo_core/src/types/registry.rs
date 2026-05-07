@@ -370,13 +370,6 @@ impl TypeRegistry {
     pub fn define_struct(&mut self, name: &str, fields: Vec<(String, TypeId, bool)>) -> TypeId {
         let id = self.declare_named(name);
         if std::env::var(crate::constants::env_vars::DOO_DEBUG_TYPES).is_ok() {
-            doo_debug!(
-                "TYPES",
-                "define_struct '{}' with id={:?}, fields={:?}",
-                name,
-                id,
-                fields
-            );
         }
         if let Some(info) = self.types.get_mut(&id) {
             info.kind = TypeKind::Struct {
@@ -552,13 +545,6 @@ impl TypeRegistry {
     ) -> TypeId {
         let id = self.declare_named(name);
         if std::env::var(crate::constants::env_vars::DOO_DEBUG_TYPES).is_ok() {
-            doo_debug!(
-                "TYPES",
-                "define_interface '{}' with id={:?}, {} methods",
-                name,
-                id,
-                methods.len()
-            );
         }
         if let Some(info) = self.types.get_mut(&id) {
             info.kind = TypeKind::Interface {

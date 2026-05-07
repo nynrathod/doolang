@@ -260,6 +260,7 @@ impl BinaryOp {
             TokenKind::OrOr => Some(Self::Or),
             TokenKind::And => Some(Self::BitAnd),
             TokenKind::Or => Some(Self::BitOr),
+            TokenKind::QuestionQuestion => Some(Self::NullCoalesce),
             _ => None,
         }
     }

@@ -327,7 +327,6 @@ impl<'ctx> CodegenContext<'ctx> {
             .get(type_id)
             .map(|info| info.kind.clone());
         if std::env::var(doo_core::constants::env_vars::DOO_DEBUG_TYPES).is_ok() {
-            doo_debug!("TYPES", "get_type_kind({:?}) = {:?}", type_id, result);
         }
         result
     }

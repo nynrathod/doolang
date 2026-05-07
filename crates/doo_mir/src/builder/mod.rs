@@ -48,7 +48,6 @@ pub struct StructMeta {
     pub table_name: Option<String>,
 }
 
-
 /// FFI function information extracted from @extern decorator.
 ///
 /// SINGLE SOURCE OF TRUTH for FFI linkage.
@@ -262,12 +261,17 @@ impl<'a> MirBuilder<'a> {
                         None
                     }
                 });
-                let fields = s.fields.iter().map(|f| FieldMeta {
-                    name: f.name.clone(),
-                    is_auto: f.decorators.iter().any(|d| d.name == "auto"),
-                    is_primary: f.decorators.iter().any(|d| d.name == "primary"),
-                }).collect();
-                self.struct_metas.insert(s.name.clone(), StructMeta { fields, table_name });
+                let fields = s
+                    .fields
+                    .iter()
+                    .map(|f| FieldMeta {
+                        name: f.name.clone(),
+                        is_auto: f.decorators.iter().any(|d| d.name == "auto"),
+                        is_primary: f.decorators.iter().any(|d| d.name == "primary"),
+                    })
+                    .collect();
+                self.struct_metas
+                    .insert(s.name.clone(), StructMeta { fields, table_name });
             }
         }
 
@@ -286,15 +290,7 @@ impl<'a> MirBuilder<'a> {
                     // Store the Result type components
                     self.function_result_types
                         .insert(f.name.clone(), (return_type, error_type));
-                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        doo_debug!(
-                            "MIR",
-                            "Registered Result function: {} (ok={:?}, err={:?})",
-                            f.name,
-                            return_type,
-                            error_type
-                        );
-                    }
+                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                     // Also store the return type for the temp type (will be the ok value for unwrapping)
                     self.function_return_types
                         .insert(f.name.clone(), return_type);
@@ -318,15 +314,6 @@ impl<'a> MirBuilder<'a> {
 
                 // Extract FFI info from @extern decorator (SINGLE SOURCE OF TRUTH)
                 if let Some(ffi_info) = self.extract_ffi_info(&f.decorators, &f.name) {
-                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        doo_debug!(
-                            "MIR",
-                            "Registered FFI function: {} -> lib={} sym={}",
-                            f.name,
-                            ffi_info.library,
-                            ffi_info.symbol
-                        );
-                    }
                     self.ffi_functions.insert(f.name.clone(), ffi_info);
                 }
 
@@ -339,14 +326,6 @@ impl<'a> MirBuilder<'a> {
                         if !simple_name.is_empty() {
                             self.function_aliases
                                 .insert(simple_name.to_string(), f.name.clone());
-                            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                                doo_debug!(
-                                    "MIR",
-                                    "Registered function alias: {} -> {}",
-                                    simple_name,
-                                    f.name
-                                );
-                            }
                         }
                     }
                 }
@@ -384,14 +363,7 @@ impl<'a> MirBuilder<'a> {
                     // Skip generic functions — they're templates, not concrete code.
                     // Monomorphization will create concrete instantiations later.
                     if !f.type_params.is_empty() {
-                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                            doo_debug!(
-                                "MIR",
-                                "Skipping generic function template: {}<{}>",
-                                f.name,
-                                f.type_params.join(", ")
-                            );
-                        }
+                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                         continue;
                     }
                     let mir_func = self.build_function(f);
@@ -498,11 +470,7 @@ impl<'a> MirBuilder<'a> {
                             .iter()
                             .map(|m| InterfaceMethodDef {
                                 name: sym(&m.name),
-                                param_types: m
-                                    .params
-                                    .iter()
-                                    .filter_map(|p| p.type_id)
-                                    .collect(),
+                                param_types: m.params.iter().filter_map(|p| p.type_id).collect(),
                                 return_type: m.return_type,
                                 error_type: m.error_type,
                             })
@@ -971,6 +939,7 @@ impl<'a> MirBuilder<'a> {
             // TODO: Add dedicated MIR BitAnd/BitOr variants when integer bitwise ops are needed.
             HirBinOp::BitAnd => BinaryOp::And,
             HirBinOp::BitOr => BinaryOp::Or,
+            HirBinOp::NullCoalesce => BinaryOp::NullCoalesce,
         }
     }
 
@@ -1344,6 +1313,18 @@ impl<'a> MirBuilder<'a> {
             MirOperand::Global(_) => builtin::ANY,
             MirOperand::FuncRef(_) => builtin::ANY, // Function pointers are opaque
         }
+    }
+
+    /// Unwrap Optional/Result types to get the inner value type.
+    pub(crate) fn unwrap_optional_type(&self, type_id: CoreTypeId) -> CoreTypeId {
+        if let Some(info) = self.type_registry.get(type_id) {
+            match &info.kind {
+                TypeKind::Optional { inner } => return *inner,
+                TypeKind::Result { ok, .. } => return *ok,
+                _ => {}
+            }
+        }
+        type_id
     }
 
     pub(crate) fn unaryop_to_mir(&self, op: HirUnaryOp) -> UnaryOp {

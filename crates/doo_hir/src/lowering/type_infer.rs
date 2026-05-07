@@ -4,7 +4,7 @@ use super::Lower;
 use super::{hir_binop_to_kind, hir_unaryop_to_kind};
 use crate::types::*;
 use doo_core::{
-    infer::{infer_binop_result_type, infer_unaryop_result_type},
+    infer::{infer_binop_result_type, infer_unaryop_result_type, BinOpKind},
     types::{builtin, TypeId, TypeKind, TypeRegistry},
 };
 use rustc_hash::FxHashMap;
@@ -286,8 +286,14 @@ impl Lower {
             HirExprKind::BinOp { op, lhs, rhs } => {
                 let lhs_type = self.infer_closure_body_type(lhs, locals, registry);
                 let rhs_type = self.infer_closure_body_type(rhs, locals, registry);
-                // Convert HirBinOp to BinOpKind and use centralized inference
                 let op_kind = hir_binop_to_kind(*op);
+                // NullCoalesce (??): unwrap Optional/Result from lhs
+                if op_kind == BinOpKind::NullCoalesce {
+                    let inner = unwrap_optional_type(registry, lhs_type);
+                    if inner != lhs_type {
+                        return inner;
+                    }
+                }
                 infer_binop_result_type(op_kind, lhs_type, rhs_type)
             }
 
@@ -368,4 +374,19 @@ impl Lower {
             _ => builtin::ANY,
         }
     }
+}
+
+/// Unwrap Optional/Result types to get the inner value type.
+/// For `T?` (Optional), returns the inner `T`.
+/// For `T ! E` (Result), returns the ok type `T`.
+/// Otherwise returns the type unchanged.
+pub(crate) fn unwrap_optional_type(registry: &TypeRegistry, type_id: TypeId) -> TypeId {
+    if let Some(info) = registry.get(type_id) {
+        match &info.kind {
+            TypeKind::Optional { inner } => return *inner,
+            TypeKind::Result { ok, .. } => return *ok,
+            _ => {}
+        }
+    }
+    type_id
 }

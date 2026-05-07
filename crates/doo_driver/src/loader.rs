@@ -209,12 +209,6 @@ impl ModuleLoader {
         };
 
         if self.debug {
-            doo_debug!(
-                "LOADER",
-                "Loading module: {} from {}",
-                module_key,
-                module_file.display()
-            );
         }
 
         // Read and parse
@@ -324,7 +318,7 @@ pub fn resolve_imports(
     }
 
     if debug {
-        doo_debug!("LOADER", "Resolving {} imports", imports.len());
+
     }
 
     // Build import requests: module_key -> set of (symbol_name, (optional_alias, span))
@@ -420,7 +414,7 @@ pub fn resolve_imports(
             if module_path.exists() {
                 // Full path exists as a file (e.g., defs/types.doo)
                 if debug {
-                    doo_debug!("LOADER", "Found local module: {}", module_path.display());
+
                 }
                 local_import_requests.push((import, module_path, path_symbols));
             } else if import.path.len() >= 2 {
@@ -435,28 +429,12 @@ pub fn resolve_imports(
                 if alt_path.exists() {
                     let symbol = import.path.last().unwrap().clone();
                     if debug {
-                        doo_debug!(
-                            "LOADER",
-                            "Found local module: {} (importing symbol: {})",
-                            alt_path.display(),
-                            symbol
-                        );
                     }
                     path_symbols.push(symbol);
                     local_import_requests.push((import, alt_path, path_symbols));
                 } else if debug {
-                    doo_debug!(
-                        "LOADER",
-                        "Local module not found: {}",
-                        module_path.display()
-                    );
                 }
             } else if debug {
-                doo_debug!(
-                    "LOADER",
-                    "Local module not found: {}",
-                    module_path.display()
-                );
             }
         }
     }
@@ -636,14 +614,8 @@ pub fn resolve_imports(
                     {
                         if debug {
                             if is_associated_with_imported_type {
-                                doo_debug!(
-                                    "LOADER",
-                                    "  Importing associated function: {}.{}",
-                                    f.associated_type.as_deref().unwrap_or("?"),
-                                    f.name
-                                );
                             } else {
-                                doo_debug!("LOADER", "  Importing function: {}", f.name);
+
                             }
                         }
                         imported_names.insert(func_key);
@@ -653,12 +625,6 @@ pub fn resolve_imports(
                         // If so, push both the original (for namespace access) and a renamed copy
                         if let Some((Some(alias), _)) = requested.get(&f.name) {
                             if debug {
-                                doo_debug!(
-                                    "LOADER",
-                                    "  Aliasing function: {} -> {}",
-                                    f.name,
-                                    alias
-                                );
                             }
                             // Push original for qualified access (e.g., Math::Sqrt)
                             result.items.push(item.clone());
@@ -677,7 +643,7 @@ pub fn resolve_imports(
                         import_all || requested.contains_key(&s.name) || is_primary_struct;
                     if is_wanted && !imported_names.contains(&s.name) {
                         if debug {
-                            doo_debug!("LOADER", "  Importing struct: {}", s.name);
+
                         }
                         imported_names.insert(s.name.clone());
                         result.items.push(item.clone());
@@ -687,7 +653,7 @@ pub fn resolve_imports(
                     let is_wanted = import_all || requested.contains_key(&e.name);
                     if is_wanted && !imported_names.contains(&e.name) {
                         if debug {
-                            doo_debug!("LOADER", "  Importing enum: {}", e.name);
+
                         }
                         imported_names.insert(e.name.clone());
                         result.items.push(item.clone());
@@ -703,7 +669,7 @@ pub fn resolve_imports(
                     let is_wanted = import_all || requested.contains_key(&c.name);
                     if is_public && is_wanted && !imported_names.contains(&c.name) {
                         if debug {
-                            doo_debug!("LOADER", "  Importing const: {}", c.name);
+
                         }
                         imported_names.insert(c.name.clone());
                         result.items.push(item.clone());
@@ -714,7 +680,7 @@ pub fn resolve_imports(
                     let is_wanted = import_all || requested.contains_key(&s.name);
                     if is_public && is_wanted && !imported_names.contains(&s.name) {
                         if debug {
-                            doo_debug!("LOADER", "  Importing static: {}", s.name);
+
                         }
                         imported_names.insert(s.name.clone());
                         result.items.push(item.clone());
@@ -837,30 +803,18 @@ pub fn resolve_imports(
 
         // Check for parser errors even on Ok result
         if !parser.errors().is_empty() {
-            doo_debug!("LOADER", "Parser errors in {}:", module_path.display());
+
             for err in parser.errors() {
-                doo_debug!("LOADER", "  {}", err);
+
             }
         }
 
         // DEBUG: Show parsed functions and their bodies
         if debug {
-            doo_debug!("LOADER", "Parsed module: {}", module_path.display());
+
             for item in &module_program.items {
                 if let Item::Function(f) = item {
-                    doo_debug!(
-                        "LOADER",
-                        "  Function {}, body has {} statements",
-                        f.name,
-                        f.body.len()
-                    );
                     for (i, stmt) in f.body.iter().enumerate() {
-                        doo_debug!(
-                            "LOADER",
-                            "    Stmt {}: {:?}",
-                            i,
-                            std::mem::discriminant(&stmt.kind)
-                        );
                     }
                 }
             }
@@ -989,12 +943,6 @@ pub fn resolve_imports(
                         );
                     } else if !visited_modules.contains(&nested_canonical) {
                         if debug {
-                            doo_debug!(
-                                "LOADER",
-                                "Queueing nested import: {} from {}",
-                                resolved.display(),
-                                module_path.display()
-                            );
                         }
                         pending_modules.push((
                             resolved,
@@ -1083,14 +1031,8 @@ pub fn resolve_imports(
                     if is_wanted && !imported_names.contains(&func_key) {
                         if debug {
                             if is_associated_with_imported_type {
-                                doo_debug!(
-                                    "LOADER",
-                                    "  Importing local associated function: {}.{}",
-                                    f.associated_type.as_deref().unwrap_or("?"),
-                                    f.name
-                                );
                             } else {
-                                doo_debug!("LOADER", "  Importing local function: {}", f.name);
+
                             }
                         }
                         imported_names.insert(func_key);
@@ -1108,7 +1050,7 @@ pub fn resolve_imports(
 
                     if is_public && !imported_names.contains(&s.name) {
                         if debug {
-                            doo_debug!("LOADER", "  Importing local struct: {}", s.name);
+
                         }
                         imported_names.insert(s.name.clone());
                         result.items.push(item.clone());
@@ -1125,7 +1067,7 @@ pub fn resolve_imports(
 
                     if is_public && !imported_names.contains(&e.name) {
                         if debug {
-                            doo_debug!("LOADER", "  Importing local enum: {}", e.name);
+
                         }
                         imported_names.insert(e.name.clone());
                         result.items.push(item.clone());
@@ -1140,7 +1082,7 @@ pub fn resolve_imports(
                         .unwrap_or(false);
                     if is_public && !imported_names.contains(&c.name) {
                         if debug {
-                            doo_debug!("LOADER", "  Importing local const: {}", c.name);
+
                         }
                         imported_names.insert(c.name.clone());
                         result.items.push(item.clone());
@@ -1150,7 +1092,7 @@ pub fn resolve_imports(
                     let is_public = s.is_public;
                     if is_public && !imported_names.contains(&s.name) {
                         if debug {
-                            doo_debug!("LOADER", "  Importing local static: {}", s.name);
+
                         }
                         imported_names.insert(s.name.clone());
                         result.items.push(item.clone());
@@ -1166,11 +1108,6 @@ pub fn resolve_imports(
     // Process std imports discovered in nested local modules
     if !nested_std_import_order.is_empty() {
         if debug {
-            doo_debug!(
-                "LOADER",
-                "Processing {} nested std imports from sub-modules",
-                nested_std_import_order.len()
-            );
         }
         for module_key in &nested_std_import_order {
             let requested = match nested_std_import_requests.get(module_key) {
@@ -1270,11 +1207,6 @@ pub fn resolve_imports(
                             && !imported_names.contains(&func_key)
                         {
                             if debug {
-                                doo_debug!(
-                                    "LOADER",
-                                    "  Importing nested-std function: {}",
-                                    func_key
-                                );
                             }
                             imported_names.insert(func_key);
 
@@ -1294,7 +1226,7 @@ pub fn resolve_imports(
                             import_all || requested.contains_key(&s.name) || is_primary_struct;
                         if is_wanted && !imported_names.contains(&s.name) {
                             if debug {
-                                doo_debug!("LOADER", "  Importing nested-std struct: {}", s.name);
+
                             }
                             imported_names.insert(s.name.clone());
                             result.items.push(item.clone());
@@ -1304,7 +1236,7 @@ pub fn resolve_imports(
                         let is_wanted = import_all || requested.contains_key(&e.name);
                         if is_wanted && !imported_names.contains(&e.name) {
                             if debug {
-                                doo_debug!("LOADER", "  Importing nested-std enum: {}", e.name);
+
                             }
                             imported_names.insert(e.name.clone());
                             result.items.push(item.clone());
@@ -1320,7 +1252,7 @@ pub fn resolve_imports(
                         let is_wanted = import_all || requested.contains_key(&c.name);
                         if is_public && is_wanted && !imported_names.contains(&c.name) {
                             if debug {
-                                doo_debug!("LOADER", "  Importing nested-std const: {}", c.name);
+
                             }
                             imported_names.insert(c.name.clone());
                             result.items.push(item.clone());
@@ -1331,7 +1263,7 @@ pub fn resolve_imports(
                         let is_wanted = import_all || requested.contains_key(&s.name);
                         if is_public && is_wanted && !imported_names.contains(&s.name) {
                             if debug {
-                                doo_debug!("LOADER", "  Importing nested-std static: {}", s.name);
+
                             }
                             imported_names.insert(s.name.clone());
                             result.items.push(item.clone());
@@ -1345,7 +1277,7 @@ pub fn resolve_imports(
     }
 
     if debug {
-        doo_debug!("LOADER", "Total imported items: {}", result.items.len());
+
     }
 
     Ok(result)

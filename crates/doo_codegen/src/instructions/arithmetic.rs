@@ -32,24 +32,11 @@ impl<'ctx> InstructionHandler<'ctx> for ArithmeticHandler {
         match &instr.kind {
             MirInstrKind::BinaryOp { dest, op, lhs, rhs } => {
                 if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                    doo_debug!(
-                        "CODEGEN",
-                        "BinaryOp: {} = {:?} {:?} {:?}",
-                        resolve(*dest),
-                        lhs,
-                        op,
-                        rhs
-                    );
                 }
                 let lhs_val = operand_to_value(ctx, lhs);
                 if lhs_val.is_none()
                     && std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok()
                 {
-                    doo_debug!(
-                        "CODEGEN",
-                        "BinaryOp: lhs operand_to_value failed for {:?}",
-                        lhs
-                    );
                     return None;
                 }
                 let lhs_val = lhs_val?;
@@ -58,11 +45,6 @@ impl<'ctx> InstructionHandler<'ctx> for ArithmeticHandler {
                 if rhs_val.is_none()
                     && std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok()
                 {
-                    doo_debug!(
-                        "CODEGEN",
-                        "BinaryOp: rhs operand_to_value failed for {:?}",
-                        rhs
-                    );
                     return None;
                 }
                 let rhs_val = rhs_val?;
@@ -71,13 +53,6 @@ impl<'ctx> InstructionHandler<'ctx> for ArithmeticHandler {
                 if result.is_none()
                     && std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok()
                 {
-                    doo_debug!(
-                        "CODEGEN",
-                        "BinaryOp: emit_binop failed for {:?} {:?} {:?}",
-                        lhs_val,
-                        op,
-                        rhs_val
-                    );
                     return None;
                 }
                 let result = result?;
@@ -145,6 +120,148 @@ fn emit_binop<'ctx>(
     lhs: BasicValueEnum<'ctx>,
     rhs: BasicValueEnum<'ctx>,
 ) -> Option<BasicValueEnum<'ctx>> {
+    // Handle nil coalescing: a ?? b
+    // If a is nil (null pointer or zero), return b; otherwise return a.
+    if op == BinaryOp::NullCoalesce {
+        // Same type: use select for efficiency
+        if lhs.get_type() == rhs.get_type() {
+            let is_nil = if lhs.is_pointer_value() {
+                let ptr = lhs.into_pointer_value();
+                let is_null = ctx.builder.build_is_null(ptr, "coalesce_nullptr").ok()?;
+                // Also check for boxed nil: pointer may be valid but point to i64 0
+                let loaded = ctx.builder.build_load(ctx.i64_type(), ptr, "coalesce_load_chk").ok()?;
+                let is_boxed_nil = ctx.builder.build_int_compare(
+                    IntPredicate::EQ, loaded.into_int_value(),
+                    ctx.i64_type().const_zero(), "coalesce_boxed_nil",
+                ).ok()?;
+                ctx.builder.build_or(is_null, is_boxed_nil, "coalesce_is_nil").ok()?
+            } else if lhs.is_int_value() {
+                let lhs_int = lhs.into_int_value();
+                let zero = lhs_int.get_type().const_zero();
+                ctx.builder
+                    .build_int_compare(IntPredicate::EQ, lhs_int, zero, "coalesce_nil")
+                    .ok()?
+            } else if lhs.is_struct_value() {
+                let lhs_struct = lhs.into_struct_value();
+                let first = ctx.builder.build_extract_value(lhs_struct, 0, "coalesce_tag").ok()?;
+                if first.is_int_value() {
+                    let tag = first.into_int_value();
+                    let zero = tag.get_type().const_zero();
+                    ctx.builder
+                        .build_int_compare(IntPredicate::EQ, tag, zero, "coalesce_nil")
+                        .ok()?
+                } else {
+                    return Some(lhs); // can't determine nil-ness
+                }
+            } else {
+                return Some(lhs); // unknown type
+            };
+            return Some(
+                ctx.builder
+                    .build_select(is_nil, rhs, lhs, "coalesce_result")
+                    .ok()?,
+            );
+        }
+        
+        // Type mismatch: need branching with phi.
+        // Determine nil-ness of lhs.
+        let is_nil = if lhs.is_pointer_value() {
+            let ptr = lhs.into_pointer_value();
+            let is_null = ctx.builder.build_is_null(ptr, "coalesce_nullptr").ok()?;
+            // Also check for boxed nil: the pointer may be valid (heap-allocated)
+            // but point to an i64 0 (from `Ok nil` wrapping a raw nil constant).
+            // Load the first 8 bytes as i64; if zero, treat as nil.
+            let loaded = ctx.builder.build_load(ctx.i64_type(), ptr, "coalesce_load_nullchk").ok()?;
+            let is_boxed_nil = ctx.builder.build_int_compare(
+                IntPredicate::EQ, loaded.into_int_value(),
+                ctx.i64_type().const_zero(), "coalesce_boxed_nil",
+            ).ok()?;
+            ctx.builder.build_or(is_null, is_boxed_nil, "coalesce_is_nil").ok()?
+        } else if lhs.is_int_value() {
+            let lhs_int = lhs.into_int_value();
+            let zero = lhs_int.get_type().const_zero();
+            ctx.builder
+                .build_int_compare(IntPredicate::EQ, lhs_int, zero, "coalesce_nil")
+                .ok()?
+        } else if lhs.is_struct_value() {
+            let lhs_struct = lhs.into_struct_value();
+            let first = ctx.builder.build_extract_value(lhs_struct, 0, "coalesce_tag").ok()?;
+            if first.is_int_value() {
+                let tag = first.into_int_value();
+                let zero = tag.get_type().const_zero();
+                ctx.builder
+                    .build_int_compare(IntPredicate::EQ, tag, zero, "coalesce_nil")
+                    .ok()?
+            } else {
+                return Some(lhs);
+            }
+        } else {
+            return Some(lhs);
+        };
+        
+        let current_fn = ctx.current_function()?;
+        let then_bb = ctx.context.append_basic_block(current_fn, "coalesce_nil");
+        let else_bb = ctx.context.append_basic_block(current_fn, "coalesce_val");
+        let merge_bb = ctx.context.append_basic_block(current_fn, "coalesce_merge");
+        
+        ctx.builder.build_conditional_branch(is_nil, then_bb, else_bb).ok()?;
+        
+        // Build a null value of the target type for phi compatibility
+        let null_of_rhs_type: BasicValueEnum<'ctx> = match rhs.get_type() {
+            inkwell::types::BasicTypeEnum::PointerType(pt) => pt.const_null().into(),
+            inkwell::types::BasicTypeEnum::IntType(it) => it.const_zero().into(),
+            inkwell::types::BasicTypeEnum::StructType(st) => st.const_zero().into(),
+            _ => rhs, // fallback
+        };
+
+        // Then block: lhs is nil, use rhs directly
+        ctx.builder.position_at_end(then_bb);
+        ctx.builder.build_unconditional_branch(merge_bb).ok()?;
+        
+        // Else block: lhs is valid (non-nil) — convert to rhs type if needed
+        ctx.builder.position_at_end(else_bb);
+        let else_val = if lhs.get_type() == rhs.get_type() {
+            lhs
+        } else if lhs.is_pointer_value() && rhs.is_struct_value() {
+            // Load struct value from pointer to match struct value type
+            if let inkwell::types::BasicTypeEnum::StructType(st) = rhs.get_type() {
+                ctx.builder.build_load(st, lhs.into_pointer_value(), "coalesce_load").ok()?
+            } else {
+                lhs
+            }
+        } else if lhs.is_struct_value() && rhs.is_pointer_value() {
+            // LHS is an Optional/Result struct — extract the payload pointer (field 1)
+            let lhs_struct = lhs.into_struct_value();
+            if let Ok(payload) = ctx.builder.build_extract_value(lhs_struct, 1, "coalesce_payload") {
+                if payload.is_pointer_value() {
+                    payload
+                } else {
+                    // Fallback: alloca + store
+                    let alloca = ctx.builder.build_alloca(
+                        lhs_struct.get_type(),
+                        "coalesce_alloca",
+                    ).ok()?;
+                    ctx.builder.build_store(alloca, lhs).ok()?;
+                    alloca.into()
+                }
+            } else {
+                lhs
+            }
+        } else {
+            // Types differ (e.g. nil i64 vs ptr) — this path unreachable at runtime,
+            // but LLVM needs a type-compatible value for the phi.
+            null_of_rhs_type
+        };
+        ctx.builder.build_unconditional_branch(merge_bb).ok()?;
+        
+        // Merge block: phi uses rhs type (the dominant type)
+        ctx.builder.position_at_end(merge_bb);
+        let phi = ctx.builder.build_phi(rhs.get_type(), "coalesce_phi").ok()?;
+        phi.add_incoming(&[(&rhs, then_bb), (&else_val, else_bb)]);
+        
+        return Some(phi.as_basic_value());
+    }
+
     // Handle string concatenation
     // Case 1: Both operands are pointers (strings)
     if matches!(op, BinaryOp::Concat)
@@ -206,11 +323,6 @@ fn emit_binop<'ctx>(
         // Debug: show which block we're emitting to
         if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
             if let Some(bb) = ctx.builder.get_insert_block() {
-                doo_debug!(
-                    "CODEGEN",
-                    "strcmp emitting to block: {:?}",
-                    bb.get_name().to_str()
-                );
             }
         }
 
@@ -379,6 +491,7 @@ fn emit_binop<'ctx>(
             BinaryOp::And => ctx.builder.build_and(lhs_int, rhs_int, "and").ok()?.into(),
             BinaryOp::Or => ctx.builder.build_or(lhs_int, rhs_int, "or").ok()?.into(),
             BinaryOp::Concat => return None, // Handled above
+            BinaryOp::NullCoalesce => return None, // Handled above
         };
         Some(result)
     } else if lhs.is_float_value() && rhs.is_float_value() {

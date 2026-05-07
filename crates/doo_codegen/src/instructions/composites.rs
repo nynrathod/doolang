@@ -583,7 +583,7 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                         .builder
                         .get_insert_block()
                         .map(|b| b.get_name().to_string_lossy().to_string());
-                    doo_debug!("CODEGEN", "FieldGet {} in block {:?}", dest_str, blk);
+
                 }
                 if let Some(obj_ptr) = operand_to_value(ctx, object) {
                     if obj_ptr.is_pointer_value() {
@@ -618,20 +618,7 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
 
                         if debug {
                             if struct_name.is_none() {
-                                doo_debug!(
-                                    "CODEGEN",
-                                    "WARNING: FieldGet {} has no struct type for {:?}",
-                                    dest_str,
-                                    object
-                                );
                             } else {
-                                doo_debug!(
-                                    "CODEGEN",
-                                    "FieldGet {} using struct_name={:?} for field={}",
-                                    dest_str,
-                                    struct_name,
-                                    field_str
-                                );
                             }
                         }
 
@@ -640,14 +627,6 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                 .get_field_index(&struct_name, &field_str)
                                 .unwrap_or_else(|| field_str.parse::<u32>().unwrap_or(0));
                             if debug {
-                                doo_debug!(
-                                    "CODEGEN",
-                                    "FieldGet {} field_index={} for {}.{}",
-                                    dest_str,
-                                    field_index,
-                                    struct_name,
-                                    field_str
-                                );
                             }
 
                             if let Some(struct_type) = ctx.get_or_build_struct_type(&struct_name) {
@@ -741,12 +720,6 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
 
                                         if let Some(nested_name) = nested_struct_name {
                                             if debug {
-                                                doo_debug!(
-                                                    "CODEGEN",
-                                                    "FieldGet {} setting nested struct type to {}",
-                                                    dest_str,
-                                                    nested_name
-                                                );
                                             }
                                             ctx.set_temp_struct_type(&dest_str, &nested_name);
                                         }

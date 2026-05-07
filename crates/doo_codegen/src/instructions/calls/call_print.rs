@@ -228,16 +228,9 @@ pub(super) fn emit_print_value<'ctx>(
                         .builder
                         .get_insert_block()
                         .map(|b| b.get_name().to_string_lossy().to_string());
-                    doo_debug!(
-                        "CODEGEN",
-                        "emit_print_value INT in block {:?}, call result: {:?}",
-                        blk,
-                        result.is_ok()
-                    );
                 }
                 result.ok();
             } else if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                doo_debug!("CODEGEN", "emit_print_value INT: i64 extend failed");
             }
         } else if val.is_pointer_value() {
             // Pointer holding an int (e.g., from ManualErrorExtract) — load from heap-boxed ptr
@@ -253,11 +246,6 @@ pub(super) fn emit_print_value<'ctx>(
                     .ok();
             }
         } else if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-            doo_debug!(
-                "CODEGEN",
-                "emit_print_value INT: val is not int, is {:?}",
-                val.get_type()
-            );
         }
         return;
     }

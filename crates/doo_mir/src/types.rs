@@ -179,24 +179,7 @@ impl MirProgram {
     pub fn validate(&self) -> Result<(), MirError> {
         for func in &self.functions {
             if let Err(e) = func.validate() {
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                    doo_debug!(
-                        "MIR",
-                        "Validation failed in function '{}': {}",
-                        resolve(func.name),
-                        e
-                    );
-                    doo_debug!(
-                        "MIR",
-                        "  params: {:?}",
-                        func.params.iter().map(|p| &p.name).collect::<Vec<_>>()
-                    );
-                    doo_debug!(
-                        "MIR",
-                        "  locals: {:?}",
-                        func.locals.iter().map(|l| &l.name).collect::<Vec<_>>()
-                    );
-                }
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                 return Err(e);
             }
         }
@@ -859,6 +842,8 @@ pub enum BinaryOp {
     Or,
     // String
     Concat,
+    // Nil coalescing
+    NullCoalesce,
 }
 
 /// Unary operators

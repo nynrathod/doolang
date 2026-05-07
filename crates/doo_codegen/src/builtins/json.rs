@@ -110,17 +110,10 @@ impl JsonBuiltins {
             let (resolved_ty, resolved_kind) = Self::resolve_type_ref(ctx, ty);
             let kind = resolved_kind;
             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                doo_debug!(
-                    "CODEGEN",
-                    "emit_parse: target_type={:?}, kind={:?}",
-                    resolved_ty,
-                    kind
-                );
             }
             match kind {
                 Some(TypeKind::Struct { name, fields }) => {
                     if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        doo_debug!("CODEGEN", "emit_parse -> emit_parse_struct for '{}'", name);
                     }
                     // Extract just name and type for parsing (visibility not needed)
                     let field_pairs: Vec<_> =
@@ -129,7 +122,6 @@ impl JsonBuiltins {
                 }
                 Some(TypeKind::Enum { name, variants }) => {
                     if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        doo_debug!("CODEGEN", "emit_parse -> emit_parse_enum for '{}'", name);
                     }
                     return Self::emit_parse_enum(ctx, val, ty, &name, &variants);
                 }
@@ -139,11 +131,6 @@ impl JsonBuiltins {
                     match resolved_elem_kind {
                         Some(TypeKind::Struct { name, fields }) => {
                             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                                doo_debug!(
-                                    "CODEGEN",
-                                    "emit_parse -> emit_parse_array_struct for '[{}]'",
-                                    name
-                                );
                             }
                             let field_pairs: Vec<_> =
                                 fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
@@ -157,11 +144,6 @@ impl JsonBuiltins {
                         }
                         Some(TypeKind::Enum { name, variants }) => {
                             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                                doo_debug!(
-                                    "CODEGEN",
-                                    "emit_parse -> emit_parse_array_enum for '[{}]'",
-                                    name
-                                );
                             }
                             return Self::emit_parse_array_enum(
                                 ctx, val, elem_type, &name, &variants,
@@ -271,13 +253,6 @@ impl JsonBuiltins {
         };
 
         if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-            doo_debug!(
-                "CODEGEN",
-                "JSON.parse: target_type={:?}, fn_name={}, ret_type={:?}",
-                target_type,
-                fn_name,
-                ret_type
-            );
         }
 
         // Get or declare the FFI function
@@ -394,13 +369,6 @@ impl JsonBuiltins {
             let kind = kind_raw;
 
             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                doo_debug!(
-                    "CODEGEN",
-                    "emit_parse_struct field '{}': type_id={:?}, kind={:?}",
-                    fname,
-                    fty,
-                    kind
-                );
             }
 
             // P06: use physical field index for GEP

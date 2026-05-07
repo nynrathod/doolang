@@ -69,4 +69,17 @@ impl Item {
             Self::Statement(s) => s.span(),
         }
     }
+
+    /// Whether this top-level item requires a trailing semicolon.
+    /// Items ending with `}` (functions, structs, enums, etc.) do not need `;`.
+    pub fn needs_semicolon(&self) -> bool {
+        match self {
+            Self::Const(_) | Self::Static(_) | Self::Import(_) | Self::Statement(_) => true,
+            Self::Function(_)
+            | Self::Struct(_)
+            | Self::Enum(_)
+            | Self::Interface(_)
+            | Self::Policy(_) => false,
+        }
+    }
 }

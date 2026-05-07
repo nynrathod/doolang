@@ -74,14 +74,12 @@ impl<'ctx> InstructionDispatcher<'ctx> {
         for handler in &self.handlers {
             if handler.handles(instr) {
                 if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                    doo_debug!("CODEGEN", "    -> Handled by handler");
                 }
                 return handler.emit(ctx, instr);
             }
         }
         // Unknown instruction - emit nothing
         if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-            doo_debug!("CODEGEN", "    -> NO HANDLER for instruction");
         }
         None
     }

@@ -554,12 +554,6 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             increment,
         } => {
             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                doo_debug!(
-                    "MIR",
-                    "Building While loop with {} body statements, {} increment statements",
-                    body.len(),
-                    increment.len()
-                );
             }
             let cond_label = builder.new_block_label("while_cond");
             let body_label = builder.new_block_label("while_body");
@@ -577,14 +571,6 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             let continue_target = incr_label.unwrap_or(cond_label);
 
             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                doo_debug!(
-                    "MIR",
-                    "While labels: cond={}, body={}, exit={}, continue_target={}",
-                    resolve(cond_label),
-                    resolve(body_label),
-                    resolve(exit_label),
-                    resolve(continue_target)
-                );
             }
 
             // Jump to condition

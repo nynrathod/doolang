@@ -124,11 +124,27 @@ impl Parser {
         while !self.is_at_end() {
             match self.parse_item() {
                 Ok(item) => {
-                    items.push(item);
-                    // Consume optional semicolon after top-level items (imports, statements, etc.)
-                    while self.check(TokenKind::Semi) {
-                        self.advance();
+                    // Enforce mandatory semicolons for top-level items that need them
+                    if item.needs_semicolon() {
+                        if self.check(TokenKind::Semi) {
+                            self.advance();
+                        } else {
+                            self.errors.push(
+                                CompilerError::new(
+                                    ErrorCode::MissingSemicolon,
+                                    "expected `;` after declaration",
+                                    self.prev_span(),
+                                )
+                                .with_suggestion("add `;` at the end of this declaration"),
+                            );
+                        }
+                    } else {
+                        // Block-ending items: consume optional semicolon
+                        if self.check(TokenKind::Semi) {
+                            self.advance();
+                        }
                     }
+                    items.push(item);
                 }
                 Err(e) => {
                     self.errors.push(e);

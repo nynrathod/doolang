@@ -224,35 +224,36 @@ impl ParserExpr for Parser {
                     expr = parse_cast(self, expr)?;
                 }
                 TokenKind::QuestionQuestion => {
-                    // Unwrap or panic operator: expr ?? panic(msg)
-                    let start = expr.span;
-                    self.advance();
+                    // Two cases:
+                    // 1. `expr ?? panic("msg")` → UnwrapOrPanic (postfix, backward compat)
+                    // 2. `expr ?? default` → NilCoalesce (binary op, handled by precedence parser)
+                    // Peek ahead: if next token is `panic`, handle as UnwrapOrPanic.
+                    // Otherwise, break and let the binary precedence parser consume `??`.
+                    if self.peek_is(TokenKind::Ident) {
+                        let next_text = self.peek_next().text.clone();
+                        if next_text == "panic" {
+                            let start = expr.span;
+                            self.advance(); // consume '??'
 
-                    // Expect 'panic' keyword and message
-                    if !self.check(TokenKind::Ident) || self.current().text != "panic" {
-                        return Err(CompilerError::new(
-                            ErrorCode::UnexpectedToken,
-                            format!("Expected `panic` after `??`, got `{}`", self.current().text),
-                            self.current().span,
-                        )
-                        .with_suggestion(
-                            "use: `result ?? panic(\"error message\")` to unwrap or crash",
-                        ));
+                            self.advance(); // consume 'panic'
+                            self.expect(TokenKind::LParen)?;
+                            let message = Box::new(self.parse_expression()?);
+                            self.expect(TokenKind::RParen)?;
+
+                            let span = start.merge(&self.prev_span());
+                            expr = Expr::new(
+                                ExprKind::UnwrapOrPanic {
+                                    expr: Box::new(expr),
+                                    message,
+                                },
+                                span,
+                            );
+                            continue;
+                        }
                     }
-                    self.advance();
-
-                    self.expect(TokenKind::LParen)?;
-                    let message = Box::new(self.parse_expression()?);
-                    self.expect(TokenKind::RParen)?;
-
-                    let span = start.merge(&self.prev_span());
-                    expr = Expr::new(
-                        ExprKind::UnwrapOrPanic {
-                            expr: Box::new(expr),
-                            message,
-                        },
-                        span,
-                    );
+                    // Not `?? panic(...)` — break out of postfix loop.
+                    // The precedence parser will handle `??` as a binary NullCoalesce op.
+                    break;
                 }
                 TokenKind::Question => {
                     // Error propagation operator: expr?

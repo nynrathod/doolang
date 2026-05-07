@@ -151,14 +151,8 @@ impl Lower {
         f: &FunctionDecl,
         registry: &mut TypeRegistry,
     ) -> HirFunction {
-        doo_debug!("HIR", "lower_function_typed: Lowering function: {}", f.name);
-        doo_debug!(
-            "HIR",
-            "lower_function_typed: Function body has {} statements",
-            f.body.len()
-        );
         for (i, stmt) in f.body.iter().enumerate() {
-            doo_debug!("HIR", "lower_function_typed:   Stmt {}: {:?}", i, stmt.kind);
+
         }
         // Clear variable types for new function scope
         self.var_types.clear();

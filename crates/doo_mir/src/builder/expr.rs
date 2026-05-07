@@ -92,7 +92,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
     // DEBUG: Track what kind of expressions are being processed
     let is_add_func = builder.current_func.as_ref().map(|f| resolve(f.name).contains("add")).unwrap_or(false);
     if is_add_func {
-        doo_debug!("MIR", "build_expr: Processing {:?} in add function", expr.kind);
+
     }
 
     match &expr.kind {
@@ -256,6 +256,24 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         }
                         HirBinOp::And | HirBinOp::Or => {
                             Some(doo_core::types::builtin::BOOL)
+                        }
+                        HirBinOp::NullCoalesce => {
+                            // Nil coalescing: result type is the non-nil type, unwrapping Optional/Result
+                            let lt = lhs.type_id.filter(|&t| t != doo_core::types::builtin::ANY && t != doo_core::types::builtin::VOID);
+                            let rt = rhs.type_id.filter(|&t| t != doo_core::types::builtin::ANY && t != doo_core::types::builtin::VOID);
+                            lt.or(rt).or_else(|| {
+                                let inferred = builder.infer_operand_type(&l);
+                                if inferred != doo_core::types::builtin::ANY && inferred != doo_core::types::builtin::VOID {
+                                    Some(inferred)
+                                } else {
+                                    let rhs_inferred = builder.infer_operand_type(&r);
+                                    if rhs_inferred != doo_core::types::builtin::ANY {
+                                        Some(rhs_inferred)
+                                    } else {
+                                        None
+                                    }
+                                }
+                            }).map(|tid| builder.unwrap_optional_type(tid))
                         }
                         _ => {
                             // For Add/Sub/Mul/Div/Mod, use LHS type, or infer from operands
@@ -1524,7 +1542,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         let resolved_name = builder.resolve_function_name(name);
                         let found = builder.function_result_types.contains_key(&resolved_name);
                         if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                            doo_debug!("MIR", "Try: Call '{}' resolved to '{}', is_result={}", name, resolved_name, found);
+
                         }
                         found
                     } else {
@@ -1583,26 +1601,26 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         let mangled_name = format!("_method_{}_{}", type_name, method);
                         let found = builder.function_result_types.contains_key(&mangled_name);
                         if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                            doo_debug!("MIR", "Try: MethodCall '{}.{}' -> '{}', is_result={}", type_name, method, mangled_name, found);
+
                         }
                         found
                     } else {
                         if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                            doo_debug!("MIR", "Try: MethodCall method='{}' - no receiver type found", method);
+
                         }
                         false
                     }
                 }
                 _ => {
                     if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        doo_debug!("MIR", "Try: Unknown inner expr kind {:?}", std::mem::discriminant(&inner.kind));
+
                     }
                     false
                 },
             };
             
             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                doo_debug!("MIR", "Try: is_result_type={}", is_result_type);
+
             }
             
             // If not a Result type, just return the value directly
@@ -1617,8 +1635,17 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             let expected_type = value_type;
             
             // Track the unwrapped type for downstream code
+            // Use the Ok inner type, NOT the full Result type
             if let Some(type_id) = expected_type {
-                builder.set_temp_type(dest, type_id);
+                // If this is a Result, unwrap to get the Ok inner type
+                let inner_type = builder.type_registry.get(type_id)
+                    .and_then(|info| match &info.kind {
+                        TypeKind::Result { ok, .. } => Some(*ok),
+                        TypeKind::Optional { inner } => Some(*inner),
+                        _ => None,
+                    })
+                    .unwrap_or(type_id);
+                builder.set_temp_type(dest, inner_type);
             }
 
             // Check if Ok
