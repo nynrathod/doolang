@@ -332,6 +332,10 @@ impl<'a> MirBuilder<'a> {
             }
         }
 
+        // FIRST PASS: register all declarations (statics, structs, enums, etc.)
+        // so that function body building sees the complete type/static namespace.
+        // This fixes ordering issues where a function references a static
+        // declared in a file processed later in the HIR item list.
         for item in &hir.items {
             match item {
                 HirItem::Const(c) => {
@@ -358,16 +362,6 @@ impl<'a> MirBuilder<'a> {
                     });
                     // Track static name so build_expr emits MirOperand::Global
                     self.static_names.insert(s.name.clone());
-                }
-                HirItem::Function(f) => {
-                    // Skip generic functions — they're templates, not concrete code.
-                    // Monomorphization will create concrete instantiations later.
-                    if !f.type_params.is_empty() {
-                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
-                        continue;
-                    }
-                    let mir_func = self.build_function(f);
-                    program.functions.push(mir_func);
                 }
                 HirItem::Struct(s) => {
                     let mir_struct = StructDef {
@@ -478,9 +472,6 @@ impl<'a> MirBuilder<'a> {
                     };
                     program.interfaces.insert(sym(&i.name), mir_interface);
                 }
-                HirItem::Import(_) => {
-                    // Imports handled elsewhere
-                }
                 HirItem::Policy(p) => {
                     // Serialise policy rules to a JSON string for the FFI runtime.
                     // Format: {"create":"authenticated","read":"public",...}
@@ -492,6 +483,24 @@ impl<'a> MirBuilder<'a> {
                         .unwrap_or_else(|_| "{}".to_string());
                     program.policies.insert(sym(&p.for_struct), json);
                 }
+                HirItem::Function(_) | HirItem::Import(_) => {
+                    // Functions built in second pass; imports are handled elsewhere
+                }
+            }
+        }
+
+        // SECOND PASS: build all function bodies now that the global namespace
+        // (statics, structs, enums, interfaces) is fully populated.
+        for item in &hir.items {
+            if let HirItem::Function(f) = item {
+                // Skip generic functions — they're templates, not concrete code.
+                // Monomorphization will create concrete instantiations later.
+                if !f.type_params.is_empty() {
+                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
+                    continue;
+                }
+                let mir_func = self.build_function(f);
+                program.functions.push(mir_func);
             }
         }
 

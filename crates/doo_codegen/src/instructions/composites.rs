@@ -613,6 +613,42 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                     }
                                 }
                             }
+                            // Static globals store their TypeId at registration time but are
+                            // never written to variable_types or temp_struct_types.  Without
+                            // this fallback, FieldGet on a static (e.g. `DB.Connected`) cannot
+                            // resolve the struct layout, emits nothing, and the branch
+                            // condition stays unset — causing the "ensure terminators" pass to
+                            // insert `ret i32 0` immediately after the static assignment.
+                            let type_id_opt = ctx.static_globals.get(name.as_str()).copied()
+                                .or_else(|| {
+                                    let lowered = name.to_lowercase();
+                                    ctx.static_globals
+                                        .iter()
+                                        .find(|(k, _)| k.to_lowercase() == lowered)
+                                        .map(|(_, &v)| v)
+                                });
+                            if let Some(type_id) = type_id_opt {
+                                if let Some(kind) = ctx.get_type_kind(type_id) {
+                                    match kind {
+                                        TypeKind::Struct { name: sname, .. } => {
+                                            return Some(sname);
+                                        }
+                                        TypeKind::TypeRef { name: ref_name } => {
+                                            if let Some(resolved_tid) =
+                                                ctx.type_registry.lookup(&ref_name)
+                                            {
+                                                if let Some(TypeKind::Struct {
+                                                    name: sname, ..
+                                                }) = ctx.get_type_kind(resolved_tid)
+                                                {
+                                                    return Some(sname);
+                                                }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
                             None
                         });
 

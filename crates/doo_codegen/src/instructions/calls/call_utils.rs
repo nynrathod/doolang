@@ -17,14 +17,28 @@ pub(crate) fn operand_to_value<'ctx>(
         MirOperand::Const(c) => Some(const_to_value(ctx, c)),
         MirOperand::Local(name) | MirOperand::Temp(name) | MirOperand::Global(name) => {
             let name_str = resolve(*name);
+            // Resolve static globals case-insensitively so `db` can correctly map to `DB`.
+            // HIR/MIR may preserve lowercase aliases for statics, and dropping this mapping
+            // causes argument omission in calls (e.g. missing first Database arg).
+            let resolved_static_name = if ctx.static_globals.contains_key(&name_str) {
+                Some(name_str.clone())
+            } else {
+                let lowered = name_str.to_lowercase();
+                ctx.static_globals
+                    .keys()
+                    .find(|k| k.to_lowercase() == lowered)
+                    .cloned()
+            };
             // Check if this is a static global — directly read from OnceLock global
-            if let Some(_) = ctx.static_globals.get(&name_str) {
-                if let Some(once_lock) = ctx.module.get_global(&name_str) {
+            if let Some(static_name) = resolved_static_name {
+                if let Some(once_lock) = ctx.module.get_global(&static_name) {
                     let once_lock_ptr = once_lock.as_pointer_value();
                     let once_lock_type = ctx.context.struct_type(
                         &[
                             ctx.context.bool_type().into(),
-                            ctx.context.ptr_type(inkwell::AddressSpace::default()).into(),
+                            ctx.context
+                                .ptr_type(inkwell::AddressSpace::default())
+                                .into(),
                         ],
                         false,
                     );
@@ -35,11 +49,14 @@ pub(crate) fn operand_to_value<'ctx>(
                         "static_get_ptr",
                     );
                     if let Ok(ptr_field) = ptr_field {
-                        let loaded = ctx.builder.build_load(
-                            ctx.context.ptr_type(inkwell::AddressSpace::default()),
-                            ptr_field,
-                            "static_val",
-                        ).ok();
+                        let loaded = ctx
+                            .builder
+                            .build_load(
+                                ctx.context.ptr_type(inkwell::AddressSpace::default()),
+                                ptr_field,
+                                "static_val",
+                            )
+                            .ok();
                         if let Some(loaded_val) = loaded {
                             return Some(loaded_val);
                         }
@@ -130,18 +147,28 @@ pub(crate) fn coerce_arg_to_param_type<'ctx>(
             // Build interface fat pointer from concrete struct pointer.
             // { data_ptr, vtable_ptr } where vtable_ptr = null for now.
             let data_ptr = val.into_pointer_value();
-            let i8_ptr_type = ctx.context.i8_type().ptr_type(inkwell::AddressSpace::default());
-            let data_i8_ptr = ctx.builder
+            let i8_ptr_type = ctx
+                .context
+                .i8_type()
+                .ptr_type(inkwell::AddressSpace::default());
+            let data_i8_ptr = ctx
+                .builder
                 .build_pointer_cast(data_ptr, i8_ptr_type, "iface_data")
                 .ok()
                 .unwrap_or_else(|| i8_ptr_type.const_null());
             let vtable_ptr = i8_ptr_type.const_null();
 
             let mut fat_ptr = struct_type.get_undef();
-            if let Ok(s) = ctx.builder.build_insert_value(fat_ptr, data_i8_ptr, 0, "iface_data_field") {
+            if let Ok(s) =
+                ctx.builder
+                    .build_insert_value(fat_ptr, data_i8_ptr, 0, "iface_data_field")
+            {
                 fat_ptr = s.into_struct_value();
             }
-            if let Ok(s) = ctx.builder.build_insert_value(fat_ptr, vtable_ptr, 1, "iface_vtable_field") {
+            if let Ok(s) =
+                ctx.builder
+                    .build_insert_value(fat_ptr, vtable_ptr, 1, "iface_vtable_field")
+            {
                 fat_ptr = s.into_struct_value();
             }
             return fat_ptr.into();
