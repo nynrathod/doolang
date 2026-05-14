@@ -35,8 +35,11 @@ panic = "abort"   # Smaller panic handler
 [workspace.package]
 version = "0.4.1"
 edition = "2021"
+authors = ["Nayan Rathod "]
+repository = "https://github.com/nynrathod/doolang"
 
 [package]
+license = "MIT OR Apache-2.0"
 name = "doo"
 version.workspace = true
 edition.workspace = true

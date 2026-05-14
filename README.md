@@ -260,7 +260,7 @@ See [`doo-benchmark`](https://github.com/nynrathod/doo-benchmark) repository for
 
 ## 📜 License
 
-This project is licensed under the MIT License
+Dual-licensed: [MIT](LICENSE) or [Apache-2.0](LICENSE-APACHE).
 
 ---
 
