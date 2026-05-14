@@ -1,0 +1,74 @@
+import std::Database;
+
+@table("matrix_items")
+struct MatrixItem {
+    id: Int @primary @auto,
+    name: Str,
+    score: Int,
+    ratio: Float,
+    active: Bool,
+    tag: Str,
+}
+
+fn main() {
+    let mut db = Database::Postgres()?;
+    print("=== QB Matrix Tests ===");
+
+    db.insert(MatrixItem, { name: "alpha", score: 10, ratio: 1.5, active: true, tag: "a" }).exec()?;
+    db.insert(MatrixItem, { name: "beta", score: 20, ratio: 2.5, active: false, tag: "b" }).exec()?;
+    db.insert(MatrixItem, { name: "gamma", score: 30, ratio: 3.5, active: true, tag: "a" }).exec()?;
+
+    let eqBool: Str = db.find(MatrixItem).where({ active: true }).toSql()?;
+    print("PASS: bool equality SQL:", eqBool);
+
+    let eqFloat: Str = db.find(MatrixItem).where({ ratio: 1.5 }).toSql()?;
+    print("PASS: float equality SQL:", eqFloat);
+
+    let gtInt: Str = db.find(MatrixItem).where({ score: Gt(15) }).toSql()?;
+    print("PASS: int gt SQL:", gtInt);
+
+    let ltFloat: Str = db.find(MatrixItem).where({ ratio: Lt(3.0) }).toSql()?;
+    print("PASS: float lt SQL:", ltFloat);
+
+    let likeStr: Str = db.find(MatrixItem).where({ name: Like("%a%") }).toSql()?;
+    print("PASS: string like SQL:", likeStr);
+
+    let inIntList: Str = db.find(MatrixItem).where({ score: In([10, 30]) }).toSql()?;
+    print("PASS: int IN list SQL:", inIntList);
+
+    let notInStrList: Str = db.find(MatrixItem).where({ tag: NotIn(["x", "y"]) }).toSql()?;
+    print("PASS: string NOT IN list SQL:", notInStrList);
+
+    let betweenInt: Str = db.find(MatrixItem).where({ score: Between(10, 30) }).toSql()?;
+    print("PASS: between int SQL:", betweenInt);
+
+    let comboSql: Str = db.find(MatrixItem)
+        .where({ active: true, score: Gte(10) })
+        .orWhere({ ratio: Gt(3.0) })
+        .orderBy({ score: Desc, name: Asc })
+        .limit(2)
+        .offset(0)
+        .toSql()?;
+    print("PASS: mixed chain SQL:", comboSql);
+
+    let aggSql: Str = db.find(MatrixItem)
+        .aggregate({ total: Count("*"), max_score: Max("score"), avg_ratio: Avg("ratio") })
+        .groupBy(["tag"])
+        .having({ total: Gt(0) })
+        .toSql()?;
+    print("PASS: aggregate matrix SQL:", aggSql);
+
+    let updSql: Str = db.update(MatrixItem)
+        .set({ name: "delta" })
+        .increment("score", 1)
+        .decrement("score", 1)
+        .where({ id: Gt(0) })
+        .returning(["id", "name"])
+        .toSql()?;
+    print("PASS: update mixed SQL:", updSql);
+
+    let delSql: Str = db.delete(MatrixItem).where({ score: Lt(0) }).toSql()?;
+    print("PASS: delete SQL:", delSql);
+
+    print("=== ALL QB MATRIX TESTS COMPLETED ===");
+}

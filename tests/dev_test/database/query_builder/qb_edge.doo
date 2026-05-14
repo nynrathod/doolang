@@ -1,0 +1,169 @@
+import std::Database;
+
+// ============================================================================
+// QB Edge Case Tests — Boundary values, empty results, chain order, operator combos
+//
+// Ensures robustness under unusual but valid inputs.
+// REQUIRES: PostgreSQL running with DATABASE_URL set
+// ============================================================================
+
+struct EdgeItem {
+    id: Int @primary @auto,
+    name: Str,
+    score: Int,
+    active: Bool,
+    category: Str,
+}
+
+fn main() {
+    let mut db = Database::Postgres()?;
+    print("=== QB Edge Case Tests ===");
+
+    // Seed
+    db.insert(EdgeItem, { name: "alpha", score: 10, active: true, category: "a" }).exec()?;
+    db.insert(EdgeItem, { name: "beta", score: 20, active: false, category: "b" }).exec()?;
+    db.insert(EdgeItem, { name: "gamma", score: 30, active: true, category: "a" }).exec()?;
+    print("PASS: edge items seeded");
+
+    // ========================================================================
+    // TEST 1: Empty result sets — find/findOne/count should not crash
+    // ========================================================================
+    print("=== TEST 1: Empty result sets ===");
+
+    let noMatch: Str = db.find(EdgeItem).where({ category: "nonexistent" }).exec()?;
+    print("PASS: find empty result:", noMatch);
+
+    let countZero: Str = db.count(EdgeItem).where({ category: "nonexistent" }).exec()?;
+    print("PASS: count zero:", countZero);
+
+    // ========================================================================
+    // TEST 2: Limit boundary values
+    // ========================================================================
+    print("=== TEST 2: Limit boundaries ===");
+
+    let limitOne: Str = db.find(EdgeItem).limit(1).exec()?;
+    print("PASS: limit(1):", limitOne);
+
+    let limitHuge: Str = db.find(EdgeItem).limit(9999).exec()?;
+    print("PASS: limit(9999):", limitHuge);
+
+    // ========================================================================
+    // TEST 3: Offset at edge
+    // ========================================================================
+    print("=== TEST 3: Offset boundaries ===");
+
+    let offsetZero: Str = db.find(EdgeItem).offset(0).limit(2).exec()?;
+    print("PASS: offset(0) limit(2):", offsetZero);
+
+    let offsetBeyond: Str = db.find(EdgeItem).offset(100).limit(2).exec()?;
+    print("PASS: offset(100) beyond data:", offsetBeyond);
+
+    // ========================================================================
+    // TEST 4: Update/Delete with comparison operators
+    // ========================================================================
+    print("=== TEST 4: Update/Delete with operators ===");
+
+    let updWithOp: Str = db.update(EdgeItem)
+        .set({ category: "updated" })
+        .where({ score: Gte(20) })
+        .toSql()?;
+    print("PASS: update where Gte(20) SQL:", updWithOp);
+
+    let delWithOp: Str = db.delete(EdgeItem)
+        .where({ score: Lt(15) })
+        .toSql()?;
+    print("PASS: delete where Lt(15) SQL:", delWithOp);
+
+    // ========================================================================
+    // TEST 5: Chain order resilience — where after orderBy
+    // ========================================================================
+    print("=== TEST 5: Chain order variations ===");
+
+    let orderThenWhere: Str = db.find(EdgeItem)
+        .orderBy({ score: Desc })
+        .where({ active: true })
+        .toSql()?;
+    print("PASS: orderBy().where() SQL:", orderThenWhere);
+
+    let limitThenWhere: Str = db.find(EdgeItem)
+        .limit(5)
+        .where({ active: true })
+        .toSql()?;
+    print("PASS: limit().where() SQL:", limitThenWhere);
+
+    // ========================================================================
+    // TEST 6: Multiple orWhere chains
+    // ========================================================================
+    print("=== TEST 6: Multiple orWhere ===");
+
+    let tripleOr: Str = db.find(EdgeItem)
+        .where({ category: "a" })
+        .orWhere({ category: "b" })
+        .orWhere({ category: "c" })
+        .toSql()?;
+    print("PASS: triple orWhere SQL:", tripleOr);
+
+    let tripleOrResult: Str = db.find(EdgeItem)
+        .where({ category: "a" })
+        .orWhere({ category: "b" })
+        .orWhere({ category: "c" })
+        .exec()?;
+    print("PASS: triple orWhere result:", tripleOrResult);
+
+    // ========================================================================
+    // TEST 7: Aggregate without groupBy
+    // ========================================================================
+    print("=== TEST 7: Aggregate standalone ===");
+
+    let globalAgg: Str = db.find(EdgeItem)
+        .aggregate({ total: Count("*"), max_score: Max("score") })
+        .toSql()?;
+    print("PASS: aggregate without groupBy SQL:", globalAgg);
+
+    let globalAggResult: Str = db.find(EdgeItem)
+        .aggregate({ total: Count("*"), max_score: Max("score") })
+        .exec()?;
+    print("PASS: aggregate without groupBy result:", globalAggResult);
+
+    // ========================================================================
+    // TEST 8: Mixed set + increment in same update
+    // ========================================================================
+    print("=== TEST 8: Mixed set + increment ===");
+
+    let mixedSql: Str = db.update(EdgeItem)
+        .set({ name: "updated_gamma" })
+        .increment("score", 5)
+        .where({ id: 3 })
+        .toSql()?;
+    print("PASS: set + increment SQL:", mixedSql);
+
+    // ========================================================================
+    // TEST 9: Special characters in string values
+    // ========================================================================
+    print("=== TEST 9: Special characters ===");
+
+    let specialInsert: Str = db.insert(EdgeItem, {
+        name: "it's a \"test\" item",
+        score: 99,
+        active: true,
+        category: "special"
+    }).exec()?;
+    print("PASS: insert with special chars:", specialInsert);
+
+    let specialFind: Str = db.find(EdgeItem)
+        .where({ category: "special" })
+        .exec()?;
+    print("PASS: find special chars:", specialFind);
+
+    // ========================================================================
+    // TEST 10: Count with multiple where conditions
+    // ========================================================================
+    print("=== TEST 10: Count with compound where ===");
+
+    let compoundCount: Str = db.count(EdgeItem)
+        .where({ active: true, score: Gt(5) })
+        .exec()?;
+    print("PASS: count with compound where:", compoundCount);
+
+    print("=== ALL QB EDGE CASE TESTS COMPLETED ===");
+}

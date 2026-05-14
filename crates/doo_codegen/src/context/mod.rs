@@ -228,6 +228,20 @@ pub struct CodegenContext<'ctx> {
     /// Whether the program uses async features (set during build).
     /// When true, codegen emits `doo_runtime_init()` at the start of main().
     pub has_async: bool,
+
+    // ========================================================================
+    // RBAC Policy Registry (for policy metadata emission)
+    // ========================================================================
+    /// RBAC policies: struct_name -> policy_json.
+    /// Populated from MIR policy definitions.
+    /// Emitted as `doo_http_register_policy(struct_name, policy_json)` calls
+    /// when an auth/crud endpoint is registered for the struct.
+    pub rbac_policies: FxHashMap<String, String>,
+
+    /// Enum inheritance: enum_name -> Vec<(variant_name, Vec<inherited_variant>)>.
+    /// Populated from enum variants with `@inherits(...)` decorators.
+    /// Emitted as `doo_http_register_role_hierarchy(enum_name, hierarchy_json)`.
+    pub enum_inheritance: FxHashMap<String, Vec<(String, Vec<String>)>>,
 }
 
 impl<'ctx> CodegenContext<'ctx> {
@@ -293,6 +307,8 @@ impl<'ctx> CodegenContext<'ctx> {
             array_element_types: FxHashMap::default(),
             array_element_temps: FxHashMap::default(),
             has_async: false,
+            rbac_policies: FxHashMap::default(),
+            enum_inheritance: FxHashMap::default(),
         }
     }
 

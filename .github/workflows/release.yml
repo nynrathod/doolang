@@ -1,16 +1,16 @@
-name: Build & Publish Doo Runtime Image
+name: Build & Publish GHCR Image (Manual)
 
+# This workflow is for manually rebuilding a specific GHCR image tag.
+# Automatic builds are handled by dev-release.yml and stable-release.yml.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Docker image tag (e.g. v0.4.0, dev, test)'
+        description: 'Docker image tag to push (dev, latest, or a version tag)'
         required: true
         default: 'dev'
       doo_version:
-        description: 'Doo release tag to use (e.g. v0.4.0). Leave empty for latest.'
+        description: 'Doo release tag to install inside the image. Leave empty to use the tag above.'
         required: false
         default: ''
 
@@ -29,16 +29,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set version tag
+      - name: Resolve version
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
-            echo "doo_version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
-          else
-            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
-            echo "doo_version=${{ github.event.inputs.doo_version }}" >> $GITHUB_OUTPUT
-          fi
+          TAG="${{ github.event.inputs.tag }}"
+          DOO_VER="${{ github.event.inputs.doo_version }}"
+          if [ -z "$DOO_VER" ]; then DOO_VER="$TAG"; fi
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "doo_version=${DOO_VER}" >> $GITHUB_OUTPUT
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -56,4 +54,3 @@ jobs:
             DOO_VERSION=${{ steps.version.outputs.doo_version }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest

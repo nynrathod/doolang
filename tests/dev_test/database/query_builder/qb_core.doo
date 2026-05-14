@@ -1,0 +1,255 @@
+import std::Database;
+
+// ============================================================================
+// QB Core Tests — SELECT, COUNT, INSERT, UPDATE, DELETE
+//
+// Simulates a YC-level SaaS task management system (like Linear/Jira).
+// Tests compile-time query builder SQL generation and runtime execution.
+//
+// REQUIRES: PostgreSQL running with DATABASE_URL set.
+// Tables (tasks, projects) must be created by the test runner (see test_query_builder.sh).
+// ============================================================================
+
+struct Task {
+    id: Int @primary @auto,
+    title: Str,
+    status: Str,
+    priority: Int,
+    user_id: Int,
+    description: Str,
+}
+
+struct Project {
+    id: Int @primary @auto,
+    name: Str,
+    status: Str,
+    owner_id: Int,
+}
+
+fn main() {
+    let mut db = Database::Postgres()?;
+    print("=== QB Core Tests ===");
+
+    // ========================================================================
+    // TEST 1: toSql — Compile-time SQL generation (no DB call)
+    // ========================================================================
+    print("=== TEST 1: toSql (compile-time) ===");
+
+    let sql1: Str = db.find(Task).toSql()?;
+    print("PASS: find() toSql:", sql1);
+
+    let sql2: Str = db.find(Task).where({ status: "active" }).toSql()?;
+    print("PASS: find().where() toSql:", sql2);
+
+    let sql3: Str = db.find(Task)
+        .where({ status: "active", priority: Gt(3) })
+        .orderBy({ priority: Desc })
+        .limit(10)
+        .toSql()?;
+    print("PASS: find() full chain toSql:", sql3);
+
+    let sql4: Str = db.findOne(Task).where({ id: 1 }).toSql()?;
+    print("PASS: findOne() toSql:", sql4);
+
+    let sql5: Str = db.count(Task).where({ status: "active" }).toSql()?;
+    print("PASS: count() toSql:", sql5);
+
+    let sql6: Str = db.update(Task)
+        .set({ status: "done" })
+        .where({ id: 1 })
+        .toSql()?;
+    print("PASS: update() toSql:", sql6);
+
+    let sql7: Str = db.delete(Task).where({ status: "archived" }).toSql()?;
+    print("PASS: delete() toSql:", sql7);
+
+    // ========================================================================
+    // TEST 2: INSERT — Single row
+    // ========================================================================
+    print("=== TEST 2: INSERT ===");
+
+    let ins1: Str = db.insert(Task, { title: "Fix login bug", status: "active", priority: 5, user_id: 1, description: "Auth service is down under load" }).exec()?;
+    print("PASS: insert task 1 (critical bug):", ins1);
+
+    let ins2: Str = db.insert(Task, { title: "Add dark mode", status: "todo", priority: 2, user_id: 2, description: "UI enhancement requested by customers" }).exec()?;
+    print("PASS: insert task 2 (feature):", ins2);
+
+    let ins3: Str = db.insert(Task, { title: "Scale database", status: "active", priority: 4, user_id: 1, description: "Add read replicas, configure PgBouncer" }).exec()?;
+    print("PASS: insert task 3 (infrastructure):", ins3);
+
+    let ins4: Str = db.insert(Task, { title: "Onboarding flow", status: "todo", priority: 3, user_id: 3, description: "Improve first-time user experience" }).exec()?;
+    print("PASS: insert task 4 (product):", ins4);
+
+    let ins5: Str = db.insert(Task, { title: "Billing integration", status: "archived", priority: 1, user_id: 2, description: "Stripe webhook processing" }).exec()?;
+    print("PASS: insert task 5 (archived):", ins5);
+
+    // ========================================================================
+    // TEST 3: find() — Basic SELECT *
+    // ========================================================================
+    print("=== TEST 3: find() SELECT ===");
+
+    let allTasks: Str = db.find(Task).exec()?;
+    print("PASS: find() all tasks:", allTasks);
+
+    let activeTasks: Str = db.find(Task).where({ status: "active" }).exec()?;
+    print("PASS: find() where status=active:", activeTasks);
+
+    let todoTasks: Str = db.find(Task).where({ status: "todo" }).exec()?;
+    print("PASS: find() where status=todo:", todoTasks);
+
+    // ========================================================================
+    // TEST 4: Comparison Operators
+    // ========================================================================
+    print("=== TEST 4: Comparison Operators ===");
+
+    let highPriority: Str = db.find(Task).where({ priority: Gt(3) }).exec()?;
+    print("PASS: where priority Gt(3):", highPriority);
+
+    let mediumPlus: Str = db.find(Task).where({ priority: Gte(3) }).exec()?;
+    print("PASS: where priority Gte(3):", mediumPlus);
+
+    let lowPriority: Str = db.find(Task).where({ priority: Lt(3) }).exec()?;
+    print("PASS: where priority Lt(3):", lowPriority);
+
+    let mediumMinus: Str = db.find(Task).where({ priority: Lte(3) }).exec()?;
+    print("PASS: where priority Lte(3):", mediumMinus);
+
+    let notMaxPriority: Str = db.find(Task).where({ priority: Ne(5) }).exec()?;
+    print("PASS: where priority Ne(5):", notMaxPriority);
+
+    let bugSearch: Str = db.find(Task).where({ title: Like("%bug%") }).exec()?;
+    print("PASS: where title Like(%bug%):", bugSearch);
+
+    let dbSearch: Str = db.find(Task).where({ title: ILike("%DATABASE%") }).exec()?;
+    print("PASS: where title ILike(%DATABASE%):", dbSearch);
+
+    let midPriority: Str = db.find(Task).where({ priority: Between(2, 4) }).exec()?;
+    print("PASS: where priority Between(2,4):", midPriority);
+
+    let user1Tasks: Str = db.find(Task).where({ user_id: In([1, 3]) }).exec()?;
+    print("PASS: where user_id In([1,3]):", user1Tasks);
+
+    let notUser2: Str = db.find(Task).where({ user_id: NotIn([2]) }).exec()?;
+    print("PASS: where user_id NotIn([2]):", notUser2);
+
+    // ========================================================================
+    // TEST 5: findOne() — SELECT ... LIMIT 1
+    // ========================================================================
+    print("=== TEST 5: findOne() ===");
+
+    let firstActive: Str = db.findOne(Task).where({ status: "active" }).exec()?;
+    print("PASS: findOne active task:", firstActive);
+
+    let firstHighPriority: Str = db.findOne(Task)
+        .where({ priority: Gt(3) })
+        .orderBy({ priority: Desc })
+        .exec()?;
+    print("PASS: findOne highest priority:", firstHighPriority);
+
+    // ========================================================================
+    // TEST 6: count()
+    // ========================================================================
+    print("=== TEST 6: count() ===");
+
+    let totalCount: Str = db.count(Task).exec()?;
+    print("PASS: count() all tasks:", totalCount);
+
+    let activeCount: Str = db.count(Task).where({ status: "active" }).exec()?;
+    print("PASS: count() active tasks:", activeCount);
+
+    let highPriorityCount: Str = db.count(Task).where({ priority: Gt(2) }).exec()?;
+    print("PASS: count() priority > 2:", highPriorityCount);
+
+    // ========================================================================
+    // TEST 7: orderBy() + limit() + offset() (pagination)
+    // ========================================================================
+    print("=== TEST 7: orderBy + limit + offset (pagination) ===");
+
+    let byPriorityDesc: Str = db.find(Task).orderBy({ priority: Desc }).exec()?;
+    print("PASS: orderBy priority DESC:", byPriorityDesc);
+
+    let byPriorityAsc: Str = db.find(Task).orderBy({ priority: Asc }).exec()?;
+    print("PASS: orderBy priority ASC:", byPriorityAsc);
+
+    let topThree: Str = db.find(Task)
+        .orderBy({ priority: Desc })
+        .limit(3)
+        .exec()?;
+    print("PASS: top 3 by priority:", topThree);
+
+    let page2: Str = db.find(Task)
+        .orderBy({ id: Asc })
+        .limit(2)
+        .offset(2)
+        .exec()?;
+    print("PASS: page 2 (limit 2 offset 2):", page2);
+
+    // ========================================================================
+    // TEST 8: UPDATE
+    // ========================================================================
+    print("=== TEST 8: update() ===");
+
+    let updatedDarkMode: Str = db.update(Task)
+        .set({ status: "active", priority: 3 })
+        .where({ title: Like("%dark mode%") })
+        .exec()?;
+    print("PASS: update dark mode to active:", updatedDarkMode);
+
+    let updatedUser1: Str = db.update(Task)
+        .set({ priority: 5 })
+        .where({ user_id: 1, status: "active" })
+        .exec()?;
+    print("PASS: update user 1 active tasks priority:", updatedUser1);
+
+    let updateSql: Str = db.update(Task)
+        .set({ status: "done" })
+        .where({ priority: Lte(1) })
+        .toSql()?;
+    print("PASS: update toSql:", updateSql);
+
+    // ========================================================================
+    // TEST 9: DELETE
+    // ========================================================================
+    print("=== TEST 9: delete() ===");
+
+    let deleteArchivedSql: Str = db.delete(Task).where({ status: "archived" }).toSql()?;
+    print("PASS: delete toSql:", deleteArchivedSql);
+
+    let deletedArchived: Str = db.delete(Task)
+        .where({ status: "archived" })
+        .exec()?;
+    print("PASS: delete archived tasks:", deletedArchived);
+
+    let deleteLowPriority: Str = db.delete(Task)
+        .where({ priority: Lte(1) })
+        .exec()?;
+    print("PASS: delete low priority tasks:", deleteLowPriority);
+
+    // ========================================================================
+    // TEST 10: Project model — table name derivation from struct name
+    // ========================================================================
+    print("=== TEST 10: Project model (table name pluralization) ===");
+
+    let proj1: Str = db.insert(Project, { name: "Doo Language Compiler", status: "active", owner_id: 1 }).exec()?;
+    print("PASS: insert project 1:", proj1);
+
+    let proj2: Str = db.insert(Project, { name: "DooCloud Platform", status: "active", owner_id: 1 }).exec()?;
+    print("PASS: insert project 2:", proj2);
+
+    let proj3: Str = db.insert(Project, { name: "Legacy Migration", status: "archived", owner_id: 2 }).exec()?;
+    print("PASS: insert project 3:", proj3);
+
+    let projSql: Str = db.find(Project).where({ status: "active" }).toSql()?;
+    print("PASS: project SELECT SQL:", projSql);
+
+    let activeProjects: Str = db.find(Project).where({ status: "active" }).exec()?;
+    print("PASS: find active projects:", activeProjects);
+
+    let projectCount: Str = db.count(Project).exec()?;
+    print("PASS: count projects:", projectCount);
+
+    let deletedProjects: Str = db.delete(Project).where({ status: "archived" }).exec()?;
+    print("PASS: delete archived projects:", deletedProjects);
+
+    print("=== ALL QB CORE TESTS COMPLETED ===");
+}

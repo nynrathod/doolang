@@ -199,7 +199,7 @@ impl<'a> ExhaustivenessChecker<'a> {
     fn check_item(&mut self, item: &HirItem) {
         match item {
             HirItem::Function(func) => self.check_function(func),
-            HirItem::Struct(_) | HirItem::Enum(_) | HirItem::Import(_) => {}
+            HirItem::Struct(_) | HirItem::Enum(_) | HirItem::Import(_) | HirItem::Policy(_) => {}
         }
     }
 

@@ -1,0 +1,20 @@
+import std::Database;
+
+// --- E0708: Type/operator semantic mismatch ---
+// Between requires a numeric field; category is Str — must fail at compile time.
+struct E0708Item {
+    id: Int @primary @auto,
+    category: Str,
+    view_count: Int,
+}
+
+fn main() {
+    let db = Database::Postgres()?;
+
+    // MUST fail: Between requires a numeric field, category is Str
+    let _bad: Str = db.find(E0708Item)
+        .where({ category: Between(1, 5) })
+        .toSql()?;
+
+    print(_bad);
+}

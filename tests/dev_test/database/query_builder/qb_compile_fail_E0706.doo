@@ -1,0 +1,19 @@
+import std::Database;
+
+// --- E0706: Unknown field referenced in QB chain ---
+struct E0706Task {
+    id: Int @primary @auto,
+    title: Str,
+    status: Str,
+}
+
+fn main() {
+    let db = Database::Postgres()?;
+
+    // MUST fail: 'does_not_exist' is not a field on E0706Task
+    let _bad: Str = db.find(E0706Task)
+        .where({ does_not_exist: "x" })
+        .toSql()?;
+
+    print(_bad);
+}

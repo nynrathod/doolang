@@ -5,11 +5,13 @@
 pub mod capture;
 pub mod expr;
 pub mod pattern;
+pub mod query_builder;
 pub mod stmt;
 
 use doo_analysis::{Decision, OwnershipResults};
 use doo_core::constants::ffi_names::derive_ffi_symbol;
 use doo_core::doo_debug;
+use doo_core::errors::codes::CompilerError;
 use doo_core::types::{builtin, TypeId as CoreTypeId, TypeKind, TypeRegistry};
 use doo_core::Span as CoreSpan;
 use doo_hir::{
@@ -21,6 +23,31 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::sym::{sym, Sym};
 use crate::types::*;
+
+// ============================================================================
+// Struct Metadata — for Query Builder Field Validation
+// ============================================================================
+
+/// Lightweight metadata about a struct field, used by the query builder.
+#[derive(Debug, Clone)]
+pub struct FieldMeta {
+    /// Field name as written in the struct definition.
+    pub name: String,
+    /// True if the field has an `@auto` decorator (skip in INSERT).
+    pub is_auto: bool,
+    /// True if the field has a `@primary` decorator.
+    pub is_primary: bool,
+}
+
+/// Metadata about a struct collected during the MIR first pass.
+#[derive(Debug, Clone)]
+pub struct StructMeta {
+    /// All fields of the struct.
+    pub fields: Vec<FieldMeta>,
+    /// Optional table name override from `@table("name")` decorator.
+    pub table_name: Option<String>,
+}
+
 
 /// FFI function information extracted from @extern decorator.
 ///
@@ -103,6 +130,15 @@ pub struct MirBuilder<'a> {
     /// Used to recognize module names (e.g., "Http", "Database") without
     /// hardcoding them in the compiler. Core modules are always recognized.
     pub(crate) imported_modules: FxHashSet<String>,
+
+    /// Struct metadata for query builder field validation.
+    /// Populated during the first pass of `build()`.
+    /// Key: struct name (e.g., "Task"), Value: field/table metadata.
+    pub struct_metas: FxHashMap<String, StructMeta>,
+
+    /// Query builder errors collected during MIR lowering.
+    /// Surfaced to the driver after `build()` completes.
+    pub query_errors: Vec<CompilerError>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +171,8 @@ impl<'a> MirBuilder<'a> {
             function_aliases: FxHashMap::default(),
             scope_stack: Vec::new(),
             imported_modules: FxHashSet::default(),
+            struct_metas: FxHashMap::default(),
+            query_errors: Vec::new(),
         }
     }
 
@@ -164,6 +202,8 @@ impl<'a> MirBuilder<'a> {
             function_aliases: FxHashMap::default(),
             scope_stack: Vec::new(),
             imported_modules: FxHashSet::default(),
+            struct_metas: FxHashMap::default(),
+            query_errors: Vec::new(),
         }
     }
 
@@ -198,7 +238,33 @@ impl<'a> MirBuilder<'a> {
             }
         }
 
-        // First pass: collect all function return types, parameter types, and FFI info
+        // First pass: collect all function return types, parameter types, FFI info,
+        // and struct metadata for the query builder.
+        for item in &hir.items {
+            // Collect struct metadata for query builder field validation
+            if let HirItem::Struct(s) = item {
+                let table_name = s.decorators.iter().find_map(|d| {
+                    if d.name == "table" {
+                        d.args.first().and_then(|a| {
+                            if let HirExprKind::Const(ConstValue::Str(t)) = &a.kind {
+                                Some(t.clone())
+                            } else {
+                                None
+                            }
+                        })
+                    } else {
+                        None
+                    }
+                });
+                let fields = s.fields.iter().map(|f| FieldMeta {
+                    name: f.name.clone(),
+                    is_auto: f.decorators.iter().any(|d| d.name == "auto"),
+                    is_primary: f.decorators.iter().any(|d| d.name == "primary"),
+                }).collect();
+                self.struct_metas.insert(s.name.clone(), StructMeta { fields, table_name });
+            }
+        }
+
         for item in &hir.items {
             if let HirItem::Function(f) = item {
                 // For functions with error types, track them separately
@@ -350,6 +416,27 @@ impl<'a> MirBuilder<'a> {
                                 name: sym(&v.name),
                                 index: i as u32,
                                 payload_type: v.payload,
+                                decorators: v
+                                    .decorators
+                                    .iter()
+                                    .map(|d| crate::types::Decorator {
+                                        name: sym(&d.name),
+                                        args: d
+                                            .args
+                                            .iter()
+                                            .filter_map(|a| match &a.kind {
+                                                HirExprKind::Const(cv) => match cv {
+                                                    ConstValue::Int(i) => Some(i.to_string()),
+                                                    ConstValue::Str(s) => Some(s.clone()),
+                                                    _ => None,
+                                                },
+                                                HirExprKind::Local { name } => Some(name.clone()),
+                                                HirExprKind::Global { name } => Some(name.clone()),
+                                                _ => None,
+                                            })
+                                            .collect(),
+                                    })
+                                    .collect(),
                             })
                             .collect(),
                     };
@@ -357,6 +444,17 @@ impl<'a> MirBuilder<'a> {
                 }
                 HirItem::Import(_) => {
                     // Imports handled elsewhere
+                }
+                HirItem::Policy(p) => {
+                    // Serialise policy rules to a JSON string for the FFI runtime.
+                    // Format: {"create":"authenticated","read":"public",...}
+                    let mut map = serde_json::Map::new();
+                    for (action, rule) in &p.rules {
+                        map.insert(action.clone(), serde_json::Value::String(rule.clone()));
+                    }
+                    let json = serde_json::to_string(&serde_json::Value::Object(map))
+                        .unwrap_or_else(|_| "{}".to_string());
+                    program.policies.insert(sym(&p.for_struct), json);
                 }
             }
         }

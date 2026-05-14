@@ -388,24 +388,43 @@ impl DbDriver for PostgresDriver {
 /// Reads `DATABASE_URL` from environment. Errors if not set or connection fails.
 /// On success, registers `PostgresDriver` as the active database driver so
 /// all subsequent `doo_db_*` calls route through PostgreSQL.
+/// Idempotent: returns Ok if already connected.
 pub fn connect_from_env() -> Result<(), String> {
+    // If pool is already initialized, return Ok — idempotent connect.
+    if pool::is_pool_initialized() {
+        ffi_debug!("DB", "Pool already initialized, skipping reconnect");
+        return Ok(());
+    }
+
     let conn_str = match std::env::var(doo_ffi_core::constants::ENV_DATABASE_URL) {
         Ok(s) => {
             ffi_debug!("DB", "DATABASE_URL found");
             s
         }
         Err(_) => {
-            return Err("DATABASE_URL environment variable is not set. Cannot start without a database.".to_string());
+            return Err(
+                "DATABASE_URL environment variable is not set. Cannot start without a database."
+                    .to_string(),
+            );
         }
     };
 
-    // Get runtime from parent crate
-    let rt = crate::get_runtime();
-    match rt.block_on(pool::init_pool(&conn_str)) {
+    // Use block_in_place when inside a Tokio runtime (e.g., HTTP handler context),
+    // otherwise use the dedicated DB runtime directly.
+    let result = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(pool::init_pool(&conn_str)))
+    } else {
+        let rt = crate::get_runtime();
+        rt.block_on(pool::init_pool(&conn_str))
+    };
+
+    match result {
         Ok(_) => {
             ffi_debug!("DB", "Pool initialized successfully");
-            // Register the driver for all subsequent DB operations
-            crate::driver::register_driver(Box::new(PostgresDriver)).map_err(|e| e.to_string())?;
+            // Register the driver — ignore AlreadyRegistered (idempotent)
+            match crate::driver::register_driver(Box::new(PostgresDriver)) {
+                Ok(_) | Err(_) => {}
+            }
             Ok(())
         }
         Err(e) => {

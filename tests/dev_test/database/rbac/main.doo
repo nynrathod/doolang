@@ -1,0 +1,107 @@
+import std::Http::Server;
+import std::Database;
+import std::Auth::Jwt;
+
+enum Role {
+    Admin @inherits(Editor),
+    Editor,
+    User,
+}
+
+struct User {
+    id: Int @primary @auto,
+    Email: Str @unique,
+    Password: Str @hash,
+    Name: Str,
+    Role: Role @role,
+}
+
+struct Post {
+    id: Int @primary @auto,
+    title: Str,
+    body: Str,
+    user_id: Int @owner,
+}
+
+policy PostPolicy for Post {
+    read:   public,
+    create: authenticated,
+    update: own | Admin,
+    delete: own | Admin,
+}
+
+// PrivateNote: read requires authentication (not public)
+struct PrivateNote {
+    Id: Int @primary @auto,
+    Content: Str,
+    UserId: Int @owner,
+}
+
+policy PrivateNotePolicy for PrivateNote {
+    read:   authenticated,
+    create: authenticated,
+    update: own,
+    delete: own,
+}
+
+// Announcement: only Admin role can create/update/delete
+struct Announcement {
+    Id: Int @primary @auto,
+    Title: Str,
+    Content: Str,
+    UserId: Int @owner,
+}
+
+policy AnnouncementPolicy for Announcement {
+    read:   public,
+    create: Admin,
+    update: Admin,
+    delete: Admin,
+}
+
+// Article: Editor or Admin role can create/update/delete (no own restriction)
+struct Article {
+    Id: Int @primary @auto,
+    Title: Str,
+    Body: Str,
+    UserId: Int @owner,
+}
+
+policy ArticlePolicy for Article {
+    read:   public,
+    create: Editor | Admin,
+    update: Editor | Admin,
+    delete: Editor | Admin,
+}
+
+struct PostResponse {
+    id: Int,
+    title: Str,
+    body: Str,
+}
+
+struct MessageResponse {
+    message: Str,
+}
+
+fn GetPublicInfo() -> MessageResponse {
+    return MessageResponse {
+        message: "RBAC test running",
+    };
+}
+
+fn main() {
+    let db = Database::Postgres()?;
+
+    let app = Server::new(":3200").logger();
+
+    app.auth("/auth/signup", "/auth/login", User, db);
+    app.crud("/posts", Post, db);
+    app.crud("/notes", PrivateNote, db);
+    app.crud("/announcements", Announcement, db);
+    app.crud("/articles", Article, db);
+
+    app.get("/public", GetPublicInfo);
+
+    app.start();
+}

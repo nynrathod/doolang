@@ -6,7 +6,7 @@
 
 > ⚠️ **Alpha Software**: Doo is in active development. Expect bugs and breaking changes. Not recommended for critical production use yet.
 
-Doo is a statically-typed, compiled programming language built in Rust + LLVM, designed for building production APIs quickly and safely. It uses automatic memory management via reference counting.
+Doo is a statically-typed, compiled programming language built in Rust + LLVM, designed for building production APIs quickly and safely. Doolang eliminates manual memory management with an auto ownership model — the compiler infers whether to move, copy, or clone values based on usage context. No lifetime annotations. No borrow checker fights.
 
 **Stop wrestling with boilerplate. Write type-safe APIs and deploy with one command.**
 
@@ -194,7 +194,8 @@ struct User {
 }
 
 // Automatically create table on startup
-struct AuditLog @table {
+@table
+struct AuditLog {
     id: Int @primary @auto,
     action: Str
 }
@@ -228,11 +229,20 @@ app.get("/users/:id", GetUser);
 
 ## 📦 Examples
 
+**Browse comprehensive examples:** See [`tests/dev_test/`](tests/dev_test/) folder for real-world patterns including:
+- HTTP routing and middleware
+- Database operations (PostgreSQL)
+- Authentication and JWT
+- Error handling
+- Custom queries and CRUD
+- WebSocket connections
+- File operations
+- And much more!
+
+**Quick references:**
 - **[tasks_api](examples/tasks_api/)** - Complete CRUD + Auth + Custom queries
 - **[calculator](examples/calculator/)** - Error handling patterns
 - **[clean_code](examples/clean_code/)** - Service layers & validation
-
-**More examples:** [examples/](examples/)
 
 ---
 
@@ -243,33 +253,23 @@ app.get("/users/:id", GetUser);
 - **Contributing**: We welcome PRs! See [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ---
+## 📊 Performance Benchmarks
 
-## What's Next
-
-We're focused on adoption first. Next features will be driven by real developer needs:
-
-- More cloud providers + zero-config hosting
-- Multi-database support (MySQL, SQLite etc)
-- WebSocket, concurrency, async and many more
-
-**Want to influence the roadmap?** [Open a discussion →](https://github.com/nynrathod/doolang/discussions)
-
+See [`doo-benchmark`](https://github.com/nynrathod/doo-benchmark) repository for detailed performance comparisons with other languages.
 ---
 
 ## 📜 License
 
-This project is licensed under the MIT License
+Dual-licensed: [MIT](LICENSE) or [Apache-2.0](LICENSE-APACHE).
 
 ---
 
 ## 🙏 Acknowledgments
 
-- **LLVM Project**: For the powerful backend infrastructure
-- **Rust Community**: For inspiration and excellent tooling
+- **Rust + LLVM**: Zero compromises on speed/safety.
 
 ---
 
 **Ready to ship faster?** `doo init starter` ← Start here
 
 > **Want to contribute?** See [CONTRIBUTING.md](CONTRIBUTING.md)  
-> **For testing and development:** See [TEST.md](TEST.md)

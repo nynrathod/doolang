@@ -1,0 +1,146 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Dev Release Pipeline
+#
+# Triggered: every push to any branch that is NOT main.
+# (Primary use: your active dev branch, e.g. 0.4.1)
+#
+# What happens automatically (you just push):
+#   1. Build Linux binary in WSL-compatible Ubuntu container
+#   2. Zip the bundle (doo binary + lib/ + std/ + packages/)
+#   3. Create or update the GitHub pre-release tagged "dev"
+#   4. Upload the zip as a release asset (replaces previous dev zip)
+#   5. Build GHCR Docker image tagged :dev (replaces previous dev image)
+#
+# When you promote to stable (push to main), the dev release + :dev GHCR image
+# are automatically deleted by the stable-release.yml workflow.
+# ──────────────────────────────────────────────────────────────────────────────
+
+name: Dev Release
+
+on:
+  push:
+    branches-ignore:
+      - main
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/doo-runtime
+
+jobs:
+  build-and-release-dev:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── 1. Read version from Cargo.toml ─────────────────────────────────────
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/' | tr -d '\r')
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "bundle_name=doo-linux-${VERSION}" >> $GITHUB_OUTPUT
+          echo "zip_name=doo-linux-${VERSION}.zip" >> $GITHUB_OUTPUT
+          echo "Version: ${VERSION}"
+
+      # ── 2. Install Rust ──────────────────────────────────────────────────────
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-gnu
+
+      # ── 3. Cache Cargo ───────────────────────────────────────────────────────
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # ── 4. Install LLVM 18 + system deps ──────────────────────────────────
+      - name: Install LLVM 18 and system deps
+        run: |
+          # Install LLVM 18 from the official apt repo
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-18 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm18.list
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            llvm-18-dev libpolly-18-dev libclang-18-dev clang-18 lld-18 \
+            libssl-dev libpq-dev zlib1g-dev pkg-config
+          echo "LLVM_SYS_181_PREFIX=/usr/lib/llvm-18" >> $GITHUB_ENV
+
+      # ── 5. Build release binary ──────────────────────────────────────────────
+      - name: Build release binary
+        run: cargo build --release --workspace
+
+      # ── 6. Assemble bundle directory ─────────────────────────────────────────
+      - name: Assemble bundle
+        id: bundle
+        run: |
+          BUNDLE="doo-linux-${{ steps.version.outputs.version }}"
+          mkdir -p "${BUNDLE}/lib" "${BUNDLE}/std" "${BUNDLE}/packages"
+          # Binary
+          cp target/release/doo "${BUNDLE}/doo"
+          chmod +x "${BUNDLE}/doo"
+          # Static libs
+          find target/release -maxdepth 1 -name '*.a' -exec cp {} "${BUNDLE}/lib/" \; 2>/dev/null || true
+          # Stdlib
+          if [ -d std ]; then cp -r std/. "${BUNDLE}/std/"; fi
+          # Packages
+          if [ -d packages ]; then cp -r packages/. "${BUNDLE}/packages/"; fi
+          # Zip
+          zip -r "doo-linux-${{ steps.version.outputs.version }}.zip" "${BUNDLE}"
+          echo "bundle_dir=${BUNDLE}" >> $GITHUB_OUTPUT
+          echo "Bundle contents:"
+          ls -lh "${BUNDLE}/"
+
+      # ── 7. Delete old dev release (if exists) then recreate ──────────────────
+      - name: Recreate dev pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Delete old dev release + tag if they exist (ignore errors)
+          gh release delete dev --yes --cleanup-tag 2>/dev/null || true
+          sleep 2
+          REPO="${{ github.repository }}"
+          BRANCH="${{ github.ref_name }}"
+          SHA="${{ github.sha }}"
+          printf 'Pre-release build from branch `%s` (commit `%s`)\n\nFor the stable release see: https://github.com/%s/releases/latest\n\nInstall (Linux):\n```bash\ncurl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | bash\n```\n' \
+            "$BRANCH" "$SHA" "$REPO" "$REPO" > /tmp/dev_notes.md
+          # Create fresh dev pre-release
+          gh release create dev \
+            --prerelease \
+            --title "dev — ${BRANCH} @ $(date -u +'%Y-%m-%d %H:%M UTC')" \
+            --notes-file /tmp/dev_notes.md \
+            --target ${{ github.sha }} \
+            "${{ steps.version.outputs.zip_name }}"
+
+      # ── 8. Log in to GHCR ────────────────────────────────────────────────────
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 9. Build and push GHCR :dev image ────────────────────────────────────
+      - name: Build and push :dev image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: |
+            DOO_LOCAL_BUNDLE=${{ steps.version.outputs.zip_name }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev

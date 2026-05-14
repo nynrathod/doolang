@@ -96,6 +96,10 @@ pub enum TokenKind {
     /// `false`
     False,
 
+    // === RBAC ===
+    /// `policy`
+    Policy,
+
     // === Async & Concurrency ===
     /// `async`
     Async,
@@ -254,6 +258,7 @@ impl TokenKind {
             Self::Match => Some("match"),
             Self::True => Some("true"),
             Self::False => Some("false"),
+            Self::Policy => Some("policy"),
             Self::Async => Some("async"),
             Self::Await => Some("await"),
             Self::Go => Some("go"),
@@ -271,7 +276,13 @@ impl TokenKind {
     pub fn is_literal(&self) -> bool {
         matches!(
             self,
-            Self::Integer | Self::Float | Self::String | Self::StringTemplate | Self::True | Self::False | Self::Nil
+            Self::Integer
+                | Self::Float
+                | Self::String
+                | Self::StringTemplate
+                | Self::True
+                | Self::False
+                | Self::Nil
         )
     }
 
@@ -312,7 +323,12 @@ impl TokenKind {
     pub fn is_delimiter(&self) -> bool {
         matches!(
             self,
-            Self::LParen | Self::RParen | Self::LBrace | Self::RBrace | Self::LBracket | Self::RBracket
+            Self::LParen
+                | Self::RParen
+                | Self::LBrace
+                | Self::RBrace
+                | Self::LBracket
+                | Self::RBracket
         )
     }
 
@@ -342,6 +358,7 @@ impl TokenKind {
             Self::Match => "`match`",
             Self::True => "`true`",
             Self::False => "`false`",
+            Self::Policy => "`policy`",
             Self::Async => "`async`",
             Self::Await => "`await`",
             Self::Go => "`go`",

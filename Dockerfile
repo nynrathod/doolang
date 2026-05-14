@@ -1,10 +1,12 @@
 # Doo Runtime — Base image for compiling and running Doo programs
-# Downloads pre-built doo binary from GitHub releases (no Rust compilation needed)
-# LLVM is statically linked in the doo binary — only needs clang as system linker
+# Two install modes:
+#   CI: DOO_LOCAL_BUNDLE=doo-linux-X.Y.Z.zip  → copies from build context (no download)
+#   Manual: leave empty → downloads from GitHub releases using DOO_VERSION tag
 
-FROM debian:bookworm-slim
+FROM ubuntu:24.04
 
 ARG DOO_VERSION=""
+ARG DOO_LOCAL_BUNDLE=""
 
 # clang = system linker, build-essential = linking tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -22,11 +24,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 	unzip \
 	&& rm -rf /var/lib/apt/lists/*
 
-# Install doo compiler from GitHub release
-RUN DOO_TAG=${DOO_VERSION:-$(curl -fsSL https://api.github.com/repos/nynrathod/doolang/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')} \
+# Copy local bundle if provided (CI fast path), otherwise download from GitHub
+COPY . /tmp/doo-build-context/
+RUN if [ -n "$DOO_LOCAL_BUNDLE" ] && [ -f "/tmp/doo-build-context/${DOO_LOCAL_BUNDLE}" ]; then \
+	echo "CI mode: installing from local bundle ${DOO_LOCAL_BUNDLE}..." \
+	&& cp "/tmp/doo-build-context/${DOO_LOCAL_BUNDLE}" /tmp/doo.zip; \
+	else \
+	DOO_TAG="${DOO_VERSION:-}" \
+	&& if [ -z "$DOO_TAG" ]; then \
+	DOO_TAG=$(curl -fsSL https://api.github.com/repos/nynrathod/doolang/releases/latest \
+	| grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | tr -d '\r'); \
+	fi \
 	&& DOO_VER=${DOO_TAG#v} \
-	&& echo "Installing doo ${DOO_TAG}..." \
-	&& curl -fsSL "https://github.com/nynrathod/doolang/releases/download/${DOO_TAG}/doo-linux-${DOO_VER}.zip" -o /tmp/doo.zip \
+	&& echo "Downloading doo ${DOO_TAG} (ver=${DOO_VER})..." \
+	&& curl -fsSL "https://github.com/nynrathod/doolang/releases/download/${DOO_TAG}/doo-linux-${DOO_VER}.zip" -o /tmp/doo.zip; \
+	fi \
 	&& unzip -q /tmp/doo.zip -d /tmp \
 	&& EXTRACT_DIR=$(find /tmp/doo-linux-* -maxdepth 0 -type d | head -1) \
 	&& cp "$EXTRACT_DIR/doo" /usr/local/bin/doo \
@@ -35,7 +47,7 @@ RUN DOO_TAG=${DOO_VERSION:-$(curl -fsSL https://api.github.com/repos/nynrathod/d
 	&& (cp "$EXTRACT_DIR"/lib/*.a /usr/local/lib/ 2>/dev/null || true) \
 	&& (cp -r "$EXTRACT_DIR/std" /usr/local/share/doo/std 2>/dev/null || true) \
 	&& (cp -r "$EXTRACT_DIR/packages" /usr/local/share/doo/packages 2>/dev/null || true) \
-	&& rm -rf /tmp/doo.zip /tmp/doo-linux-*
+	&& rm -rf /tmp/doo.zip /tmp/doo-linux-* /tmp/doo-build-context
 
 # Environment
 ENV DOO_STDLIB_PATH=/usr/local/share/doo/std

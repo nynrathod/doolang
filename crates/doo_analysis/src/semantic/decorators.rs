@@ -41,6 +41,10 @@ pub enum DecoratorKind {
     Internal,
     AutoTimestamp,
     Redirect,
+    // RBAC
+    Role,
+    Owner,
+    Inherits,
     Unknown(String),
 }
 
@@ -65,6 +69,10 @@ impl DecoratorKind {
             "internal" => Self::Internal,
             "autoTimestamp" => Self::AutoTimestamp,
             "redirect" => Self::Redirect,
+            // RBAC
+            "role" => Self::Role,
+            "owner" => Self::Owner,
+            "inherits" => Self::Inherits,
             other => Self::Unknown(other.to_string()),
         }
     }
@@ -103,9 +111,17 @@ impl DecoratorKind {
             | Self::Optional
             | Self::WriteOnly
             | Self::ReadOnly
-            | Self::Internal => DecoratorRule {
+            | Self::Internal
+            // RBAC field decorators
+            | Self::Role
+            | Self::Owner => DecoratorRule {
                 type_constraint: TypeConstraint::Any,
                 args: ArgRule::None,
+            },
+            // RBAC enum-variant decorator with optional args
+            Self::Inherits => DecoratorRule {
+                type_constraint: TypeConstraint::Any,
+                args: ArgRule::Any,
             },
             // Any type, exactly 1 arg
             Self::Default => DecoratorRule {
@@ -145,6 +161,9 @@ impl DecoratorKind {
             Self::Internal => "internal",
             Self::AutoTimestamp => "autoTimestamp",
             Self::Redirect => "redirect",
+            Self::Role => "role",
+            Self::Owner => "owner",
+            Self::Inherits => "inherits",
             Self::Unknown(n) => n,
         }
     }
@@ -296,7 +315,7 @@ pub fn to_compiler_error(err: &DecoratorError, span: Span) -> CompilerError {
             CompilerError::new(ErrorCode::InvalidDecorator, format!("@{}: {}", decorator, message), span),
         DecoratorError::Unknown { decorator, .. } =>
             CompilerError::new(ErrorCode::InvalidDecorator, format!("unknown decorator @{}", decorator), span)
-                .with_suggestion("valid: @email @url @min @max @primary @unique @hash @optional @default @pattern @writeOnly @readOnly @internal"),
+                .with_suggestion("valid: @email @url @min @max @primary @unique @hash @optional @default @pattern @writeOnly @readOnly @internal @role @owner @inherits"),
         DecoratorError::Conflict { decorator1, decorator2, reason, .. } =>
             CompilerError::new(ErrorCode::ConflictingDecorators, format!("@{} and @{} conflict: {}", decorator1, decorator2, reason), span),
         DecoratorError::InvalidOptional { decorator, reason, .. } =>

@@ -32,6 +32,7 @@ pub(crate) const DOO_HTTP_REGISTER_HANDLER_WITH_METADATA: &str =
     "doo_http_register_handler_with_metadata";
 pub(crate) const DOO_HTTP_REGISTER_STRUCT_METADATA: &str = "doo_http_register_struct_metadata";
 pub(crate) const DOO_HTTP_REGISTER_ENUM_METADATA: &str = "doo_http_register_enum_metadata";
+pub(crate) const DOO_HTTP_REGISTER_POLICY: &str = "doo_http_register_policy";
 
 // HTTP Serialization Helpers (doohttp_ prefix — compiled into codegen wrappers)
 pub(crate) const DOOHTTP_POPULATE_STRUCT_FROM_REQUEST: &str =
@@ -123,12 +124,15 @@ pub(crate) fn wrap_func_ref<'ctx>(
 /// Handles:
 /// 1. Auth/CRUD struct metadata registration — emits struct/enum schemas
 ///    so the HTTP runtime can validate incoming request data.
-/// 2. Middleware registration — registers user-defined middleware function
+/// 2. Policy metadata registration — emits RBAC policies bound to structs.
+/// 3. Middleware registration — registers user-defined middleware function
 ///    pointers with the HTTP runtime.
 pub(crate) fn pre_call<'ctx>(ctx: &mut CodegenContext<'ctx>, symbol: &str, args: &[MirOperand]) {
     // Struct metadata for auth/crud endpoints
     if symbol == DOO_HTTP_AUTH || symbol == DOO_HTTP_CRUD {
         call_metadata::emit_struct_metadata_registration_for_auth_crud(ctx, symbol, args);
+        // Emit RBAC policy metadata if a policy is registered for this struct
+        call_metadata::emit_policy_metadata_if_present(ctx, args);
     }
 
     // Middleware registration for *_with_middleware routes

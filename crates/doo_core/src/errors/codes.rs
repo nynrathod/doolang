@@ -122,11 +122,15 @@ pub enum ErrorCode {
     FfiTypeMismatch,     // E0606
 
     // === Database Errors (E0700-E0799) ===
-    DatabaseNotConnected, // E0700
-    InvalidSqlQuery,      // E0701
-    ModelNotFound,        // E0702
-    MigrationFailed,      // E0703
-    InvalidDatabaseUrl,   // E0704
+    DatabaseNotConnected,     // E0700
+    InvalidSqlQuery,          // E0701
+    ModelNotFound,            // E0702
+    MigrationFailed,          // E0703
+    InvalidDatabaseUrl,       // E0704
+    QueryBuilderUnknownModel, // E0705
+    QueryBuilderUnknownField, // E0706
+    QueryBuilderMissingWhere, // E0707
+    QueryBuilderInvalidChain, // E0708
 
     // === Validation Errors (E0800-E0899) ===
     InvalidEmail,         // E0800
@@ -246,6 +250,10 @@ impl ErrorCode {
             Self::ModelNotFound => "E0702",
             Self::MigrationFailed => "E0703",
             Self::InvalidDatabaseUrl => "E0704",
+            Self::QueryBuilderUnknownModel => "E0705",
+            Self::QueryBuilderUnknownField => "E0706",
+            Self::QueryBuilderMissingWhere => "E0707",
+            Self::QueryBuilderInvalidChain => "E0708",
 
             Self::InvalidEmail => "E0800",
             Self::InvalidUrl => "E0801",
@@ -363,6 +371,10 @@ impl ErrorCode {
             "E0702" => Some(Self::ModelNotFound),
             "E0703" => Some(Self::MigrationFailed),
             "E0704" => Some(Self::InvalidDatabaseUrl),
+            "E0705" => Some(Self::QueryBuilderUnknownModel),
+            "E0706" => Some(Self::QueryBuilderUnknownField),
+            "E0707" => Some(Self::QueryBuilderMissingWhere),
+            "E0708" => Some(Self::QueryBuilderInvalidChain),
 
             "E0800" => Some(Self::InvalidEmail),
             "E0801" => Some(Self::InvalidUrl),
@@ -482,6 +494,10 @@ impl ErrorCode {
             Self::ModelNotFound => "MODEL NOT FOUND",
             Self::MigrationFailed => "MIGRATION FAILED",
             Self::InvalidDatabaseUrl => "INVALID DB URL",
+            Self::QueryBuilderUnknownModel => "QB UNKNOWN MODEL",
+            Self::QueryBuilderUnknownField => "QB UNKNOWN FIELD",
+            Self::QueryBuilderMissingWhere => "QB MISSING WHERE",
+            Self::QueryBuilderInvalidChain => "QB INVALID CHAIN",
 
             Self::InvalidEmail => "INVALID EMAIL",
             Self::InvalidUrl => "INVALID URL",

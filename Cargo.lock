@@ -620,7 +620,7 @@ dependencies = [
 
 [[package]]
 name = "doo"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "bumpalo",
  "clap",
@@ -644,7 +644,7 @@ dependencies = [
 
 [[package]]
 name = "doo_analysis"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "doo_core",
  "doo_frontend",
@@ -656,7 +656,7 @@ dependencies = [
 
 [[package]]
 name = "doo_codegen"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "doo_core",
  "doo_mir",
@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "doo_core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "bumpalo",
  "pretty_assertions",
@@ -682,7 +682,7 @@ dependencies = [
 
 [[package]]
 name = "doo_diagnostics"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "doo_core",
  "pretty_assertions",
@@ -692,7 +692,7 @@ dependencies = [
 
 [[package]]
 name = "doo_driver"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -717,7 +717,7 @@ dependencies = [
 
 [[package]]
 name = "doo_ffi_auth"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "base64",
  "bcrypt",
@@ -733,7 +733,7 @@ dependencies = [
 
 [[package]]
 name = "doo_ffi_core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "libc",
  "pretty_assertions",
@@ -744,7 +744,7 @@ dependencies = [
 
 [[package]]
 name = "doo_ffi_db"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "chrono",
  "deadpool",
@@ -766,7 +766,7 @@ dependencies = [
 
 [[package]]
 name = "doo_ffi_file"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "doo_ffi_core",
  "libc",
@@ -774,7 +774,7 @@ dependencies = [
 
 [[package]]
 name = "doo_ffi_git"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "doo_ffi_core",
  "git2",
@@ -783,7 +783,7 @@ dependencies = [
 
 [[package]]
 name = "doo_ffi_http"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "base64",
  "bcrypt",
@@ -815,7 +815,7 @@ dependencies = [
 
 [[package]]
 name = "doo_ffi_json"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "doo_ffi_core",
  "itoa",
@@ -827,7 +827,7 @@ dependencies = [
 
 [[package]]
 name = "doo_ffi_process"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "dashmap",
  "doo_ffi_core",
@@ -840,7 +840,7 @@ dependencies = [
 
 [[package]]
 name = "doo_ffi_runtime"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "doo_ffi_core",
  "libc",
@@ -852,7 +852,7 @@ dependencies = [
 
 [[package]]
 name = "doo_frontend"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "bumpalo",
  "doo_core",
@@ -863,7 +863,7 @@ dependencies = [
 
 [[package]]
 name = "doo_hir"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "doo_core",
  "doo_frontend",
@@ -874,7 +874,7 @@ dependencies = [
 
 [[package]]
 name = "doo_lsp"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "doo_analysis",
@@ -892,7 +892,7 @@ dependencies = [
 
 [[package]]
 name = "doo_mir"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "doo_analysis",
  "doo_core",
@@ -900,6 +900,7 @@ dependencies = [
  "pretty_assertions",
  "rustc-hash 1.1.0",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

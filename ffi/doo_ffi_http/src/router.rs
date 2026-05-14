@@ -79,6 +79,44 @@ impl RouteRegistry {
         self.register_with_name(method, path, handler, None);
     }
 
+    /// Register a route that always extracts headers (e.g. for RBAC on GET routes).
+    pub fn register_needs_headers(&mut self, method: &str, path: &str, handler: DooHandlerFn) {
+        let method_upper = method.to_uppercase();
+        let router = self
+            .routers
+            .entry(method_upper.clone())
+            .or_insert_with(MatchitRouter::new);
+
+        let entry = RouteEntry {
+            handler,
+            handler_name: None,
+            middleware: self.global_middleware.clone(),
+            needs_headers: true,
+        };
+
+        match router.insert(path, entry) {
+            Ok(_) => {
+                self.route_count += 1;
+                ffi_debug!(
+                    "ROUTER",
+                    "Registered (needs_headers): {} {} (total: {})",
+                    method_upper,
+                    path,
+                    self.route_count
+                );
+            }
+            Err(e) => {
+                ffi_debug!(
+                    "ROUTER",
+                    "Failed to register {} {}: {:?}",
+                    method_upper,
+                    path,
+                    e
+                );
+            }
+        }
+    }
+
     /// Register a package route — always extracts headers (cookies, auth, etc.)
     ///
     /// Package routes are STANDALONE — they do NOT inherit global middleware.

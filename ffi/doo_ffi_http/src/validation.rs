@@ -90,7 +90,100 @@ pub(crate) fn validate_item_against_schema(
     Ok(())
 }
 
-/// Validate a single decorator constraint on a field value.
+/// Decorators that indicate a field is filled by the server and not required in the request body.
+const SERVER_FILLED_DECORATORS: &[&str] = &["auto", "owner"];
+
+/// Check that all required struct fields are present in the request body.
+/// Fields decorated with @auto or @owner are server-filled and are skipped.
+/// Returns `Err(message)` for the first missing required field.
+pub(crate) fn validate_required_fields(
+    item: &serde_json::Value,
+    resource_name: &str,
+    _path: &str,
+) -> Result<(), String> {
+    let struct_name = {
+        let registry = get_frozen_routes();
+        registry
+            .crud_configs
+            .iter()
+            .find(|c| c.base_path.trim_start_matches('/') == resource_name)
+            .map(|c| c.resource_struct.clone())
+    };
+    let struct_name = match struct_name {
+        Some(name) => name,
+        None => return Ok(()), // No schema registered, skip
+    };
+    let struct_meta = match get_struct_metadata(&struct_name) {
+        Some(meta) => meta,
+        None => return Ok(()), // No metadata, skip
+    };
+    let obj = match item.as_object() {
+        Some(o) => o,
+        None => return Err("Expected JSON object".to_string()),
+    };
+    for field_meta in &struct_meta.fields {
+        let is_server_filled = field_meta
+            .decorators
+            .iter()
+            .any(|d| SERVER_FILLED_DECORATORS.contains(&d.as_str()));
+        if !is_server_filled {
+            let name_lower = field_meta.name.to_lowercase();
+            let present = obj.contains_key(&field_meta.name)
+                || obj.keys().any(|k| k.to_lowercase() == name_lower);
+            if !present {
+                return Err(format!("Missing required field: '{}'", field_meta.name));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate an item against a struct by name (bypasses CRUD route lookup).
+/// Used by auth signup to validate enum fields (e.g. Role) against registered variants.
+pub(crate) fn validate_item_against_struct(
+    item: &serde_json::Value,
+    struct_name: &str,
+    path: &str,
+) -> Result<(), String> {
+    let struct_meta = match get_struct_metadata(struct_name) {
+        Some(meta) => meta,
+        None => return Ok(()),
+    };
+    let obj = match item.as_object() {
+        Some(o) => o,
+        None => return Ok(()),
+    };
+    for field_meta in &struct_meta.fields {
+        let field_name_lower = field_meta.name.to_lowercase();
+        let value = obj.get(&field_meta.name).or_else(|| {
+            obj.iter()
+                .find(|(k, _)| k.to_lowercase() == field_name_lower)
+                .map(|(_, v)| v)
+        });
+
+        if let Some(value) = value {
+            if let Some(variants) = get_enum_variants(&field_meta.field_type) {
+                if let Some(str_val) = value.as_str() {
+                    let str_val_lower = str_val.to_lowercase();
+                    if !variants.iter().any(|v| v.to_lowercase() == str_val_lower) {
+                        return Err(format!(
+                            "Invalid value '{}' for field '{}'. Must be one of: {}",
+                            str_val,
+                            field_meta.name,
+                            variants.join(", ")
+                        ));
+                    }
+                }
+            }
+            for decorator in &field_meta.decorators {
+                if let Err(e) = validate_decorator(decorator, &field_meta.name, value, path) {
+                    return Err(e);
+                }
+            }
+        }
+    }
+    Ok(())
+}
 pub(crate) fn validate_decorator(
     decorator: &str,
     field_name: &str,
@@ -136,12 +229,9 @@ pub(crate) fn validate_decorator(
                     let mut fields = HashMap::new();
                     fields.insert(
                         field_name.to_string(),
-                        FieldError::new(
-                            field_name,
-                            format!("Must be at least {}", min_val),
-                        )
-                        .with_rule(format!("min:{}", min_val))
-                        .with_value(n.to_string()),
+                        FieldError::new(field_name, format!("Must be at least {}", min_val))
+                            .with_rule(format!("min:{}", min_val))
+                            .with_value(n.to_string()),
                     );
                     return Err(Rfc7807Error::validation_error(fields)
                         .with_instance(path)
@@ -173,12 +263,9 @@ pub(crate) fn validate_decorator(
                     let mut fields = HashMap::new();
                     fields.insert(
                         field_name.to_string(),
-                        FieldError::new(
-                            field_name,
-                            format!("Maximum {} allowed", max_val),
-                        )
-                        .with_rule(format!("max:{}", max_val))
-                        .with_value(n.to_string()),
+                        FieldError::new(field_name, format!("Maximum {} allowed", max_val))
+                            .with_rule(format!("max:{}", max_val))
+                            .with_value(n.to_string()),
                     );
                     return Err(Rfc7807Error::validation_error(fields)
                         .with_instance(path)

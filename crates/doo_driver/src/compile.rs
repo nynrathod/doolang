@@ -321,6 +321,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
                 doo_frontend::ast::Item::Enum(e) => doo_debug!("DEBUG", "  Enum: {}", e.name),
                 doo_frontend::ast::Item::Import(i) => doo_debug!("DEBUG", "  Import: {:?}", i.path),
                 doo_frontend::ast::Item::Statement(_) => doo_debug!("DEBUG", "  Statement"),
+                doo_frontend::ast::Item::Policy(p) => doo_debug!("DEBUG", "  Policy for {}", p.for_struct),
             }
         }
         doo_debug!("DEBUG", "HIR items: {}", hir.items.len());
@@ -330,6 +331,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
                 doo_hir::HirItem::Struct(s) => doo_debug!("DEBUG", "  HIR Struct: {}", s.name),
                 doo_hir::HirItem::Enum(e) => doo_debug!("DEBUG", "  HIR Enum: {}", e.name),
                 doo_hir::HirItem::Import(_) => doo_debug!("DEBUG", "  HIR Import"),
+                doo_hir::HirItem::Policy(p) => doo_debug!("DEBUG", "  HIR Policy for {}", p.for_struct),
             }
         }
     }
@@ -534,6 +536,24 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
         MirBuilder::new(&type_registry)
     };
     let mir_program = mir_builder.build(&hir);
+
+    // Surface query builder errors (field validation, missing where, etc.).
+    let qb_errors = std::mem::take(&mut mir_builder.query_errors);
+    if !qb_errors.is_empty() {
+        let has_real = qb_errors.iter().any(|e| {
+            e.severity == doo_core::errors::codes::ErrorSeverity::Error
+                || e.severity == doo_core::errors::codes::ErrorSeverity::Ice
+        });
+        let mut emitter = DiagnosticEmitter::new(true);
+        let _ = emitter.emit_all(&qb_errors, &source_map);
+        if has_real {
+            return Ok(CompileResult {
+                success: false,
+                error_count: qb_errors.len(),
+                exe_path: None,
+            });
+        }
+    }
 
     if opts.print_mir {
         eprintln!("=== MIR ===");

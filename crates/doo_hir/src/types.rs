@@ -397,6 +397,22 @@ pub enum HirItem {
     Struct(HirStruct),
     Enum(HirEnum),
     Import(HirImport),
+    /// RBAC policy block.
+    Policy(HirPolicy),
+}
+
+/// RBAC policy declaration.
+/// Produced by lowering `policy FooPolicy for Foo { ... }`.
+#[derive(Debug, Clone)]
+pub struct HirPolicy {
+    /// Policy name (e.g. "PostPolicy").
+    pub name: String,
+    /// Struct this policy guards (e.g. "Post").
+    pub for_struct: String,
+    /// CRUD + custom actions with serialised access rules.
+    /// e.g. `("create", "authenticated")`, `("update", "own|Admin")`
+    pub rules: Vec<(String, String)>,
+    pub span: Span,
 }
 
 /// Function definition.
@@ -454,6 +470,8 @@ pub struct HirEnum {
 pub struct HirVariant {
     pub name: String,
     pub payload: Option<TypeId>,
+    /// Decorators on this variant (e.g. @inherits(User)).
+    pub decorators: Vec<HirDecorator>,
     pub span: Span,
 }
 
