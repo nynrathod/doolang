@@ -37,6 +37,46 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                 builder.build_expr(value)
             };
 
+            // CRITICAL: When extracting a non-Copy field from a local struct into a
+            // new variable, deep-clone the field. Without this, the field value is a
+            // pointer into the struct's memory. When the struct is later dropped, the
+            // field data is freed and the new variable holds a dangling pointer.
+            // This is the root cause of use-after-free crashes on schema save.
+            let val_operand = if let HirExprKind::Field { object, field } = &value.kind {
+                if let HirExprKind::Local { name } = &object.kind {
+                    // Get the field's type from the source object's struct type
+                    let needs_clone = builder
+                        .get_local_type(name)
+                        .and_then(|struct_tid| builder.struct_field_type(struct_tid, field))
+                        .map(|field_tid| !super::is_copy_type(field_tid))
+                        .unwrap_or(false);
+                    if needs_clone {
+                        let clone_dest = builder.new_temp();
+                        builder.emit(
+                            MirInstrKind::Clone {
+                                dest: clone_dest,
+                                src: val_operand,
+                            },
+                            span,
+                        );
+                        // Propagate type info to the clone destination
+                        if let Some(ft) = builder
+                            .get_local_type(name)
+                            .and_then(|st| builder.struct_field_type(st, field))
+                        {
+                            builder.set_temp_type(clone_dest, ft);
+                        }
+                        MirOperand::Temp(clone_dest)
+                    } else {
+                        val_operand
+                    }
+                } else {
+                    val_operand
+                }
+            } else {
+                val_operand
+            };
+
             // Register the local variable in the function
             let var_type_id = effective_type_id.unwrap_or_else(|| {
                 // Infer type from the value operand using builder's method
@@ -479,7 +519,38 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             let expected_return_type = builder.get_current_function_return_type();
             let values: Vec<_> = exprs
                 .iter()
-                .map(|expr| builder.build_expr_with_expected_type(expr, expected_return_type))
+                .map(|expr| {
+                    let val = builder.build_expr_with_expected_type(expr, expected_return_type);
+                    // CRITICAL: When returning a non-Copy field from a local struct,
+                    // deep-clone to prevent dangling pointer after struct is dropped.
+                    if let HirExprKind::Field { object, field } = &expr.kind {
+                        if let HirExprKind::Local { name } = &object.kind {
+                            let needs_clone = builder
+                                .get_local_type(name)
+                                .and_then(|struct_tid| builder.struct_field_type(struct_tid, field))
+                                .map(|field_tid| !super::is_copy_type(field_tid))
+                                .unwrap_or(false);
+                            if needs_clone {
+                                let clone_dest = builder.new_temp();
+                                builder.emit(
+                                    MirInstrKind::Clone {
+                                        dest: clone_dest,
+                                        src: val,
+                                    },
+                                    span,
+                                );
+                                if let Some(ft) = builder
+                                    .get_local_type(name)
+                                    .and_then(|st| builder.struct_field_type(st, field))
+                                {
+                                    builder.set_temp_type(clone_dest, ft);
+                                }
+                                return MirOperand::Temp(clone_dest);
+                            }
+                        }
+                    }
+                    val
+                })
                 .collect();
             builder.set_terminator(MirTerminator::Return { values });
         }

@@ -145,6 +145,10 @@ pub fn run_command_with_compiler(
         current
     };
 
+    // Canonicalize to absolute path so spawned processes resolve correctly.
+    // Relative paths (e.g., "." or "tests/...") cause Windows os error 123.
+    let run_root = run_root.canonicalize().unwrap_or(run_root);
+
     let temp_name = format!("temp_doo_{}", std::process::id());
 
     // Find compiler build directory: DOO_BUILD_ROOT > Cargo.toml walk-up > ~/.doo

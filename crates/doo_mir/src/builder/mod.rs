@@ -21,8 +21,18 @@ use doo_hir::{
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::sym::{sym, Sym};
+use crate::sym::{resolve, sym, Sym};
 use crate::types::*;
+
+/// Check if a TypeId is a Copy type (primitives that are safe to bitwise copy).
+/// Non-Copy types (Struct, Array, Str, Map, Optional, etc.) hold pointers to
+/// heap data and require deep-cloning when extracted from owning containers.
+pub(crate) fn is_copy_type(type_id: CoreTypeId) -> bool {
+    matches!(
+        type_id,
+        builtin::INT | builtin::FLOAT | builtin::BOOL | builtin::VOID
+    )
+}
 
 // ============================================================================
 // Struct Metadata — for Query Builder Field Validation
@@ -142,6 +152,11 @@ pub struct MirBuilder<'a> {
     /// Static global names (declared with `static Name: Type`).
     /// Used in build_expr to emit MirOperand::Global instead of Local.
     pub(crate) static_names: FxHashSet<String>,
+
+    /// Static global types — maps static variable name to its declared type.
+    /// CRITICAL for method calls on static globals (e.g., `DB.raw(...)`):
+    /// resolves `DB` → Database type_id → `_method_Database_raw` → FFI.
+    pub(crate) static_types: FxHashMap<String, CoreTypeId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,6 +192,7 @@ impl<'a> MirBuilder<'a> {
             struct_metas: FxHashMap::default(),
             query_errors: Vec::new(),
             static_names: FxHashSet::default(),
+            static_types: FxHashMap::default(),
         }
     }
 
@@ -209,6 +225,7 @@ impl<'a> MirBuilder<'a> {
             struct_metas: FxHashMap::default(),
             query_errors: Vec::new(),
             static_names: FxHashSet::default(),
+            static_types: FxHashMap::default(),
         }
     }
 
@@ -362,6 +379,10 @@ impl<'a> MirBuilder<'a> {
                     });
                     // Track static name so build_expr emits MirOperand::Global
                     self.static_names.insert(s.name.clone());
+                    // Store the type so method calls can resolve receiver type
+                    if let Some(tid) = s.type_id {
+                        self.static_types.insert(s.name.clone(), tid);
+                    }
                 }
                 HirItem::Struct(s) => {
                     let mir_struct = StructDef {
@@ -1319,7 +1340,10 @@ impl<'a> MirBuilder<'a> {
                     })
                     .unwrap_or(builtin::ANY)
             }
-            MirOperand::Global(_) => builtin::ANY,
+            MirOperand::Global(name) => {
+                let n = resolve(*name);
+                self.static_types.get(&n).copied().unwrap_or(builtin::ANY)
+            }
             MirOperand::FuncRef(_) => builtin::ANY, // Function pointers are opaque
         }
     }

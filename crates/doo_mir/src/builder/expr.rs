@@ -649,9 +649,14 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             }
 
             // Check if receiver is a module-like name (uppercase first char = static module call)
-            // Modules like JSON, Math, File, etc. don't exist as local variables
+            // Modules like JSON, Math, File, etc. don't exist as local variables.
+            // CRITICAL: Static variables (e.g., `static DB: Database`) also start with
+            // uppercase but are NOT modules — they are runtime instances. Treating them
+            // as modules causes wrong method name mangling (_method_DB_rawWithParams
+            // instead of _method_Database_rawWithParams), breaking FFI dispatch.
             let is_module_receiver = matches!(&receiver.kind, HirExprKind::Local { name } 
-                if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false));
+                if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+                && !builder.static_names.contains(name));
 
             // Build receiver FIRST - for modules, use Global instead of Local
             // We need the receiver built before we can determine its type for FFI lookup
@@ -675,10 +680,15 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 .or_else(|| {
                     // If HIR didn't have type, check the built operand
                     // This is CRITICAL for method chaining like .use(...).use(...)
-                    // where the receiver is a temp from a previous call
+                    // where the receiver is a temp from a previous call.
+                    // Also handles static globals (e.g., `DB.raw(...)`) via static_types.
                     match &recv {
                         MirOperand::Temp(name) => builder.get_temp_type(*name),
                         MirOperand::Local(name) => builder.get_local_type(&resolve(*name)),
+                        MirOperand::Global(name) => {
+                            let n = resolve(*name);
+                            builder.static_types.get(&n).copied()
+                        }
                         _ => None,
                     }
                 })
@@ -697,8 +707,28 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             } else {
                 // Get type name from receiver_type (already computed with all fallbacks)
                 builder.type_registry.get(receiver_type).and_then(|info| {
-                    if let TypeKind::Struct { name, .. } = &info.kind {
-                        Some(name.clone())
+                    match &info.kind {
+                        TypeKind::Struct { name, .. } => Some(name.clone()),
+                        // Handle TypeRef: resolve through to the struct name
+                        TypeKind::TypeRef { name } => Some(name.clone()),
+                        _ => None,
+                    }
+                })
+                // Fallback for static variables: look up the static's declared type
+                // This handles `static DB: Database` where receiver_type might be ANY
+                .or_else(|| {
+                    if let HirExprKind::Local { name } = &receiver.kind {
+                        if let Some(&static_tid) = builder.static_types.get(name) {
+                            builder.type_registry.get(static_tid).and_then(|info| {
+                                match &info.kind {
+                                    TypeKind::Struct { name, .. } => Some(name.clone()),
+                                    TypeKind::TypeRef { name } => Some(name.clone()),
+                                    _ => None,
+                                }
+                            })
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
@@ -1600,8 +1630,23 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         // Check if this is a type name (static call) or a variable (instance call)
                         // Type names start with uppercase, variables start with lowercase
                         if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
-                            // Static method call: Database::postgres() - receiver is the type name
-                            Some(name.clone())
+                            // CRITICAL: Static variables (e.g., `static DB: Database`) also start
+                            // with uppercase but are NOT type names — resolve their actual type
+                            // from static_types. This mirrors the fix in MethodCall at line ~657.
+                            if builder.static_names.contains(name) {
+                                // Static variable: resolve the declared type name
+                                builder.static_types.get(name)
+                                    .and_then(|&tid| builder.type_registry.get(tid))
+                                    .and_then(|info| match &info.kind {
+                                        TypeKind::Struct { name: type_name, .. } => Some(type_name.clone()),
+                                        TypeKind::TypeRef { name: type_name } => Some(type_name.clone()),
+                                        _ => None,
+                                    })
+                                    .or_else(|| Some(name.clone()))
+                            } else {
+                                // True static/module call: Database::postgres() - receiver is the type name
+                                Some(name.clone())
+                            }
                         } else {
                             // Variable name - need to look up its type
                             // First try the temp type registry for variables

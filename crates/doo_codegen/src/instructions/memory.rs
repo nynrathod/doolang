@@ -105,7 +105,9 @@ impl<'ctx> InstructionHandler<'ctx> for MemoryHandler {
                         let once_lock_type = ctx.context.struct_type(
                             &[
                                 ctx.context.bool_type().into(),
-                                ctx.context.ptr_type(inkwell::AddressSpace::default()).into(),
+                                ctx.context
+                                    .ptr_type(inkwell::AddressSpace::default())
+                                    .into(),
                             ],
                             false,
                         );
@@ -119,13 +121,22 @@ impl<'ctx> InstructionHandler<'ctx> for MemoryHandler {
                             let ptr_val = if val.is_pointer_value() {
                                 val.into_pointer_value()
                             } else if val.is_int_value() {
-                                ctx.builder.build_int_to_ptr(
-                                    val.into_int_value(),
-                                    ctx.context.ptr_type(inkwell::AddressSpace::default()),
-                                    "int_to_ptr",
-                                ).ok().unwrap_or_else(|| ctx.context.ptr_type(inkwell::AddressSpace::default()).const_null())
+                                ctx.builder
+                                    .build_int_to_ptr(
+                                        val.into_int_value(),
+                                        ctx.context.ptr_type(inkwell::AddressSpace::default()),
+                                        "int_to_ptr",
+                                    )
+                                    .ok()
+                                    .unwrap_or_else(|| {
+                                        ctx.context
+                                            .ptr_type(inkwell::AddressSpace::default())
+                                            .const_null()
+                                    })
                             } else {
-                                ctx.context.ptr_type(inkwell::AddressSpace::default()).const_null()
+                                ctx.context
+                                    .ptr_type(inkwell::AddressSpace::default())
+                                    .const_null()
                             };
                             ctx.builder.build_store(ptr_field, ptr_val).ok();
                         }
@@ -136,7 +147,12 @@ impl<'ctx> InstructionHandler<'ctx> for MemoryHandler {
                             0,
                             "static_flag_field",
                         ) {
-                            ctx.builder.build_store(flag_field, ctx.context.bool_type().const_int(1, false)).ok();
+                            ctx.builder
+                                .build_store(
+                                    flag_field,
+                                    ctx.context.bool_type().const_int(1, false),
+                                )
+                                .ok();
                         }
                     }
                     return Some(val);
@@ -305,22 +321,14 @@ fn emit_deep_clone<'ctx>(
             }
         }
 
-        // Unknown type or const: fallback to shallow copy
-        // For pointer types, assume it's a string (most common case)
+        // Unknown type: do NOT assume string — that can cause strlen on binary
+        // array/struct data leading to garbage allocations and crashes.
+        // Just return the value as-is (the caller already has the pointer).
         None => {
-            // If the source has a struct type association, propagate it even if we don't know the TypeKind
             if let Some(ref struct_name) = src_struct_type {
                 ctx.set_temp_struct_type(dest, struct_name);
             }
-            if val.is_pointer_value() {
-                // Heuristic: if it's a pointer and we don't know the type,
-                // assume it's a string and clone it
-                clone_string(ctx, val.into_pointer_value())
-                    .map(|p| p.into())
-                    .unwrap_or(val)
-            } else {
-                val
-            }
+            val
         }
 
         // Other complex types: shallow copy for now
@@ -616,7 +624,8 @@ pub(crate) fn clone_struct<'ctx>(
             }
             Some(TypeKind::Struct {
                 ref name,
-                ref fields, ..
+                ref fields,
+                ..
             }) if src_val.is_pointer_value() => {
                 // Deep-clone nested struct fields to prevent use-after-free
                 let fp: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
@@ -682,7 +691,7 @@ pub(crate) fn clone_struct<'ctx>(
 ///
 /// For primitive types (Int, Float, Bool), uses memcpy for efficiency.
 /// For pointer types (Str), clones each element individually.
-fn clone_array<'ctx>(
+pub(crate) fn clone_array<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     src_ptr: inkwell::values::PointerValue<'ctx>,
     element_type: doo_core::types::TypeId,
@@ -891,7 +900,7 @@ fn clone_array<'ctx>(
 /// the operation succeeded.
 ///
 /// Maps are stored as arrays of (key, value) pairs with a header.
-fn clone_map<'ctx>(
+pub(crate) fn clone_map<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     src_ptr: inkwell::values::PointerValue<'ctx>,
     key_type: doo_core::types::TypeId,
@@ -1088,7 +1097,7 @@ fn clone_map<'ctx>(
 ///
 /// Optional values are represented as nullable pointers - null means None,
 /// non-null means Some(value). For non-null, we clone the inner value.
-fn clone_optional<'ctx>(
+pub(crate) fn clone_optional<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     src_ptr: inkwell::values::PointerValue<'ctx>,
     inner_type: doo_core::types::TypeId,
@@ -1378,7 +1387,8 @@ fn drop_struct<'ctx>(
                         }
                         Some(TypeKind::Struct {
                             name: nested_name,
-                            fields: nested_fields, ..
+                            fields: nested_fields,
+                            ..
                         }) => {
                             let nested_name = nested_name.clone();
                             // Extract just name and type for nested drop_struct

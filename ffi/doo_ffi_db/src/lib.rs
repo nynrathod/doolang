@@ -222,7 +222,10 @@ pub extern "C" fn doo_db_get_global() -> *mut DooResult {
             let db = create_database_struct(drv.name(), true);
             db_result_ok(db)
         } else {
-            db_result_err(503, "No database connected. Set DATABASE_URL environment variable.")
+            db_result_err(
+                503,
+                "No database connected. Set DATABASE_URL environment variable.",
+            )
         }
     }));
     result.unwrap_or_else(|_| db_result_err(500, "Internal error"))

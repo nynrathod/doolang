@@ -2252,6 +2252,46 @@ impl TypeChecker {
                     });
                 }
             }
+            // Null coalescing: both sides must have compatible types.
+            // a ?? b — a and b must be type-compatible (after unwrapping Optional from a).
+            HirBinOp::NullCoalesce => {
+                // Unwrap Optional/Result from the types to get inner types
+                let unwrap = |tid: TypeId| -> TypeId {
+                    if let Some(info) = self.registry.get(tid) {
+                        match &info.kind {
+                            TypeKind::Optional { inner } => *inner,
+                            TypeKind::Result { ok, .. } => *ok,
+                            _ => tid,
+                        }
+                    } else {
+                        tid
+                    }
+                };
+                let lhs_inner = unwrap(lhs_type);
+                let rhs_inner = unwrap(rhs_type);
+
+                // If lhs is non-nil (not VOID), check compatibility with rhs
+                if lhs_inner != builtin::VOID
+                    && lhs_inner != builtin::ANY
+                    && rhs_inner != builtin::VOID
+                    && rhs_inner != builtin::ANY
+                    && lhs_inner != rhs_inner
+                {
+                    let both_numeric =
+                        (lhs_inner == builtin::INT || lhs_inner == builtin::FLOAT)
+                            && (rhs_inner == builtin::INT || rhs_inner == builtin::FLOAT);
+                    if !both_numeric {
+                        self.errors.push(TypeError {
+                            kind: TypeErrorKind::Incompatible {
+                                left: lhs_inner,
+                                right: rhs_inner,
+                                operation: "??".to_string(),
+                            },
+                            span,
+                        });
+                    }
+                }
+            }
             // Logical, bitwise, In — no additional checks here
             _ => {}
         }

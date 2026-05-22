@@ -75,9 +75,12 @@ impl Item {
 
     /// Whether this top-level item requires a trailing semicolon.
     /// Items ending with `}` (functions, structs, enums, etc.) do not need `;`.
+    /// For standalone statements, delegates to StmtKind::needs_semicolon()
+    /// so that block-ending statements (if, for) also don't require `;`.
     pub fn needs_semicolon(&self) -> bool {
         match self {
-            Self::Const(_) | Self::Static(_) | Self::Import(_) | Self::Statement(_) => true,
+            Self::Const(_) | Self::Static(_) | Self::Import(_) => true,
+            Self::Statement(stmt) => stmt.kind.needs_semicolon(),
             Self::Function(_)
             | Self::Struct(_)
             | Self::Enum(_)
