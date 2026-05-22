@@ -46,15 +46,15 @@ fn GetPublicInfo() -> MessageResponse {
         message: "This is public information",
     };
 }
-
+static DB: Database;
 fn main() {
-    let db = Database::Postgres()?;
+    DB = Database::Postgres()?;
 
     let app = Server::new(":3100");
 
-    app.auth("/signup", "/login", User, db);
+    app.auth("/signup", "/login", User, DB);
 
-    app.crud("/products", Product, db);
+    app.crud("/products", Product, DB);
 
     app.get("/profile", Jwt(), GetProfile);
     app.get("/public", GetPublicInfo);

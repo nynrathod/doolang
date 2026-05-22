@@ -1,0 +1,7 @@
+
+struct Rect { w: Float, h: Float }
+fn Rect.area(self) -> Float => self.w * self.h;
+fn main() {
+    let r = Rect { w: 5.0, h: 3.0 };
+    print(r.area());
+}

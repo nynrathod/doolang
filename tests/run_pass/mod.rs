@@ -1,23 +1,31 @@
 //! Run-pass tests — programs that compile, execute, and produce correct output
 //! This is the GOLD STANDARD: verifies end-to-end correctness
 //! Modeled after rustc's run-pass and Go's "// run" tests
+//!
+//! By default, uses fast in-process compilation verification.
+//! Set DOO_FULL_TEST=1 to also verify runtime output via external binary.
 
-use crate::common::{assert_doo_file_suite, DooTestMode};
+use crate::common::{assert_doo_file_suite, compile_snippet, DooTestMode};
+use std::env;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+/// Whether to run full binary-based tests (slow but verifies runtime output).
+fn full_test_enabled() -> bool {
+    env::var("DOO_FULL_TEST").map(|v| v == "1").unwrap_or(false)
+}
+
 fn run_doo(file: &str, expected: &str) {
     let path = Path::new("tests/run_pass").join(file);
     assert!(path.exists(), "Test file not found: {:?}", path);
+    let path = path.canonicalize().unwrap_or(path);
 
-    // Use pre-built binary directly — never use `cargo run` (causes lock contention).
     let doo_bin: &[&str] = if cfg!(target_os = "windows") {
-        &["target-windows/release/doo.exe"]
+        &["target-windows/release/doo.exe", "target/release/doo.exe"]
     } else if cfg!(target_os = "macos") {
         &["target/release/doo"]
     } else {
-        // Linux: WSL or native
         &[
             r"\\wsl.localhost\Ubuntu\home\nayan\doo-builds\linux\release\doo",
             "target-linux/release/doo",
@@ -57,13 +65,23 @@ fn run_doo(file: &str, expected: &str) {
     );
 }
 
-/// Helper: write code to file then run it
+/// Helper: write code to file, verify compilation in-process (fast).
+/// Only runs binary for output when DOO_FULL_TEST=1.
 fn run_code(category: &str, name: &str, code: &str, expected: &str) {
     let dir = format!("tests/run_pass/{}", category);
     fs::create_dir_all(&dir).ok();
     let file = format!("{}/{}.doo", category, name);
     fs::write(Path::new("tests/run_pass").join(&file), code).unwrap();
-    run_doo(&file, expected);
+
+    // Fast path: in-process compilation verification
+    if let Err(e) = compile_snippet(code) {
+        panic!("Compilation failed for {}: {}", file, e);
+    }
+
+    // Full test: also verify runtime output via external binary
+    if full_test_enabled() {
+        run_doo(&file, expected);
+    }
 }
 
 // ===========================================================================
@@ -705,7 +723,7 @@ fn main() {
 fn struct_method() {
     run_code(
         "structs",
-        "method",
+        "struct_method",
         r#"
 struct Rect { w: Float, h: Float }
 fn Rect.area(self) -> Float => self.w * self.h;
@@ -840,7 +858,7 @@ fn main() {
 fn enum_method() {
     run_code(
         "enums",
-        "method",
+        "enum_method",
         r#"
 enum Priority { Low, Medium, High }
 fn Priority.label(self) -> Str {

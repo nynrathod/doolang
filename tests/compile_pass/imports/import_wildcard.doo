@@ -1,5 +1,5 @@
 // OUTPUT: Wildcard import test
-import std::io::*
+import std::io::*;
 
 fn main() {
     print("Wildcard import test");

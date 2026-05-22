@@ -1,5 +1,5 @@
 // OUTPUT: Import with alias test
-import std::io as io
+import std::io as io;
 
 fn main() {
     print("Import with alias test");

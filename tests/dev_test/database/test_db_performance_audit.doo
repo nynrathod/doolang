@@ -11,13 +11,15 @@ import std::Database;
 // REQUIRES: PostgreSQL running with DATABASE_URL set
 // ============================================================================
 
+static DB: Database;
+
 fn main() {
 
     // ========================================================================
     // TEST 1: Connection — Pool initialization with production config
     // ========================================================================
     print("=== TEST 1: Connection ===");
-    let db = Database::Postgres()?;
+    DB = Database::Postgres()?;
     print("PASS: Connected to PostgreSQL");
 
     // ========================================================================
@@ -25,19 +27,19 @@ fn main() {
     // ========================================================================
     print("=== TEST 2: Schema Setup ===");
 
-    db.raw("DROP TABLE IF EXISTS audit_orders")?;
-    db.raw("DROP TABLE IF EXISTS audit_products")?;
-    db.raw("DROP TABLE IF EXISTS audit_users")?;
-    db.raw("DROP TABLE IF EXISTS audit_batch")?;
+    DB.raw("DROP TABLE IF EXISTS audit_orders")?;
+    DB.raw("DROP TABLE IF EXISTS audit_products")?;
+    DB.raw("DROP TABLE IF EXISTS audit_users")?;
+    DB.raw("DROP TABLE IF EXISTS audit_batch")?;
     print("PASS: Dropped existing tables");
 
-    db.raw("CREATE TABLE audit_users (id SERIAL PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, age INT, score FLOAT, active BOOLEAN DEFAULT true, created_at TIMESTAMPTZ DEFAULT NOW())")?;
+    DB.raw("CREATE TABLE audit_users (id SERIAL PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, age INT, score FLOAT, active BOOLEAN DEFAULT true, created_at TIMESTAMPTZ DEFAULT NOW())")?;
     print("PASS: Created audit_users table");
 
-    db.raw("CREATE TABLE audit_products (id SERIAL PRIMARY KEY, name TEXT NOT NULL, price INT NOT NULL, description TEXT, owner_id INT REFERENCES audit_users(id))")?;
+    DB.raw("CREATE TABLE audit_products (id SERIAL PRIMARY KEY, name TEXT NOT NULL, price INT NOT NULL, description TEXT, owner_id INT REFERENCES audit_users(id))")?;
     print("PASS: Created audit_products table with FK");
 
-    db.raw("CREATE TABLE audit_orders (id SERIAL PRIMARY KEY, user_id INT NOT NULL REFERENCES audit_users(id), product_id INT NOT NULL REFERENCES audit_products(id), quantity INT DEFAULT 1, total INT NOT NULL)")?;
+    DB.raw("CREATE TABLE audit_orders (id SERIAL PRIMARY KEY, user_id INT NOT NULL REFERENCES audit_users(id), product_id INT NOT NULL REFERENCES audit_products(id), quantity INT DEFAULT 1, total INT NOT NULL)")?;
     print("PASS: Created audit_orders table with multiple FKs");
 
     // ========================================================================
@@ -45,11 +47,11 @@ fn main() {
     // ========================================================================
     print("=== TEST 3: INSERT Operations ===");
 
-    db.raw("INSERT INTO audit_users (name, email, age, score, active) VALUES ('Alice', 'alice@test.com', 30, 95.5, true)")?;
-    db.raw("INSERT INTO audit_users (name, email, age, score, active) VALUES ('Bob', 'bob@test.com', 25, 82.3, true)")?;
-    db.raw("INSERT INTO audit_users (name, email, age, score, active) VALUES ('Charlie', 'charlie@test.com', 35, 71.0, false)")?;
-    db.raw("INSERT INTO audit_users (name, email, age, score, active) VALUES ('Diana', 'diana@test.com', 28, 88.9, true)")?;
-    db.raw("INSERT INTO audit_users (name, email, age, score, active) VALUES ('Eve', 'eve@test.com', 22, 96.1, true)")?;
+    DB.raw("INSERT INTO audit_users (name, email, age, score, active) VALUES ('Alice', 'alice@test.com', 30, 95.5, true)")?;
+    DB.raw("INSERT INTO audit_users (name, email, age, score, active) VALUES ('Bob', 'bob@test.com', 25, 82.3, true)")?;
+    DB.raw("INSERT INTO audit_users (name, email, age, score, active) VALUES ('Charlie', 'charlie@test.com', 35, 71.0, false)")?;
+    DB.raw("INSERT INTO audit_users (name, email, age, score, active) VALUES ('Diana', 'diana@test.com', 28, 88.9, true)")?;
+    DB.raw("INSERT INTO audit_users (name, email, age, score, active) VALUES ('Eve', 'eve@test.com', 22, 96.1, true)")?;
     print("PASS: Inserted 5 users");
 
     // ========================================================================
@@ -57,7 +59,7 @@ fn main() {
     // ========================================================================
     print("=== TEST 4: SELECT Operations ===");
 
-    let allUsers: Str = db.raw("SELECT name, email, age FROM audit_users ORDER BY id")?;
+    let allUsers: Str = DB.raw("SELECT name, email, age FROM audit_users ORDER BY id")?;
     print("All users:", allUsers);
     print("PASS: SELECT all rows");
 
@@ -67,22 +69,22 @@ fn main() {
     print("=== TEST 5: Parameterized Queries ===");
 
     // String param (scalar string — documented pattern)
-    let byName: Str = db.rawWithParams("SELECT name, email FROM audit_users WHERE name = $1", "Alice")?;
+    let byName: Str = DB.rawWithParams("SELECT name, email FROM audit_users WHERE name = $1", "Alice")?;
     print("By name (Str param):", byName);
     print("PASS: String parameter");
 
     // Integer param (JSON array format)
-    let byAge: Str = db.rawWithParams("SELECT name, age FROM audit_users WHERE age > $1 ORDER BY age", "25")?;
+    let byAge: Str = DB.rawWithParams("SELECT name, age FROM audit_users WHERE age > $1 ORDER BY age", "25")?;
     print("By age > 25 (Int param):", byAge);
     print("PASS: Integer parameter");
 
     // Boolean param (JSON array format for bool)
-    let byActive: Str = db.rawWithParams("SELECT name, active FROM audit_users WHERE active = $1 ORDER BY name", "[true]")?;
+    let byActive: Str = DB.rawWithParams("SELECT name, active FROM audit_users WHERE active = $1 ORDER BY name", "[true]")?;
     print("Active users (Bool param):", byActive);
     print("PASS: Boolean parameter");
 
     // Multiple params of different types (JSON array)
-    let multiParam: Str = db.rawWithParams("SELECT name, age, score FROM audit_users WHERE age > $1 AND active = $2 ORDER BY name", "[24, true]")?;
+    let multiParam: Str = DB.rawWithParams("SELECT name, age, score FROM audit_users WHERE age > $1 AND active = $2 ORDER BY name", "[24, true]")?;
     print("Multi-param (Int + Bool):", multiParam);
     print("PASS: Multiple mixed-type params");
 
@@ -91,8 +93,8 @@ fn main() {
     // ========================================================================
     print("=== TEST 6: UPDATE Operations ===");
 
-    db.rawWithParams("UPDATE audit_users SET age = $1 WHERE name = $2", "[31, \"Alice\"]")?;
-    let afterUpdate: Str = db.rawWithParams("SELECT name, age FROM audit_users WHERE name = $1", "Alice")?;
+    DB.rawWithParams("UPDATE audit_users SET age = $1 WHERE name = $2", "[31, \"Alice\"]")?;
+    let afterUpdate: Str = DB.rawWithParams("SELECT name, age FROM audit_users WHERE name = $1", "Alice")?;
     print("After update:", afterUpdate);
     print("PASS: UPDATE with params");
 
@@ -101,20 +103,20 @@ fn main() {
     // ========================================================================
     print("=== TEST 7: DELETE Operations ===");
 
-    db.rawWithParams("DELETE FROM audit_users WHERE name = $1", "Eve")?;
-    let afterDelete: Str = db.raw("SELECT COUNT(*) as total FROM audit_users")?;
+    DB.rawWithParams("DELETE FROM audit_users WHERE name = $1", "Eve")?;
+    let afterDelete: Str = DB.raw("SELECT COUNT(*) as total FROM audit_users")?;
     print("After delete count:", afterDelete);
     print("PASS: DELETE with params");
 
     // Re-insert for remaining tests
-    db.raw("INSERT INTO audit_users (name, email, age, score, active) VALUES ('Eve', 'eve2@test.com', 22, 96.1, true)")?;
+    DB.raw("INSERT INTO audit_users (name, email, age, score, active) VALUES ('Eve', 'eve2@test.com', 22, 96.1, true)")?;
 
     // ========================================================================
     // TEST 8: Empty Result Sets
     // ========================================================================
     print("=== TEST 8: Empty Results ===");
 
-    let noMatch: Str = db.rawWithParams("SELECT * FROM audit_users WHERE name = $1", "NonExistent")?;
+    let noMatch: Str = DB.rawWithParams("SELECT * FROM audit_users WHERE name = $1", "NonExistent")?;
     print("No match result:", noMatch);
     print("PASS: Empty result set returns []");
 
@@ -123,8 +125,8 @@ fn main() {
     // ========================================================================
     print("=== TEST 9: NULL Handling ===");
 
-    db.raw("INSERT INTO audit_users (name, email) VALUES ('NullTester', 'null@test.com')")?;
-    let withNulls: Str = db.rawWithParams("SELECT name, age, score, active FROM audit_users WHERE email = $1", "null@test.com")?;
+    DB.raw("INSERT INTO audit_users (name, email) VALUES ('NullTester', 'null@test.com')")?;
+    let withNulls: Str = DB.rawWithParams("SELECT name, age, score, active FROM audit_users WHERE email = $1", "null@test.com")?;
     print("NULL fields:", withNulls);
     print("PASS: NULL values handled");
 
@@ -133,8 +135,8 @@ fn main() {
     // ========================================================================
     print("=== TEST 10: Special Characters ===");
 
-    db.rawWithParams("INSERT INTO audit_users (name, email) VALUES ($1, $2)", "[\"O'Brien\", \"obrien@test.com\"]")?;
-    let special: Str = db.rawWithParams("SELECT name FROM audit_users WHERE email = $1", "obrien@test.com")?;
+    DB.rawWithParams("INSERT INTO audit_users (name, email) VALUES ($1, $2)", "[\"O'Brien\", \"obrien@test.com\"]")?;
+    let special: Str = DB.rawWithParams("SELECT name FROM audit_users WHERE email = $1", "obrien@test.com")?;
     print("Special char result:", special);
     print("PASS: Single quote in string");
 
@@ -143,11 +145,11 @@ fn main() {
     // ========================================================================
     print("=== TEST 11: JOIN Queries ===");
 
-    db.rawWithParams("INSERT INTO audit_products (name, price, description, owner_id) VALUES ($1, $2, $3, $4)", "[\"Widget\", 100, \"A fine widget\", 1]")?;
-    db.rawWithParams("INSERT INTO audit_products (name, price, description, owner_id) VALUES ($1, $2, $3, $4)", "[\"Gadget\", 250, \"A cool gadget\", 2]")?;
+    DB.rawWithParams("INSERT INTO audit_products (name, price, description, owner_id) VALUES ($1, $2, $3, $4)", "[\"Widget\", 100, \"A fine widget\", 1]")?;
+    DB.rawWithParams("INSERT INTO audit_products (name, price, description, owner_id) VALUES ($1, $2, $3, $4)", "[\"Gadget\", 250, \"A cool gadget\", 2]")?;
     print("PASS: Inserted products with FK");
 
-    let joined: Str = db.raw("SELECT p.name as product_name, p.price, u.name as owner_name FROM audit_products p JOIN audit_users u ON p.owner_id = u.id ORDER BY p.id")?;
+    let joined: Str = DB.raw("SELECT p.name as product_name, p.price, u.name as owner_name FROM audit_products p JOIN audit_users u ON p.owner_id = u.id ORDER BY p.id")?;
     print("JOIN result:", joined);
     print("PASS: JOIN query works");
 
@@ -156,16 +158,16 @@ fn main() {
     // ========================================================================
     print("=== TEST 12: Aggregates ===");
 
-    let countResult: Str = db.raw("SELECT COUNT(*) as total FROM audit_users")?;
+    let countResult: Str = DB.raw("SELECT COUNT(*) as total FROM audit_users")?;
     print("COUNT:", countResult);
 
-    let sumResult: Str = db.raw("SELECT SUM(age) as total_age FROM audit_users WHERE age IS NOT NULL")?;
+    let sumResult: Str = DB.raw("SELECT SUM(age) as total_age FROM audit_users WHERE age IS NOT NULL")?;
     print("SUM:", sumResult);
 
-    let avgResult: Str = db.raw("SELECT AVG(score) as avg_score FROM audit_users WHERE score IS NOT NULL")?;
+    let avgResult: Str = DB.raw("SELECT AVG(score) as avg_score FROM audit_users WHERE score IS NOT NULL")?;
     print("AVG:", avgResult);
 
-    let minMax: Str = db.raw("SELECT MIN(age) as youngest, MAX(age) as oldest FROM audit_users WHERE age IS NOT NULL")?;
+    let minMax: Str = DB.raw("SELECT MIN(age) as youngest, MAX(age) as oldest FROM audit_users WHERE age IS NOT NULL")?;
     print("MIN/MAX:", minMax);
 
     print("PASS: Aggregate functions");
@@ -175,10 +177,10 @@ fn main() {
     // ========================================================================
     print("=== TEST 13: Pagination ===");
 
-    let page1: Str = db.raw("SELECT name FROM audit_users ORDER BY id LIMIT 2 OFFSET 0")?;
+    let page1: Str = DB.raw("SELECT name FROM audit_users ORDER BY id LIMIT 2 OFFSET 0")?;
     print("Page 1:", page1);
 
-    let page2: Str = db.raw("SELECT name FROM audit_users ORDER BY id LIMIT 2 OFFSET 2")?;
+    let page2: Str = DB.raw("SELECT name FROM audit_users ORDER BY id LIMIT 2 OFFSET 2")?;
     print("Page 2:", page2);
 
     print("PASS: LIMIT/OFFSET pagination");
@@ -188,7 +190,7 @@ fn main() {
     // ========================================================================
     print("=== TEST 14: Subqueries ===");
 
-    let subquery: Str = db.raw("SELECT name FROM audit_users WHERE age > (SELECT AVG(age) FROM audit_users WHERE age IS NOT NULL) ORDER BY name")?;
+    let subquery: Str = DB.raw("SELECT name FROM audit_users WHERE age > (SELECT AVG(age) FROM audit_users WHERE age IS NOT NULL) ORDER BY name")?;
     print("Above avg age:", subquery);
     print("PASS: Subquery works");
 
@@ -197,7 +199,7 @@ fn main() {
     // ========================================================================
     print("=== TEST 15: GROUP BY ===");
 
-    let grouped: Str = db.raw("SELECT active, COUNT(*) as cnt FROM audit_users GROUP BY active ORDER BY active")?;
+    let grouped: Str = DB.raw("SELECT active, COUNT(*) as cnt FROM audit_users GROUP BY active ORDER BY active")?;
     print("Grouped by active:", grouped);
     print("PASS: GROUP BY / HAVING");
 
@@ -206,8 +208,8 @@ fn main() {
     // ========================================================================
     print("=== TEST 16: UPSERT ===");
 
-    db.rawWithParams("INSERT INTO audit_users (name, email, age) VALUES ($1, $2, $3) ON CONFLICT (email) DO UPDATE SET age = EXCLUDED.age", "[\"Bob\", \"bob@test.com\", 26]")?;
-    let upserted: Str = db.rawWithParams("SELECT name, age FROM audit_users WHERE email = $1", "bob@test.com")?;
+    DB.rawWithParams("INSERT INTO audit_users (name, email, age) VALUES ($1, $2, $3) ON CONFLICT (email) DO UPDATE SET age = EXCLUDED.age", "[\"Bob\", \"bob@test.com\", 26]")?;
+    let upserted: Str = DB.rawWithParams("SELECT name, age FROM audit_users WHERE email = $1", "bob@test.com")?;
     print("After upsert:", upserted);
     print("PASS: UPSERT (ON CONFLICT)");
 
@@ -216,7 +218,7 @@ fn main() {
     // ========================================================================
     print("=== TEST 17: RETURNING ===");
 
-    let returned: Str = db.rawWithParams("INSERT INTO audit_products (name, price, description, owner_id) VALUES ($1, $2, $3, $4) RETURNING id, name, price", "[\"Doohickey\", 50, \"A doohickey\", 1]")?;
+    let returned: Str = DB.rawWithParams("INSERT INTO audit_products (name, price, description, owner_id) VALUES ($1, $2, $3, $4) RETURNING id, name, price", "[\"Doohickey\", 50, \"A doohickey\", 1]")?;
     print("RETURNING result:", returned);
     print("PASS: INSERT ... RETURNING");
 
@@ -227,7 +229,7 @@ fn main() {
 
     let mut i = 0;
     for i in 0..20 {
-        let r: Str = db.rawWithParams("SELECT $1 as val", "${i}")?;
+        let r: Str = DB.rawWithParams("SELECT $1 as val", "${i}")?;
     }
     print("PASS: 20 sequential queries completed (pool reuse)");
 
@@ -236,12 +238,12 @@ fn main() {
     // ========================================================================
     print("=== TEST 19: Batch INSERT ===");
 
-    db.raw("CREATE TABLE IF NOT EXISTS audit_batch (id SERIAL PRIMARY KEY, val INT)")?;
+    DB.raw("CREATE TABLE IF NOT EXISTS audit_batch (id SERIAL PRIMARY KEY, val INT)")?;
     let mut j = 0;
     for j in 0..50 {
-        db.rawWithParams("INSERT INTO audit_batch (val) VALUES ($1)", "${j}")?;
+        DB.rawWithParams("INSERT INTO audit_batch (val) VALUES ($1)", "${j}")?;
     }
-    let batchCount: Str = db.raw("SELECT COUNT(*) as total FROM audit_batch")?;
+    let batchCount: Str = DB.raw("SELECT COUNT(*) as total FROM audit_batch")?;
     print("Batch count:", batchCount);
     print("PASS: 50 batch inserts completed");
 
@@ -250,7 +252,7 @@ fn main() {
     // ========================================================================
     print("=== TEST 20: Complex WHERE ===");
 
-    let complex: Str = db.rawWithParams("SELECT name, age, score FROM audit_users WHERE (age > $1 OR score > $2) AND active = $3 ORDER BY name", "[25, 90.0, true]")?;
+    let complex: Str = DB.rawWithParams("SELECT name, age, score FROM audit_users WHERE (age > $1 OR score > $2) AND active = $3 ORDER BY name", "[25, 90.0, true]")?;
     print("Complex WHERE:", complex);
     print("PASS: Complex WHERE with mixed types");
 
@@ -259,7 +261,7 @@ fn main() {
     // ========================================================================
     print("=== TEST 21: CASE Expression ===");
 
-    let caseExpr: Str = db.raw("SELECT name, CASE WHEN age >= 30 THEN 'senior' WHEN age >= 25 THEN 'mid' ELSE 'junior' END as level FROM audit_users WHERE age IS NOT NULL ORDER BY name")?;
+    let caseExpr: Str = DB.raw("SELECT name, CASE WHEN age >= 30 THEN 'senior' WHEN age >= 25 THEN 'mid' ELSE 'junior' END as level FROM audit_users WHERE age IS NOT NULL ORDER BY name")?;
     print("CASE result:", caseExpr);
     print("PASS: CASE expression");
 
@@ -268,7 +270,7 @@ fn main() {
     // ========================================================================
     print("=== TEST 22: COALESCE ===");
 
-    let coalesced: Str = db.raw("SELECT name, COALESCE(age, 0) as safe_age FROM audit_users ORDER BY name")?;
+    let coalesced: Str = DB.raw("SELECT name, COALESCE(age, 0) as safe_age FROM audit_users ORDER BY name")?;
     print("COALESCE result:", coalesced);
     print("PASS: COALESCE NULL handling");
 
@@ -277,7 +279,7 @@ fn main() {
     // ========================================================================
     print("=== TEST 23: LIKE Pattern ===");
 
-    let likeResult: Str = db.rawWithParams("SELECT name FROM audit_users WHERE name LIKE $1 ORDER BY name", "%li%")?;
+    let likeResult: Str = DB.rawWithParams("SELECT name FROM audit_users WHERE name LIKE $1 ORDER BY name", "%li%")?;
     print("LIKE result:", likeResult);
     print("PASS: LIKE pattern matching");
 
@@ -286,7 +288,7 @@ fn main() {
     // ========================================================================
     print("=== TEST 24: IN Clause ===");
 
-    let inResult: Str = db.raw("SELECT name FROM audit_users WHERE name IN ('Alice', 'Bob', 'Charlie') ORDER BY name")?;
+    let inResult: Str = DB.raw("SELECT name FROM audit_users WHERE name IN ('Alice', 'Bob', 'Charlie') ORDER BY name")?;
     print("IN result:", inResult);
     print("PASS: IN clause");
 
@@ -295,7 +297,7 @@ fn main() {
     // ========================================================================
     print("=== TEST 25: DISTINCT ===");
 
-    let distinct: Str = db.raw("SELECT DISTINCT active FROM audit_users ORDER BY active")?;
+    let distinct: Str = DB.raw("SELECT DISTINCT active FROM audit_users ORDER BY active")?;
     print("DISTINCT result:", distinct);
     print("PASS: DISTINCT");
 
@@ -304,10 +306,10 @@ fn main() {
     // ========================================================================
     print("=== CLEANUP ===");
 
-    db.raw("DROP TABLE IF EXISTS audit_orders")?;
-    db.raw("DROP TABLE IF EXISTS audit_batch")?;
-    db.raw("DROP TABLE IF EXISTS audit_products")?;
-    db.raw("DROP TABLE IF EXISTS audit_users")?;
+    DB.raw("DROP TABLE IF EXISTS audit_orders")?;
+    DB.raw("DROP TABLE IF EXISTS audit_batch")?;
+    DB.raw("DROP TABLE IF EXISTS audit_products")?;
+    DB.raw("DROP TABLE IF EXISTS audit_users")?;
     print("PASS: All tables dropped");
 
     print("=== ALL 25 TESTS PASSED ===");

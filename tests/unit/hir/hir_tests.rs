@@ -185,28 +185,28 @@ fn fn_with_decorators() {
 
 #[test]
 fn type_basic() {
-    assert!(lower_ok("let x: Int = 42"));
+    assert!(lower_ok("let x: Int = 42;"));
 }
 
 #[test]
 fn type_array() {
-    assert!(lower_ok("let arr: [Int] = [1, 2, 3]"));
+    assert!(lower_ok("let arr: [Int] = [1, 2, 3];"));
 }
 
 #[test]
 fn type_map() {
-    assert!(lower_ok("let m: {Str: Int} = {\"a\": 1}"));
+    assert!(lower_ok("let m: {Str: Int} = {\"a\": 1};"));
 }
 
 #[test]
 fn type_optional() {
-    assert!(lower_ok("let x: Int? = nil"));
+    assert!(lower_ok("let x: Int? = nil;"));
 }
 
 #[test]
 fn type_custom() {
     assert!(lower_ok(
-        "struct User { name: Str } let u: User = User { name: \"x\" }"
+        "struct User { name: Str } let u: User = User { name: \"x\" };"
     ));
 }
 
@@ -216,7 +216,7 @@ fn type_custom() {
 
 #[test]
 fn struct_basic() {
-    let hir = parse_and_lower("struct Point { x: Int, y: Int }");
+    let hir = parse_and_lower("struct Point { x: Int, y: Int };");
     assert_eq!(
         hir.items
             .iter()
@@ -229,7 +229,7 @@ fn struct_basic() {
 #[test]
 fn struct_with_methods() {
     assert!(lower_ok(
-        "struct Point { x: Int } fn Point.getX(self) -> Int { return self.x; }"
+        "struct Point { x: Int } fn Point.getX(self) -> Int { return self.x; };"
     ));
 }
 
@@ -578,57 +578,57 @@ fn fn_multi_method() {
 
 #[test]
 fn type_float() {
-    assert!(lower_ok("let f: Float = 3.14"));
+    assert!(lower_ok("let f: Float = 3.14;"));
 }
 
 #[test]
 fn type_bool() {
-    assert!(lower_ok("let b: Bool = true"));
+    assert!(lower_ok("let b: Bool = true;"));
 }
 
 #[test]
 fn type_str() {
-    assert!(lower_ok("let s: Str = \"hello\""));
+    assert!(lower_ok("let s: Str = \"hello\";"));
 }
 
 #[test]
 fn type_nested_array() {
-    assert!(lower_ok("let m: [[Int]] = [[1, 2], [3, 4]]"));
+    assert!(lower_ok("let m: [[Int]] = [[1, 2], [3, 4]];"));
 }
 
 #[test]
 fn type_nested_map() {
-    assert!(lower_ok("let m: {Str: {Str: Int}} = {\"a\": {\"b\": 1}}"));
+    assert!(lower_ok("let m: {Str: {Str: Int}} = {\"a\": {\"b\": 1}};"));
 }
 
 #[test]
 fn type_map_array_value() {
-    assert!(lower_ok("let m: {Str: [Int]} = {\"nums\": [1, 2, 3]}"));
+    assert!(lower_ok("let m: {Str: [Int]} = {\"nums\": [1, 2, 3]};"));
 }
 
 #[test]
 fn type_array_of_maps() {
-    assert!(lower_ok("let a: [{Str: Int}] = [{\"a\": 1}]"));
+    assert!(lower_ok("let a: [{Str: Int}] = [{\"a\": 1}];"));
 }
 
 #[test]
 fn type_optional_str() {
-    assert!(lower_ok("let s: Str? = nil"));
+    assert!(lower_ok("let s: Str? = nil;"));
 }
 
 #[test]
 fn type_optional_array() {
-    assert!(lower_ok("let a: [Int]? = nil"));
+    assert!(lower_ok("let a: [Int]? = nil;"));
 }
 
 #[test]
 fn type_optional_map() {
-    assert!(lower_ok("let m: {Str: Int}? = nil"));
+    assert!(lower_ok("let m: {Str: Int}? = nil;"));
 }
 
 #[test]
 fn type_mut_var() {
-    assert!(lower_ok("let mut x: Int = 0"));
+    assert!(lower_ok("let mut x: Int = 0;"));
 }
 
 // =============================================================================

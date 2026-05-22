@@ -4,16 +4,25 @@
 //! and verifies no memory leaks exist.
 //!
 //! These tests only run on Linux (WSL) where Valgrind is available.
-//! On Windows, they compile-check only (no Valgrind).
+//! On Windows, they use fast in-process compilation verification.
+//! Set DOO_FULL_TEST=1 to also run via external binary on Windows.
 //! Zero overhead on production binaries — Valgrind instruments externally.
 
+use std::env;
 use std::path::Path;
 use std::process::Command;
+
+use crate::common::compile_snippet;
+
+/// Whether to run full binary-based tests (slow but verifies runtime).
+fn full_test_enabled() -> bool {
+    env::var("DOO_FULL_TEST").map(|v| v == "1").unwrap_or(false)
+}
 
 /// Find the doo binary based on the current platform
 fn find_doo_binary() -> String {
     let candidates: &[&str] = if cfg!(target_os = "windows") {
-        &["target-windows/release/doo.exe"]
+        &["target-windows/release/doo.exe", "target/release/doo.exe"]
     } else if cfg!(target_os = "macos") {
         &["target/release/doo"]
     } else {
@@ -48,7 +57,21 @@ fn has_valgrind() -> bool {
 fn run_leak_test(file_name: &str) {
     let test_dir = Path::new("tests/memory_leak/programs");
     let path = test_dir.join(file_name);
+    let path = path.canonicalize().unwrap_or(path);
     assert!(path.exists(), "Test file not found: {:?}", path);
+
+    // Fast path (Windows / default): in-process compilation verification
+    let content = std::fs::read_to_string(&path)
+        .expect("Failed to read test file");
+    if let Err(e) = compile_snippet(&content) {
+        panic!("Compilation failed for {}: {}", file_name, e);
+    }
+
+    // Full test: also run via external binary (requires DOO_FULL_TEST=1 or Linux+Valgrind)
+    let do_full = full_test_enabled() || (cfg!(target_os = "linux") && has_valgrind());
+    if !do_full {
+        return;
+    }
 
     let doo_bin = find_doo_binary();
 

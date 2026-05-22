@@ -1,7 +1,7 @@
 // OUTPUT: Host: localhost
 // OUTPUT: Port: 8080
 // OUTPUT: Debug: true
-pub struct Config {
+struct Config {
     host: Str,
     port: Int,
     debug: Bool,

@@ -1,5 +1,5 @@
 // OUTPUT: Simple import test
-import std::io
+import std::io;
 
 fn main() {
     print("Simple import test");

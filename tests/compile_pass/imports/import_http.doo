@@ -1,5 +1,5 @@
 // OUTPUT: HTTP import test
-import http { Server, Router }
+import http { Server, Router };
 
 fn main() {
     print("HTTP import test");

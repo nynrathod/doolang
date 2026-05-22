@@ -1953,11 +1953,7 @@ fn test_lex_expr_scope_resolution() {
     let kinds = lex_kinds("Module::method");
     assert_eq!(
         kinds,
-        vec![
-            TokenKind::Ident,
-            TokenKind::ColonColon,
-            TokenKind::Ident,
-        ]
+        vec![TokenKind::Ident, TokenKind::ColonColon, TokenKind::Ident,]
     );
 }
 
@@ -2143,7 +2139,10 @@ fn test_lex_error_unicode_escape_no_braces() {
 #[test]
 fn test_lex_error_multiple_errors() {
     let tokens = lex("` `");
-    let errors: Vec<_> = tokens.iter().filter(|t| t.kind == TokenKind::Error).collect();
+    let errors: Vec<_> = tokens
+        .iter()
+        .filter(|t| t.kind == TokenKind::Error)
+        .collect();
     assert_eq!(errors.len(), 2);
 }
 
