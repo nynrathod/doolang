@@ -844,7 +844,11 @@ fn resolve_input_path(input: &Path) -> Result<PathBuf, String> {
     }
 
     // 4. Last resort: deep BFS scan from CWD (handles monorepos, nested projects)
-    let search_root = if input.is_dir() { input.to_path_buf() } else { cwd };
+    let search_root = if input.is_dir() {
+        input.to_path_buf()
+    } else {
+        cwd
+    };
     let candidates = discover_main_doo_candidates(&search_root, 4, 25);
 
     if candidates.len() == 1 {
@@ -877,7 +881,11 @@ fn resolve_input_path(input: &Path) -> Result<PathBuf, String> {
     }
 
     // Multiple candidates — ambiguous
-    let display_path = if input.is_dir() || input.is_file() { input } else { &search_root };
+    let display_path = if input.is_dir() || input.is_file() {
+        input
+    } else {
+        &search_root
+    };
     let mut msg = format!(
         "Error: main.doo not found in {} or {}/src\n\nFound multiple candidates:\n",
         display_path.display(),
