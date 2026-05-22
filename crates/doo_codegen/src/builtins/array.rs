@@ -7,14 +7,44 @@
 
 use crate::context::CodegenContext;
 use doo_core::constants::ffi_names;
-use doo_core::types::{builtin, TypeId};
-use inkwell::types::BasicType;
+use doo_core::types::{builtin, TypeId, TypeKind};
+use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::{AddressSpace, IntPredicate};
 
 pub struct ArrayBuiltins;
 
 impl ArrayBuiltins {
+    /// Resolve a TypeId through TypeRef chains to find the underlying concrete type.
+    /// If the type resolves to a known primitive like Str/Int/Float/Bool,
+    /// return the canonical builtin TypeId. Otherwise return the type as-is.
+    /// This is critical for comparisons like `elem_type == builtin::STR` in emit_join
+    /// and other methods that need to distinguish between primitive types.
+    fn resolve_element_type(ctx: &CodegenContext, ty: TypeId) -> TypeId {
+        match ctx.get_type_kind(ty) {
+            Some(TypeKind::TypeRef { ref name }) => {
+                // Resolve through the type registry first (handles TypeRef chains)
+                if let Some(resolved) = ctx.type_registry.lookup(name) {
+                    return Self::resolve_element_type(ctx, resolved);
+                }
+                // Fallback: match well-known type names to builtin TypeIds
+                match name.as_str() {
+                    "Str" => builtin::STR,
+                    "Int" => builtin::INT,
+                    "Float" => builtin::FLOAT,
+                    "Bool" => builtin::BOOL,
+                    _ => ty,
+                }
+            }
+            // Non-canonical TypeIds that ARE primitives: map to canonical builtin
+            Some(TypeKind::Str) => builtin::STR,
+            Some(TypeKind::Int) => builtin::INT,
+            Some(TypeKind::Float) => builtin::FLOAT,
+            Some(TypeKind::Bool) => builtin::BOOL,
+            _ => ty,
+        }
+    }
+
     /// Dispatch array method call
     pub fn dispatch<'ctx>(
         ctx: &mut CodegenContext<'ctx>,
@@ -26,11 +56,18 @@ impl ArrayBuiltins {
         args: &[BasicValueEnum<'ctx>],
     ) -> Option<BasicValueEnum<'ctx>> {
         // Get element type if available, use ANY as fallback for unknown types
-        let elem_type_id = match ctx.get_type_kind(receiver_type) {
+        let raw_elem_type = match ctx.get_type_kind(receiver_type) {
             Some(doo_core::types::TypeKind::Array { element }) => element,
             Some(doo_core::types::TypeKind::Any) => doo_core::types::builtin::ANY,
             _ => doo_core::types::builtin::ANY, // Fallback for unknown types
         };
+
+        // Resolve TypeRef indirection: the element type stored in TypeKind::Array
+        // may be a TypeRef { name: "Str" } instead of the canonical builtin::STR.
+        // Without this resolution, comparisons like `elem_type == builtin::STR`
+        // fail in emit_join and other methods, causing %p formatting instead of
+        // proper string operations.
+        let elem_type_id = Self::resolve_element_type(ctx, raw_elem_type);
 
         // Track if this method returns an array (needs element type registration)
         let returns_array = matches!(method, "map" | "filter" | "slice");
@@ -830,7 +867,12 @@ impl ArrayBuiltins {
             .into_int_value();
 
         // total = elem_total + (len-1)*sep_len + 1
-        let elem_total = if elem_type == builtin::STR {
+        // Check LLVM type: pointer types (i8*) are string-like (Str, ANY, TypeRef).
+        // Non-pointer types (i64, f64, i8) are primitives that need snprintf formatting.
+        let elem_llvm = ctx.get_llvm_type(elem_type);
+        let is_str =
+            elem_llvm.is_pointer_type() && !matches!(elem_llvm, BasicTypeEnum::StructType(_));
+        let elem_total = if is_str {
             let total_alloca = ctx
                 .builder
                 .build_alloca(ctx.context.i64_type(), "total")
@@ -1002,7 +1044,11 @@ impl ArrayBuiltins {
             .ok()?
             .into_pointer_value();
 
-        if elem_type == builtin::STR {
+        // Check LLVM type: pointer types are string-like, non-pointers need snprintf
+        let elem_llvm = ctx.get_llvm_type(elem_type);
+        let is_str =
+            elem_llvm.is_pointer_type() && !matches!(elem_llvm, BasicTypeEnum::StructType(_));
+        if is_str {
             let elem_llvm = ctx.get_llvm_type(elem_type);
             let base = ctx
                 .builder

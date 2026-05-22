@@ -32,7 +32,7 @@ use doo_core::types::TypeKind;
 use doo_mir::sym::resolve;
 use doo_mir::{MirInstr, MirInstrKind, MirOperand};
 use inkwell::module::Linkage;
-use inkwell::types::{BasicType, BasicTypeEnum, BasicMetadataTypeEnum};
+use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum};
 use inkwell::values::BasicValueEnum;
 use inkwell::IntPredicate;
 /// Route context for handler wrapper generation.
@@ -243,15 +243,14 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
             } => {
                 let method_s = resolve(*method);
                 let dest_s = dest.as_ref().map(|d| resolve(*d));
-// Intercept JSON.stringify and JSON.parse (Static Specialization)
+                // Intercept JSON.stringify and JSON.parse (Static Specialization)
                 // Check for both Local("JSON") and Global("JSON") for module calls
                 let is_json_module = matches!(receiver,
                     MirOperand::Local(name) | MirOperand::Global(name) if resolve(*name) == ffi_names::MODULE_JSON);
 
                 if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok()
                     && method_s == "parse"
-                {
-                }
+                {}
 
                 if is_json_module {
                     if method_s == "stringify" {
@@ -281,14 +280,12 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     }
                 }
 
-                let recv_val = operand_to_value(ctx, receiver)
-                    .unwrap_or_else(|| {
-
-                        ctx.context
-                            .ptr_type(inkwell::AddressSpace::default())
-                            .const_null()
-                            .into()
-                    });
+                let recv_val = operand_to_value(ctx, receiver).unwrap_or_else(|| {
+                    ctx.context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .const_null()
+                        .into()
+                });
 
                 let arg_vals: Vec<_> = args
                     .iter()
@@ -301,14 +298,13 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 };
                 let receiver_name = receiver_name_owned.as_deref();
 
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                }
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
 
                 // Builtin dispatch (single source of truth via TypeRegistry)
                 if recv_val.is_pointer_value() {
                     let recv_ptr = recv_val.into_pointer_value();
                     if let Some(kind) = ctx.get_type_kind(*receiver_type) {
-let builtin_result = match kind {
+                        let builtin_result = match kind {
                             TypeKind::Str => StringBuiltins::dispatch(
                                 ctx,
                                 dest_s.as_deref(),
@@ -347,6 +343,7 @@ let builtin_result = match kind {
                                         | "slice"
                                         | "map"
                                         | "filter"
+                                        | "join"
                                 ) {
                                     ArrayBuiltins::dispatch(
                                         ctx,
@@ -368,9 +365,7 @@ let builtin_result = match kind {
                         }
                     } else {
                         // Fallback for unknown type
-                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-
-                        }
+                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                         if matches!(
                             method_s.as_str(),
                             "len" | "push" | "pop" | "get" | "set" | "contains" | "slice"
@@ -384,8 +379,7 @@ let builtin_result = match kind {
                                 &method_s,
                                 &arg_vals,
                             );
-                            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                            }
+                            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                             if result.is_some() {
                                 return result;
                             }
@@ -396,7 +390,11 @@ let builtin_result = match kind {
                 // ================================================================
                 // Interface dispatch: vtable-based indirect call
                 // ================================================================
-                if let Some(TypeKind::Interface { name: iface_name, methods: iface_methods }) = ctx.get_type_kind(*receiver_type) {
+                if let Some(TypeKind::Interface {
+                    name: iface_name,
+                    methods: iface_methods,
+                }) = ctx.get_type_kind(*receiver_type)
+                {
                     // Find the method index in the interface
                     let method_idx = iface_methods.iter().position(|(m, _, _, _)| m == &method_s);
                     if let Some(idx) = method_idx {
@@ -404,30 +402,43 @@ let builtin_result = match kind {
                         // Re-get recv_val to avoid move issues with extract_value
                         let recv_val2 = operand_to_value(ctx, receiver)?;
                         let fat_struct = recv_val2.into_struct_value();
-                        let data_ptr = ctx.builder.build_extract_value(fat_struct, 0, "iface_data_ptr")
-                            .ok()?.into_pointer_value();
-                        let vtable_ptr = ctx.builder.build_extract_value(fat_struct, 1, "iface_vtable_ptr")
-                            .ok()?.into_pointer_value();
+                        let data_ptr = ctx
+                            .builder
+                            .build_extract_value(fat_struct, 0, "iface_data_ptr")
+                            .ok()?
+                            .into_pointer_value();
+                        let vtable_ptr = ctx
+                            .builder
+                            .build_extract_value(fat_struct, 1, "iface_vtable_ptr")
+                            .ok()?
+                            .into_pointer_value();
 
                         // vtable is an array of function pointers stored as ptr*
                         // Load the function pointer at index `idx`
                         let fn_ptr_ptr = unsafe {
-                            ctx.builder.build_in_bounds_gep(
-                                ctx.ptr_type(),
-                                vtable_ptr,
-                                &[ctx.i64_type().const_int(idx as u64, false)],
-                                "vtable_entry_ptr",
-                            ).ok()?
+                            ctx.builder
+                                .build_in_bounds_gep(
+                                    ctx.ptr_type(),
+                                    vtable_ptr,
+                                    &[ctx.i64_type().const_int(idx as u64, false)],
+                                    "vtable_entry_ptr",
+                                )
+                                .ok()?
                         };
-                        let fn_ptr = ctx.builder.build_load(ctx.ptr_type(), fn_ptr_ptr, "vtable_fn_ptr")
-                            .ok()?.into_pointer_value();
+                        let fn_ptr = ctx
+                            .builder
+                            .build_load(ctx.ptr_type(), fn_ptr_ptr, "vtable_fn_ptr")
+                            .ok()?
+                            .into_pointer_value();
 
                         // Build the function type for the indirect call from interface method signature
-                        let (_, ref param_type_ids, ref ret_type_id, ref err_type_id) = iface_methods[idx];
+                        let (_, ref param_type_ids, ref ret_type_id, ref err_type_id) =
+                            iface_methods[idx];
                         let has_error = err_type_id.is_some();
 
                         // Build parameter types: first param is always ptr (self/data_ptr)
-                        let mut param_llvm_types: Vec<BasicMetadataTypeEnum> = vec![ctx.ptr_type().into()];
+                        let mut param_llvm_types: Vec<BasicMetadataTypeEnum> =
+                            vec![ctx.ptr_type().into()];
                         for pt in param_type_ids {
                             let lt = ctx.get_llvm_type(*pt);
                             param_llvm_types.push(lt.into());
@@ -437,7 +448,8 @@ let builtin_result = match kind {
                         let fn_type = if has_error {
                             // Result return: { i64, ptr }
                             let result_type = ctx.context.struct_type(
-                                &[ctx.i64_type().into(), ctx.ptr_type().into()], false
+                                &[ctx.i64_type().into(), ctx.ptr_type().into()],
+                                false,
                             );
                             result_type.fn_type(&param_llvm_types, false)
                         } else if let Some(rt) = ret_type_id {
@@ -445,7 +457,9 @@ let builtin_result = match kind {
                             match ret_llvm {
                                 BasicTypeEnum::IntType(t) => t.fn_type(&param_llvm_types, false),
                                 BasicTypeEnum::FloatType(t) => t.fn_type(&param_llvm_types, false),
-                                BasicTypeEnum::PointerType(t) => t.fn_type(&param_llvm_types, false),
+                                BasicTypeEnum::PointerType(t) => {
+                                    t.fn_type(&param_llvm_types, false)
+                                }
                                 BasicTypeEnum::StructType(t) => t.fn_type(&param_llvm_types, false),
                                 BasicTypeEnum::ArrayType(t) => t.fn_type(&param_llvm_types, false),
                                 BasicTypeEnum::VectorType(t) => t.fn_type(&param_llvm_types, false),
@@ -456,14 +470,16 @@ let builtin_result = match kind {
                         };
 
                         // Build args: data_ptr as self, then method args
-                        let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum> = vec![data_ptr.into()];
+                        let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum> =
+                            vec![data_ptr.into()];
                         for v in &arg_vals {
                             call_args.push((*v).into());
                         }
 
-                        let call_site = ctx.builder.build_indirect_call(
-                            fn_type, fn_ptr, &call_args, "iface_call"
-                        ).ok()?;
+                        let call_site = ctx
+                            .builder
+                            .build_indirect_call(fn_type, fn_ptr, &call_args, "iface_call")
+                            .ok()?;
 
                         if let Some(dest_name) = dest {
                             if let Some(ret_val) = call_site.try_as_basic_value().basic() {
@@ -477,7 +493,6 @@ let builtin_result = match kind {
                         }
                         return None;
                     } else {
-
                         return None;
                     }
                 }
@@ -485,7 +500,9 @@ let builtin_result = match kind {
                 // Fallback: lookup method function, prepend receiver to args
                 // Format: _method_{TypeName}_{MethodName}
                 let receiver_name_str = match receiver {
-                    MirOperand::Global(name) | MirOperand::Local(name) | MirOperand::Temp(name) => Some(resolve(*name)),
+                    MirOperand::Global(name) | MirOperand::Local(name) | MirOperand::Temp(name) => {
+                        Some(resolve(*name))
+                    }
                     _ => None,
                 };
                 let type_name = (|| -> Option<String> {
@@ -555,13 +572,27 @@ let builtin_result = match kind {
                             // Instance method: prepend receiver (self)
                             let recv_param_type: Option<BasicTypeEnum> =
                                 param_types.get(0).and_then(|t| match t {
-                                    inkwell::types::BasicMetadataTypeEnum::ArrayType(t) => Some((*t).into()),
-                                    inkwell::types::BasicMetadataTypeEnum::FloatType(t) => Some((*t).into()),
-                                    inkwell::types::BasicMetadataTypeEnum::IntType(t) => Some((*t).into()),
-                                    inkwell::types::BasicMetadataTypeEnum::PointerType(t) => Some((*t).into()),
-                                    inkwell::types::BasicMetadataTypeEnum::StructType(t) => Some((*t).into()),
-                                    inkwell::types::BasicMetadataTypeEnum::VectorType(t) => Some((*t).into()),
-                                    inkwell::types::BasicMetadataTypeEnum::ScalableVectorType(t) => Some((*t).into()),
+                                    inkwell::types::BasicMetadataTypeEnum::ArrayType(t) => {
+                                        Some((*t).into())
+                                    }
+                                    inkwell::types::BasicMetadataTypeEnum::FloatType(t) => {
+                                        Some((*t).into())
+                                    }
+                                    inkwell::types::BasicMetadataTypeEnum::IntType(t) => {
+                                        Some((*t).into())
+                                    }
+                                    inkwell::types::BasicMetadataTypeEnum::PointerType(t) => {
+                                        Some((*t).into())
+                                    }
+                                    inkwell::types::BasicMetadataTypeEnum::StructType(t) => {
+                                        Some((*t).into())
+                                    }
+                                    inkwell::types::BasicMetadataTypeEnum::VectorType(t) => {
+                                        Some((*t).into())
+                                    }
+                                    inkwell::types::BasicMetadataTypeEnum::ScalableVectorType(
+                                        t,
+                                    ) => Some((*t).into()),
                                     inkwell::types::BasicMetadataTypeEnum::MetadataType(_) => None,
                                 });
                             all_args.push(coerce_arg_to_param_type(ctx, recv_val, recv_param_type));
@@ -1132,7 +1163,7 @@ let builtin_result = match kind {
                 if error_name_s != "_" {
                     if let Some(TypeKind::Struct { name, .. }) = ctx.get_type_kind(*err_type) {
                         ctx.set_temp_struct_type(&error_name_s, &name);
-}
+                    }
                     ctx.set_variable_type(&error_name_s, effective_err_type);
                 }
 
@@ -1411,8 +1442,12 @@ let builtin_result = match kind {
                 let struct_type = if let BasicTypeEnum::StructType(st) = iface_llvm_type {
                     st
                 } else {
-                    let ptr_type = ctx.context.i8_type().ptr_type(inkwell::AddressSpace::default());
-                    ctx.context.struct_type(&[ptr_type.into(), ptr_type.into()], false)
+                    let ptr_type = ctx
+                        .context
+                        .i8_type()
+                        .ptr_type(inkwell::AddressSpace::default());
+                    ctx.context
+                        .struct_type(&[ptr_type.into(), ptr_type.into()], false)
                 };
 
                 // Get the concrete struct pointer
@@ -1427,55 +1462,70 @@ let builtin_result = match kind {
                             ctx.builder.build_store(alloca, val).ok();
                             alloca
                         } else {
-                            ctx.context.i8_type().ptr_type(inkwell::AddressSpace::default()).const_null()
+                            ctx.context
+                                .i8_type()
+                                .ptr_type(inkwell::AddressSpace::default())
+                                .const_null()
                         }
                     }
-                    None => ctx.context.i8_type().ptr_type(inkwell::AddressSpace::default()).const_null(),
+                    None => ctx
+                        .context
+                        .i8_type()
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .const_null(),
                 };
 
-                let i8_ptr_type = ctx.context.i8_type().ptr_type(inkwell::AddressSpace::default());
-                let data_i8_ptr = ctx.builder
+                let i8_ptr_type = ctx
+                    .context
+                    .i8_type()
+                    .ptr_type(inkwell::AddressSpace::default());
+                let data_i8_ptr = ctx
+                    .builder
                     .build_pointer_cast(data_ptr, i8_ptr_type, "iface_data")
                     .ok()
                     .unwrap_or(i8_ptr_type.const_null());
 
                 // Build vtable: look up each interface method on the concrete type
                 // and store function pointers in a global constant array.
-                let concrete_name = ctx.get_type_kind(*concrete_type)
-                    .and_then(|k| match k {
-                        TypeKind::Struct { name, .. } => Some(name),
-                        TypeKind::Enum { name, .. } => Some(name),
-                        _ => None,
-                    });
-                let iface_methods = ctx.get_type_kind(*interface_type)
-                    .and_then(|k| match k {
-                        TypeKind::Interface { methods, .. } => Some(methods),
-                        _ => None,
-                    });
+                let concrete_name = ctx.get_type_kind(*concrete_type).and_then(|k| match k {
+                    TypeKind::Struct { name, .. } => Some(name),
+                    TypeKind::Enum { name, .. } => Some(name),
+                    _ => None,
+                });
+                let iface_methods = ctx.get_type_kind(*interface_type).and_then(|k| match k {
+                    TypeKind::Interface { methods, .. } => Some(methods),
+                    _ => None,
+                });
 
-                let vtable_ptr = if let (Some(cname), Some(methods)) = (concrete_name, iface_methods) {
+                let vtable_ptr = if let (Some(cname), Some(methods)) =
+                    (concrete_name, iface_methods)
+                {
                     // Build array of function pointers for this concrete type
                     let mut fn_ptrs: Vec<inkwell::values::PointerValue<'ctx>> = Vec::new();
                     for (method_name, _, _, _) in &methods {
                         let mangled = format!("_method_{}_{}", cname, method_name);
                         if let Some(func) = ctx.get_function(&mangled) {
                             let fptr = func.as_global_value().as_pointer_value();
-                            let cast = ctx.builder
+                            let cast = ctx
+                                .builder
                                 .build_pointer_cast(fptr, i8_ptr_type, "vtable_fn")
                                 .unwrap_or(i8_ptr_type.const_null());
                             fn_ptrs.push(cast);
                         } else {
-
                             fn_ptrs.push(i8_ptr_type.const_null());
                         }
                     }
                     // Create a global constant array for the vtable
                     let vtable_array_type = i8_ptr_type.array_type(fn_ptrs.len() as u32);
                     let vtable_const = i8_ptr_type.const_array(&fn_ptrs);
-                    let vtable_name = format!("__vtable_{}_as_{}",
+                    let vtable_name = format!(
+                        "__vtable_{}_as_{}",
                         cname,
                         ctx.get_type_kind(*interface_type)
-                            .and_then(|k| match k { TypeKind::Interface { name, .. } => Some(name), _ => None })
+                            .and_then(|k| match k {
+                                TypeKind::Interface { name, .. } => Some(name),
+                                _ => None,
+                            })
                             .unwrap_or_default()
                     );
                     // Check if vtable global already exists
@@ -1487,9 +1537,14 @@ let builtin_result = match kind {
                         g
                     });
                     // Get pointer to first element of vtable array
-                    let vtable_base = ctx.builder.build_pointer_cast(
-                        vtable_global.as_pointer_value(), i8_ptr_type, "vtable_base"
-                    ).unwrap_or(i8_ptr_type.const_null());
+                    let vtable_base = ctx
+                        .builder
+                        .build_pointer_cast(
+                            vtable_global.as_pointer_value(),
+                            i8_ptr_type,
+                            "vtable_base",
+                        )
+                        .unwrap_or(i8_ptr_type.const_null());
                     vtable_base
                 } else {
                     i8_ptr_type.const_null()
@@ -1497,10 +1552,16 @@ let builtin_result = match kind {
 
                 // Build the fat pointer struct { data_ptr, vtable_ptr }
                 let mut fat_ptr = struct_type.get_undef();
-                if let Ok(s) = ctx.builder.build_insert_value(fat_ptr, data_i8_ptr, 0, "iface_data_field") {
+                if let Ok(s) =
+                    ctx.builder
+                        .build_insert_value(fat_ptr, data_i8_ptr, 0, "iface_data_field")
+                {
                     fat_ptr = s.into_struct_value();
                 }
-                if let Ok(s) = ctx.builder.build_insert_value(fat_ptr, vtable_ptr, 1, "iface_vtable_field") {
+                if let Ok(s) =
+                    ctx.builder
+                        .build_insert_value(fat_ptr, vtable_ptr, 1, "iface_vtable_field")
+                {
                     fat_ptr = s.into_struct_value();
                 }
 

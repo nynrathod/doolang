@@ -33,6 +33,28 @@ pub fn build_expr_with_expected_type(
         }
     }
 
+    // CRITICAL: Propagate expected type to array expressions.
+    // When a Let statement has a type annotation like `let mut arr: [Str] = []`,
+    // the empty array infers elem_type = ANY (no elements to infer from).
+    // We must use the expected_type to fix the array's element type, otherwise
+    // subsequent method calls like .join() won't know the correct element type
+    // and will use %p formatting instead of string operations.
+    if let HirExprKind::Array(_) = &expr.kind {
+        let operand = build_expr(builder, expr);
+
+        if let Some(exp_tid) = expected_type {
+            if let Some(exp_kind) = builder.type_registry.get(exp_tid) {
+                if let TypeKind::Array { .. } = &exp_kind.kind {
+                    // The expected type is a concrete array type, use it
+                    if let MirOperand::Temp(temp_name) = operand {
+                        builder.set_temp_type(temp_name, exp_tid);
+                    }
+                }
+            }
+        }
+        return operand;
+    }
+
     // For other expressions, use the regular build_expr
     build_expr(builder, expr)
 }
