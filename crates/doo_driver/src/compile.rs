@@ -792,25 +792,60 @@ fn print_timings(timings: &[(&str, std::time::Duration)], total: std::time::Dura
     eprintln!();
 }
 
+/// Try to find `main.doo` or `src/main.doo` in a directory.
+/// Returns the path to main.doo if found, in order: `dir/main.doo` then `dir/src/main.doo`.
+fn try_find_main_in(dir: &Path) -> Option<PathBuf> {
+    let main_file = dir.join("main.doo");
+    if main_file.exists() {
+        return Some(main_file);
+    }
+    let src_main = dir.join("src").join("main.doo");
+    if src_main.exists() {
+        return Some(src_main);
+    }
+    None
+}
+
+/// Walk UP the directory tree from `start` looking for a project root
+/// (a directory containing `main.doo` or `src/main.doo`).
+/// Returns (project_root, path_to_main.doo) if found.
+fn find_project_up(start: &Path) -> Option<(PathBuf, PathBuf)> {
+    let mut current = if start.is_dir() {
+        start.to_path_buf()
+    } else {
+        start.parent()?.to_path_buf()
+    };
+
+    loop {
+        if let Some(main_path) = try_find_main_in(&current) {
+            return Some((current, main_path));
+        }
+        current = current.parent()?.to_path_buf();
+    }
+}
+
 fn resolve_input_path(input: &Path) -> Result<PathBuf, String> {
+    // 1. Input is a file → use directly
     if input.is_file() {
         return Ok(input.to_path_buf());
     }
 
-    // Try main.doo in directory
-    let main_file = input.join("main.doo");
-    if main_file.exists() {
-        return Ok(main_file);
+    // 2. Input is an existing directory → try main.doo / src/main.doo
+    if input.is_dir() {
+        if let Some(main_path) = try_find_main_in(input) {
+            return Ok(main_path);
+        }
     }
 
-    // Try src/main.doo
-    let src_main = input.join("src").join("main.doo");
-    if src_main.exists() {
-        return Ok(src_main);
+    // 3. Walk UP from CWD to find project root → direct, fast (O(depth) stat calls)
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if let Some((_root, main_path)) = find_project_up(&cwd) {
+        return Ok(main_path);
     }
 
-    // Search for candidates
-    let candidates = discover_main_doo_candidates(input, 4, 25);
+    // 4. Last resort: deep BFS scan from CWD (handles monorepos, nested projects)
+    let search_root = if input.is_dir() { input.to_path_buf() } else { cwd };
+    let candidates = discover_main_doo_candidates(&search_root, 4, 25);
 
     if candidates.len() == 1 {
         return Ok(candidates[0].clone());
@@ -819,37 +854,34 @@ fn resolve_input_path(input: &Path) -> Result<PathBuf, String> {
     if candidates.is_empty() {
         return Err(format!(
             "Error: main.doo not found in {} or {}/src",
-            input.display(),
-            input.display()
+            search_root.display(),
+            search_root.display()
         ));
     }
 
-    // Check DOO_ENTRY environment variable
+    // 5. DOO_ENTRY env var for explicit override
     if let Ok(entry) = env::var("DOO_ENTRY") {
         let entry_path = PathBuf::from(&entry);
         let entry_path = if entry_path.is_absolute() {
             entry_path
         } else {
-            input.join(&entry_path)
+            search_root.join(&entry_path)
         };
 
         if entry_path.is_file() {
             return Ok(entry_path);
         }
-
-        if entry_path.is_dir() {
-            let entry_main = entry_path.join("main.doo");
-            if entry_main.exists() {
-                return Ok(entry_main);
-            }
+        if let Some(main_path) = try_find_main_in(&entry_path) {
+            return Ok(main_path);
         }
     }
 
-    // Multiple candidates found
+    // Multiple candidates — ambiguous
+    let display_path = if input.is_dir() || input.is_file() { input } else { &search_root };
     let mut msg = format!(
         "Error: main.doo not found in {} or {}/src\n\nFound multiple candidates:\n",
-        input.display(),
-        input.display()
+        display_path.display(),
+        display_path.display()
     );
     for c in &candidates {
         msg.push_str(&format!("  - {}\n", c.display()));
