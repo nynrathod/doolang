@@ -1087,6 +1087,12 @@ fn build_library_search_paths() -> Vec<PathBuf> {
         if let Some(dir) = exe_path.parent() {
             paths.push(dir.to_path_buf());
 
+            // Search lib/ subdirectory next to executable (installed .lib files)
+            let lib_dir = dir.join("lib");
+            if lib_dir.exists() {
+                paths.push(lib_dir);
+            }
+
             // Search packages/ subdirectories next to executable
             let packages_dir = dir.join("packages");
             if packages_dir.exists() {
@@ -1402,7 +1408,7 @@ fn link_windows(
             lib_entries.push((lib, lib_dir, lib_file));
         } else {
             return Err(format!(
-                "FFI library '{}.dll.lib' not found.\n\
+                "FFI library '{}' (.lib/.dll.lib) not found.\n\
                 Build it first with: cargo build --release\n\
                 Searched in: {:?}",
                 lib, search_paths
