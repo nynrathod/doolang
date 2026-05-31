@@ -264,6 +264,7 @@ pub const DOO_STRING_CHAR_AT_UTF8: &str = "doo_string_char_at_utf8";
 pub const DOO_STRING_REVERSE_UTF8: &str = "doo_string_reverse_utf8";
 pub const DOO_STRING_SUBSTRING_UTF8: &str = "doo_string_substring_utf8";
 pub const DOO_STRING_REPLACE: &str = "doo_string_replace";
+pub const DOO_STRING_REPLACE_ALL: &str = "doo_string_replace_all";
 pub const DOO_STRING_TRIM: &str = "doo_string_trim";
 pub const DOO_STRING_TRIM_START: &str = "doo_string_trim_start";
 pub const DOO_STRING_TRIM_END: &str = "doo_string_trim_end";
