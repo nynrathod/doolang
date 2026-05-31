@@ -113,6 +113,20 @@ impl ScopeManager {
         }
     }
 
+    /// Keep exiting scopes until we reach one of the given kind.
+    /// Safety net for unbalanced scope entries from buggy check_stmt handlers.
+    pub fn exit_to_kind(&mut self, target: ScopeKind) {
+        while self.scopes[self.current].kind != target && self.scopes[self.current].parent.is_some()
+        {
+            self.exit_scope();
+        }
+    }
+
+    /// Get the current scope index (for debugging).
+    pub fn current_idx(&self) -> usize {
+        self.current
+    }
+
     /// Define a symbol in the current scope.
     pub fn define(&mut self, symbol: Symbol) -> Result<(), ScopeError> {
         let scope = &mut self.scopes[self.current];

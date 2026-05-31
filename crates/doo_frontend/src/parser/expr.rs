@@ -297,23 +297,29 @@ fn parse_ident(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
     }
 
     if parser.check(TokenKind::LBrace) && name.chars().next().map_or(false, |c| c.is_uppercase()) {
-        parser.advance();
-        let fields = parser.parse_list(TokenKind::RBrace, |p| {
-            let field = p.expect_ident()?;
-            if p.check(TokenKind::Colon) {
-                p.advance();
-                let value = p.parse_expression()?;
-                Ok((field, value))
-            } else {
-                let span = p.prev_span();
-                Ok((field.clone(), Expr::new(ExprKind::Ident(field), span)))
-            }
-        })?;
-        parser.expect(TokenKind::RBrace)?;
-        return Ok(Expr::new(
-            ExprKind::StructLit { name, fields },
-            start.merge(&parser.prev_span()),
-        ));
+        // Only parse as struct literal if the content looks like fields,
+        // not a code block (if-body, for-body, etc.).
+        // Struct: `{ field: val, ... }` or `{ field, ... }` or `{}`
+        // Block:  `{ return ... }`, `{ let ... }`, `{ if ... }`, etc.
+        if parser.is_struct_literal_body() {
+            parser.advance(); // consume `{`
+            let fields = parser.parse_list(TokenKind::RBrace, |p| {
+                let field = p.expect_ident()?;
+                if p.check(TokenKind::Colon) {
+                    p.advance();
+                    let value = p.parse_expression()?;
+                    Ok((field, value))
+                } else {
+                    let span = p.prev_span();
+                    Ok((field.clone(), Expr::new(ExprKind::Ident(field), span)))
+                }
+            })?;
+            parser.expect(TokenKind::RBrace)?;
+            return Ok(Expr::new(
+                ExprKind::StructLit { name, fields },
+                start.merge(&parser.prev_span()),
+            ));
+        }
     }
 
     Ok(Expr::new(ExprKind::Ident(name), start))

@@ -13,8 +13,8 @@ use doo_core::{
     Span,
 };
 use doo_hir::{
-    ConstValue, HirBinOp, HirExpr, HirExprKind, HirFunction, HirItem, HirMatchPattern,
-    HirProgram, HirStmt, HirStmtKind,
+    ConstValue, HirBinOp, HirExpr, HirExprKind, HirFunction, HirItem, HirMatchPattern, HirProgram,
+    HirStmt, HirStmtKind,
 };
 
 /// Type checking error.
@@ -554,6 +554,8 @@ impl TypeChecker {
             }
         }
 
+        self.scopes.exit_scope();
+
         // MissingReturn: function has a return type but body doesn't end with return
         if let Some(ret_type) = func.return_type {
             if ret_type != builtin::VOID && !found_return && func.name != "main" {
@@ -580,8 +582,6 @@ impl TypeChecker {
                 }
             }
         }
-
-        self.scopes.exit_scope();
 
         // Restore previous function context
         self.current_return_type = prev_return_type;
@@ -2277,9 +2277,8 @@ impl TypeChecker {
                     && rhs_inner != builtin::ANY
                     && lhs_inner != rhs_inner
                 {
-                    let both_numeric =
-                        (lhs_inner == builtin::INT || lhs_inner == builtin::FLOAT)
-                            && (rhs_inner == builtin::INT || rhs_inner == builtin::FLOAT);
+                    let both_numeric = (lhs_inner == builtin::INT || lhs_inner == builtin::FLOAT)
+                        && (rhs_inner == builtin::INT || rhs_inner == builtin::FLOAT);
                     if !both_numeric {
                         self.errors.push(TypeError {
                             kind: TypeErrorKind::Incompatible {
@@ -2474,9 +2473,7 @@ fn is_const_evaluable(expr: &HirExpr) -> bool {
     match &expr.kind {
         HirExprKind::Const(_) => true,
         HirExprKind::UnaryOp { operand, .. } => is_const_evaluable(operand),
-        HirExprKind::BinOp { lhs, rhs, .. } => {
-            is_const_evaluable(lhs) && is_const_evaluable(rhs)
-        }
+        HirExprKind::BinOp { lhs, rhs, .. } => is_const_evaluable(lhs) && is_const_evaluable(rhs),
         HirExprKind::Array(elements) => elements.iter().all(is_const_evaluable),
         HirExprKind::Map(pairs) => pairs
             .iter()

@@ -297,6 +297,18 @@ impl Parser {
                     | TokenKind::For
                     | TokenKind::Return
             ) {
+                // Inside a function body, `fn` is a nested declaration,
+                // not a recovery point. Skip it to avoid consuming the
+                // next top-level function as part of the current body.
+                if self.current().kind == TokenKind::Fn && self.fn_depth > 0 {
+                    self.advance();
+                    continue;
+                }
+                return;
+            }
+            // Also stop at `}` — the closing brace of the current block
+            // is a natural recovery point.
+            if self.current().kind == TokenKind::RBrace {
                 return;
             }
             self.advance();
@@ -321,6 +333,31 @@ impl Parser {
     /// Check if the next token (after current) is of the given kind.
     pub(super) fn peek_is(&self, kind: TokenKind) -> bool {
         self.peek_next().kind == kind
+    }
+
+    /// Check if the `{` after an uppercase identifier contains struct fields
+    /// (e.g., `Ident: value` or `Ident,` or `}`) rather than code statements.
+    /// Used to disambiguate struct literals from block openings like if-bodies.
+    pub(super) fn is_struct_literal_body(&self) -> bool {
+        // After `{`, if next token is `}` (empty struct), it's a struct.
+        if self.peek_is(TokenKind::RBrace) {
+            return true;
+        }
+        // Check 2 ahead: after `{`, the first token should be an identifier
+        // followed by `:` or `,` or `}` for it to be a struct field.
+        // If it's `return`, `let`, `if`, `for`, etc., it's a code block.
+        let after_brace = self.peek_next();
+        if after_brace.kind == TokenKind::Ident {
+            // Peek 2 ahead: after the identifier, check for `:` (typed field)
+            // or `,`/`}` (shorthand field / end of struct)
+            if self.pos + 2 < self.tokens.len() {
+                let after_ident = &self.tokens[self.pos + 2];
+                return matches!(after_ident.kind, TokenKind::Colon | TokenKind::Comma | TokenKind::RBrace);
+            }
+            return true;
+        }
+        // Not an identifier — must be a block (return, let, if, etc.)
+        false
     }
 
     /// Parse expression with precedence (internal helper).
