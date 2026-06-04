@@ -165,6 +165,21 @@ jobs:
           New-Item -ItemType Directory -Path "linkers" -Force | Out-Null
           Copy-Item "$llvmDir\bin\lld-link.exe" "linkers\lld-link.exe" -Force
 
+      - name: "[Windows] Install libxml2 (LLVM 18 dependency)"
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # vcpkg is pre-installed on windows-latest runners
+          vcpkg install libxml2:x64-windows-static
+          $vcpkgLib = "C:\vcpkg\installed\x64-windows-static\lib"
+
+          # LLVM 18 linker looks for libxml2s.lib (s = static naming convention)
+          # vcpkg builds it as libxml2.lib — create the alias
+          Copy-Item "$vcpkgLib\libxml2.lib" "$vcpkgLib\libxml2s.lib" -Force
+
+          # Tell MSVC linker where to find it
+          echo "LIB=$env:LIB;$vcpkgLib" >> $env:GITHUB_ENV
+
       # ── Build ───────────────────────────────────────────────────────────────
       - name: Build release binary
         run: cargo build --release --workspace
