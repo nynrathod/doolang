@@ -123,89 +123,48 @@ jobs:
           echo "${{ env.LLVM_SYS_ENV }}=/usr/lib/llvm-18" >> $GITHUB_ENV
 
       # ════════════════════════════════════════════════════════════════════════
-      # macOS — download official LLVM 18 pre-built release from llvm/llvm-project
+      # macOS + Windows — KyleMayes/install-llvm-action@v2
       #
-      # Official GitHub releases: https://github.com/llvm/llvm-project/releases
-      # macOS builds use the "clang+llvm-18.x.x-arm64-apple-macos11.tar.xz"
-      # and "clang+llvm-18.x.x-x86_64-apple-macos.tar.xz" assets.
+      # This action downloads the official pre-built LLVM 18 release from
+      # github.com/llvm/llvm-project, extracts it to a known directory
+      # (using 7z on Windows, tar on macOS), and adds LLVM/bin to PATH.
       #
-      # We cache the extracted tarball under ~/.llvm18 so subsequent runs skip
-      # the ~400 MB download entirely.
+      # Why this instead of manual approach:
+      #   - Windows: avoids NSIS silent-install env-var pitfalls entirely
+      #   - macOS:   avoids per-variant tar URL juggling
+      #   - Both:    sets llvm-path output we read for LLVM_SYS_181_PREFIX
+      #
+      # Cache: actions/cache saves the extracted tree between runs so only
+      # the very first run pays the ~400 MB download cost.
+      # Cache key includes platform so Intel/ARM/Windows never share entries.
       # ════════════════════════════════════════════════════════════════════════
-      - name: "[macOS] Restore LLVM 18 cache"
-        if: runner.os == 'macOS'
-        id: llvm-cache
+      - name: "Cache LLVM 18 (macOS / Windows)"
+        if: runner.os != 'Linux'
+        id: cache-llvm
         uses: actions/cache@v4
         with:
-          path: ~/.llvm18
+          path: ${{ runner.temp }}/llvm18
           key: llvm-18.1.8-${{ matrix.platform }}
 
-      - name: "[macOS Intel] Download + install LLVM 18"
-        if: matrix.os == 'macos-13' && steps.llvm-cache.outputs.cache-hit != 'true'
-        run: |
-          LLVM_PKG="clang+llvm-18.1.8-x86_64-apple-macos.tar.xz"
-          curl -fsSL \
-            "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/${LLVM_PKG}" \
-            -o /tmp/llvm18.tar.xz
-          mkdir -p ~/.llvm18
-          tar -xJf /tmp/llvm18.tar.xz --strip-components=1 -C ~/.llvm18
-          rm /tmp/llvm18.tar.xz
-
-      - name: "[macOS ARM] Download + install LLVM 18"
-        if: matrix.os == 'macos-14' && steps.llvm-cache.outputs.cache-hit != 'true'
-        run: |
-          LLVM_PKG="clang+llvm-18.1.8-arm64-apple-macos11.tar.xz"
-          curl -fsSL \
-            "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/${LLVM_PKG}" \
-            -o /tmp/llvm18.tar.xz
-          mkdir -p ~/.llvm18
-          tar -xJf /tmp/llvm18.tar.xz --strip-components=1 -C ~/.llvm18
-          rm /tmp/llvm18.tar.xz
-
-      - name: "[macOS] Set LLVM env vars"
-        if: runner.os == 'macOS'
-        run: |
-          echo "${{ env.LLVM_SYS_ENV }}=$HOME/.llvm18" >> $GITHUB_ENV
-          # Make llvm-config discoverable by build scripts
-          echo "PATH=$HOME/.llvm18/bin:$PATH"          >> $GITHUB_ENV
-
-      # ════════════════════════════════════════════════════════════════════════
-      # WINDOWS — download official LLVM 18 pre-built release from llvm/llvm-project
-      #
-      # Asset: LLVM-18.1.8-win64.exe  (self-extracting installer)
-      # We use the /S flag to install silently to C:\LLVM.
-      # Then we cache C:\LLVM so subsequent runs skip the install.
-      # ════════════════════════════════════════════════════════════════════════
-      - name: "[Windows] Restore LLVM 18 cache"
-        if: runner.os == 'Windows'
-        id: llvm-cache-win
-        uses: actions/cache@v4
+      - name: "Install LLVM 18 (macOS / Windows)"
+        if: runner.os != 'Linux'
+        id: install-llvm
+        uses: KyleMayes/install-llvm-action@v2
         with:
-          path: C:\LLVM
-          key: llvm-18.1.8-windows-x64
+          version: "18.1.8"
+          directory: ${{ runner.temp }}/llvm18
+          cached: ${{ steps.cache-llvm.outputs.cache-hit }}
 
-      - name: "[Windows] Download + install LLVM 18"
-        if: runner.os == 'Windows' && steps.llvm-cache-win.outputs.cache-hit != 'true'
-        shell: pwsh
+      # Set LLVM_SYS_181_PREFIX from the action output so llvm-sys build
+      # script finds LLVM regardless of OS-specific path conventions.
+      - name: "Set LLVM_SYS_181_PREFIX (macOS / Windows)"
+        if: runner.os != 'Linux'
+        shell: bash
         run: |
-          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/LLVM-18.1.8-win64.exe"
-          $installer = "$env:TEMP\llvm18-installer.exe"
-          Write-Host "Downloading LLVM 18 installer..."
-          Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
-          Write-Host "Running silent installer (this takes ~2 min)..."
-          Start-Process -FilePath $installer -ArgumentList "/S","/D=C:\LLVM" -Wait -NoNewWindow
-          Write-Host "LLVM installed to C:\LLVM"
-          Remove-Item $installer -ErrorAction SilentlyContinue
-
-      - name: "[Windows] Set LLVM env vars"
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          # Add to GITHUB_ENV so subsequent steps see these variables
-          "LLVM_SYS_181_PREFIX=C:\LLVM"  | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "PATH=C:\LLVM\bin;$env:PATH"    | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          # Also expose libclang for any build script that probes it
-          "LIBCLANG_PATH=C:\LLVM\bin"     | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          LLVM_DIR="${{ steps.install-llvm.outputs.llvm-path }}"
+          echo "LLVM_SYS_181_PREFIX=${LLVM_DIR}" >> $GITHUB_ENV
+          echo "LIBCLANG_PATH=${LLVM_DIR}/bin"   >> $GITHUB_ENV
+          echo "LLVM is at: ${LLVM_DIR}"
 
       # ── Build ───────────────────────────────────────────────────────────────
       - name: Build release binary
@@ -258,8 +217,12 @@ jobs:
 
           Copy-Item "target\release\doo.exe" "${bundle}\doo.exe"
 
-          # Static libs
+          # Static import libs (.lib)
           Get-ChildItem "target\release" -Filter "*.lib" -File |
+            Copy-Item -Destination "${bundle}\lib\" -ErrorAction SilentlyContinue
+
+          # Runtime DLLs (.dll) — FFI crates may produce these
+          Get-ChildItem "target\release" -Filter "*.dll" -File |
             Copy-Item -Destination "${bundle}\lib\" -ErrorAction SilentlyContinue
 
           # Stdlib + packages
