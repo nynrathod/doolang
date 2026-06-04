@@ -123,48 +123,36 @@ jobs:
           echo "${{ env.LLVM_SYS_ENV }}=/usr/lib/llvm-18" >> $GITHUB_ENV
 
       # ════════════════════════════════════════════════════════════════════════
-      # macOS + Windows — KyleMayes/install-llvm-action@v2
-      #
-      # This action downloads the official pre-built LLVM 18 release from
-      # github.com/llvm/llvm-project, extracts it to a known directory
-      # (using 7z on Windows, tar on macOS), and adds LLVM/bin to PATH.
-      #
-      # Why this instead of manual approach:
-      #   - Windows: avoids NSIS silent-install env-var pitfalls entirely
-      #   - macOS:   avoids per-variant tar URL juggling
-      #   - Both:    sets llvm-path output we read for LLVM_SYS_181_PREFIX
-      #
-      # Cache: actions/cache saves the extracted tree between runs so only
-      # the very first run pays the ~400 MB download cost.
-      # Cache key includes platform so Intel/ARM/Windows never share entries.
+      # macOS — Install LLVM 18 via Homebrew (Intel and Apple Silicon)
       # ════════════════════════════════════════════════════════════════════════
-      - name: "Cache LLVM 18 (macOS / Windows)"
-        if: runner.os != 'Linux'
-        id: cache-llvm
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/llvm18
-          key: llvm-18.1.8-${{ matrix.platform }}
+      - name: "[macOS] Install LLVM 18 via Homebrew"
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm@18
+          BREW_PREFIX=$(brew --prefix llvm@18)
+          echo "LLVM_SYS_181_PREFIX=${BREW_PREFIX}" >> $GITHUB_ENV
+          echo "LIBCLANG_PATH=${BREW_PREFIX}/lib" >> $GITHUB_ENV
+          echo "${BREW_PREFIX}/bin" >> $GITHUB_PATH
 
-      - name: "Install LLVM 18 (macOS / Windows)"
-        if: runner.os != 'Linux'
-        id: install-llvm
+      # ════════════════════════════════════════════════════════════════════════
+      # Windows — Install LLVM 18 via KyleMayes/install-llvm-action
+      # ════════════════════════════════════════════════════════════════════════
+      - name: "[Windows] Install LLVM 18"
+        if: runner.os == 'Windows'
+        id: install-llvm-win
         uses: KyleMayes/install-llvm-action@v2
         with:
           version: "18.1.8"
           directory: ${{ runner.temp }}/llvm18
-          cached: ${{ steps.cache-llvm.outputs.cache-hit }}
 
-      # Set LLVM_SYS_181_PREFIX from the action output so llvm-sys build
-      # script finds LLVM regardless of OS-specific path conventions.
-      - name: "Set LLVM_SYS_181_PREFIX (macOS / Windows)"
-        if: runner.os != 'Linux'
-        shell: bash
+      - name: "[Windows] Set LLVM Environment"
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          LLVM_DIR="${{ steps.install-llvm.outputs.llvm-path }}"
-          echo "LLVM_SYS_181_PREFIX=${LLVM_DIR}" >> $GITHUB_ENV
-          echo "LIBCLANG_PATH=${LLVM_DIR}/bin"   >> $GITHUB_ENV
-          echo "LLVM is at: ${LLVM_DIR}"
+          $llvmPath = "${{ steps.install-llvm-win.outputs.llvm-path }}"
+          Add-Content -Path $env:GITHUB_ENV -Value "LLVM_SYS_181_PREFIX=$llvmPath"
+          Add-Content -Path $env:GITHUB_ENV -Value "LIBCLANG_PATH=$llvmPath\bin"
+          Add-Content -Path $env:GITHUB_PATH -Value "$llvmPath\bin"
 
       # ── Build ───────────────────────────────────────────────────────────────
       - name: Build release binary
