@@ -149,8 +149,12 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $llvmPath = "${{ steps.install-llvm-win.outputs.llvm-path }}"
-          Add-Content -Path $env:GITHUB_ENV -Value "LLVM_SYS_181_PREFIX=$llvmPath"
+          $llvmPath = $env:LLVM_PATH
+          if (-not $llvmPath) {
+            $llvmPath = "${{ runner.temp }}/llvm18"
+          }
+          $llvmPath = $llvmPath -replace '/', '\'
+          Add-Content -Path $env:GITHUB_ENV -Value "${{ env.LLVM_SYS_ENV }}=$llvmPath"
           Add-Content -Path $env:GITHUB_ENV -Value "LIBCLANG_PATH=$llvmPath\bin"
           Add-Content -Path $env:GITHUB_PATH -Value "$llvmPath\bin"
 
