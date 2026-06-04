@@ -10,6 +10,7 @@ target-*
 .cargo/
 /tests/fuzz/corpus
 /tests/fuzz/artifacts
+/tests/memory_leak/results
 /fuzz_logs
 .doo-cache/
 output
