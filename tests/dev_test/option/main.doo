@@ -1,0 +1,36 @@
+// Option type and nil-coalescing test
+import lib::{FindUser, DefaultUser, User};
+
+fn main() {
+    // Test 1: nil ?? value — should use default
+    let name1 = nil ?? "default";
+    print("Test 1 - nil ?? value:", name1);
+
+    // Test 2: value ?? default — should keep value
+    let name2 = "hello" ?? "world";
+    print("Test 2 - value ?? default:", name2);
+
+    // Test 3: chained nil-coalescing
+    let name3 = nil ?? nil ?? "fallback";
+    print("Test 3 - chained:", name3);
+
+    // Test 4: nil-coalescing with Int
+    let num1 = nil ?? 42;
+    print("Test 4 - nil ?? Int:", num1);
+
+    // Test 5: Int value ?? default
+    let num2 = 10 ?? 99;
+    print("Test 5 - Int ?? default:", num2);
+
+    // Test 6: findUser returns User? — test with valid user
+    let user1 = FindUser(1)?;
+    let foundName = user1 ?? DefaultUser();
+    print("Test 6 - found user:", foundName.Name);
+
+    // Test 7: findUser returns nil — test fallback
+    let user2 = FindUser(0)?;
+    let fallbackName = user2 ?? DefaultUser();
+    print("Test 7 - not found fallback:", fallbackName.Name);
+
+    print("all option tests passed");
+}

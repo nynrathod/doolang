@@ -1,18 +1,27 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# Stable Release Pipeline
+# Stable Release Pipeline  (Linux · macOS Intel · macOS Apple Silicon · Windows)
 #
 # Triggered: every push to main.
 #
 # What happens automatically (you just merge/push to main):
-#   1. Build Linux binary
-#   2. Zip the bundle
-#   3. Create GitHub release tagged v{version} (from Cargo.toml)
-#   4. Upload zip as release asset
-#   5. Build GHCR image tagged :latest + :v{version}
-#   6. DELETE the dev pre-release and :dev GHCR tag (no conflict forever)
+#   1. Matrix build: compile native binaries on ubuntu / macos-13 (Intel) /
+#      macos-14 (Apple Silicon) / windows-latest — all using LLVM 18.
+#   2. Each platform zips its own bundle with a consistent name:
+#        doo-linux-{version}.zip
+#        doo-darwin-x86_64-{version}.zip
+#        doo-darwin-arm64-{version}.zip
+#        doo-windows-{version}.zip
+#   3. All zip artifacts are uploaded as workflow artifacts.
+#   4. A single "publish" job (needs all builders) collects every zip, deletes
+#      the dev pre-release, creates the stable GitHub release, and uploads all
+#      four zips in one transactional step.
+#   5. The "latest" GHCR image (:latest + :vX.Y.Z) is built from the Linux
+#      bundle in the same publish job.
+#   6. The dev GHCR tag is deleted to keep things clean.
 #
-# The "latest" GitHub release tag always points to the most recent stable.
-# Anyone running `install.sh` without a version flag gets the latest stable.
+# Zip naming convention (single source of truth):
+#   doo-<platform>-<version>.zip
+#   platform values: linux | darwin-x86_64 | darwin-arm64 | windows
 # ──────────────────────────────────────────────────────────────────────────────
 
 name: Stable Release
@@ -25,9 +34,257 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/doo-runtime
+  LLVM_VERSION: "18"
+  # llvm-sys crate env var name encodes major+minor: 18.1 → 181
+  LLVM_SYS_ENV: "LLVM_SYS_181_PREFIX"
 
+# ── Matrix build jobs ─────────────────────────────────────────────────────────
 jobs:
-  build-and-release-stable:
+  build:
+    name: Build · ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ── Linux (x86_64) ─────────────────────────────────────────────────
+          - os: ubuntu-latest
+            label: linux
+            platform: linux
+            rust_target: x86_64-unknown-linux-gnu
+
+          # ── macOS Intel (x86_64) ───────────────────────────────────────────
+          - os: macos-13
+            label: macOS-intel
+            platform: darwin-x86_64
+            rust_target: x86_64-apple-darwin
+
+          # ── macOS Apple Silicon (arm64) ────────────────────────────────────
+          - os: macos-14
+            label: macOS-arm64
+            platform: darwin-arm64
+            rust_target: aarch64-apple-darwin
+
+          # ── Windows (x86_64) ───────────────────────────────────────────────
+          - os: windows-latest
+            label: windows
+            platform: windows
+            rust_target: x86_64-pc-windows-msvc
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── Read version (shared across all platforms) ──────────────────────────
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/' | tr -d '\r')
+          ZIP_NAME="doo-${{ matrix.platform }}-${VERSION}.zip"
+          echo "version=${VERSION}"       >> $GITHUB_OUTPUT
+          echo "zip_name=${ZIP_NAME}"     >> $GITHUB_OUTPUT
+          echo "Version: ${VERSION}  Zip: ${ZIP_NAME}"
+
+      # ── Install Rust ────────────────────────────────────────────────────────
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.rust_target }}
+
+      # ── Rust + Cargo cache (Swatinem — best-practice for all 3 OSes) ────────
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Separate cache per OS + LLVM version so a macOS cache never
+          # bleeds into a Linux build or vice-versa.
+          key: ${{ matrix.platform }}-llvm18
+
+      # ════════════════════════════════════════════════════════════════════════
+      # LINUX — install LLVM 18 via official apt.llvm.org
+      # ════════════════════════════════════════════════════════════════════════
+      - name: "[Linux] Install LLVM 18 + system deps"
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-18 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm18.list
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            llvm-18-dev libpolly-18-dev libclang-18-dev clang-18 lld-18 \
+            libssl-dev libpq-dev zlib1g-dev pkg-config
+          echo "${{ env.LLVM_SYS_ENV }}=/usr/lib/llvm-18" >> $GITHUB_ENV
+
+      # ════════════════════════════════════════════════════════════════════════
+      # macOS — download official LLVM 18 pre-built release from llvm/llvm-project
+      #
+      # Official GitHub releases: https://github.com/llvm/llvm-project/releases
+      # macOS builds use the "clang+llvm-18.x.x-arm64-apple-macos11.tar.xz"
+      # and "clang+llvm-18.x.x-x86_64-apple-macos.tar.xz" assets.
+      #
+      # We cache the extracted tarball under ~/.llvm18 so subsequent runs skip
+      # the ~400 MB download entirely.
+      # ════════════════════════════════════════════════════════════════════════
+      - name: "[macOS] Restore LLVM 18 cache"
+        if: runner.os == 'macOS'
+        id: llvm-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.llvm18
+          key: llvm-18.1.8-${{ matrix.platform }}
+
+      - name: "[macOS Intel] Download + install LLVM 18"
+        if: matrix.os == 'macos-13' && steps.llvm-cache.outputs.cache-hit != 'true'
+        run: |
+          LLVM_PKG="clang+llvm-18.1.8-x86_64-apple-macos.tar.xz"
+          curl -fsSL \
+            "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/${LLVM_PKG}" \
+            -o /tmp/llvm18.tar.xz
+          mkdir -p ~/.llvm18
+          tar -xJf /tmp/llvm18.tar.xz --strip-components=1 -C ~/.llvm18
+          rm /tmp/llvm18.tar.xz
+
+      - name: "[macOS ARM] Download + install LLVM 18"
+        if: matrix.os == 'macos-14' && steps.llvm-cache.outputs.cache-hit != 'true'
+        run: |
+          LLVM_PKG="clang+llvm-18.1.8-arm64-apple-macos11.tar.xz"
+          curl -fsSL \
+            "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/${LLVM_PKG}" \
+            -o /tmp/llvm18.tar.xz
+          mkdir -p ~/.llvm18
+          tar -xJf /tmp/llvm18.tar.xz --strip-components=1 -C ~/.llvm18
+          rm /tmp/llvm18.tar.xz
+
+      - name: "[macOS] Set LLVM env vars"
+        if: runner.os == 'macOS'
+        run: |
+          echo "${{ env.LLVM_SYS_ENV }}=$HOME/.llvm18" >> $GITHUB_ENV
+          # Make llvm-config discoverable by build scripts
+          echo "PATH=$HOME/.llvm18/bin:$PATH"          >> $GITHUB_ENV
+
+      # ════════════════════════════════════════════════════════════════════════
+      # WINDOWS — download official LLVM 18 pre-built release from llvm/llvm-project
+      #
+      # Asset: LLVM-18.1.8-win64.exe  (self-extracting installer)
+      # We use the /S flag to install silently to C:\LLVM.
+      # Then we cache C:\LLVM so subsequent runs skip the install.
+      # ════════════════════════════════════════════════════════════════════════
+      - name: "[Windows] Restore LLVM 18 cache"
+        if: runner.os == 'Windows'
+        id: llvm-cache-win
+        uses: actions/cache@v4
+        with:
+          path: C:\LLVM
+          key: llvm-18.1.8-windows-x64
+
+      - name: "[Windows] Download + install LLVM 18"
+        if: runner.os == 'Windows' && steps.llvm-cache-win.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/LLVM-18.1.8-win64.exe"
+          $installer = "$env:TEMP\llvm18-installer.exe"
+          Write-Host "Downloading LLVM 18 installer..."
+          Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
+          Write-Host "Running silent installer (this takes ~2 min)..."
+          Start-Process -FilePath $installer -ArgumentList "/S","/D=C:\LLVM" -Wait -NoNewWindow
+          Write-Host "LLVM installed to C:\LLVM"
+          Remove-Item $installer -ErrorAction SilentlyContinue
+
+      - name: "[Windows] Set LLVM env vars"
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Add to GITHUB_ENV so subsequent steps see these variables
+          "LLVM_SYS_181_PREFIX=C:\LLVM"  | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PATH=C:\LLVM\bin;$env:PATH"    | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # Also expose libclang for any build script that probes it
+          "LIBCLANG_PATH=C:\LLVM\bin"     | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # ── Build ───────────────────────────────────────────────────────────────
+      - name: Build release binary
+        run: cargo build --release --workspace
+
+      # ════════════════════════════════════════════════════════════════════════
+      # Assemble platform bundles
+      # Naming: doo-<platform>-<version>.zip
+      # ════════════════════════════════════════════════════════════════════════
+
+      # ── Linux bundle ────────────────────────────────────────────────────────
+      - name: "[Linux] Assemble bundle"
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          BUNDLE="doo-linux-${{ steps.version.outputs.version }}"
+          mkdir -p "${BUNDLE}/lib" "${BUNDLE}/std" "${BUNDLE}/packages"
+          cp target/release/doo "${BUNDLE}/doo"
+          chmod +x "${BUNDLE}/doo"
+          find target/release -maxdepth 1 -name '*.a' -exec cp {} "${BUNDLE}/lib/" \; 2>/dev/null || true
+          [ -d std ]      && cp -r std/.      "${BUNDLE}/std/"
+          [ -d packages ] && cp -r packages/. "${BUNDLE}/packages/"
+          zip -r "${{ steps.version.outputs.zip_name }}" "${BUNDLE}"
+          echo "Bundle contents:"; ls -lh "${BUNDLE}/"
+
+      # ── macOS bundle (both Intel and ARM share identical shell logic) ────────
+      - name: "[macOS] Assemble bundle"
+        if: runner.os == 'macOS'
+        run: |
+          BUNDLE="doo-${{ matrix.platform }}-${{ steps.version.outputs.version }}"
+          mkdir -p "${BUNDLE}/lib" "${BUNDLE}/std" "${BUNDLE}/packages"
+          cp target/release/doo "${BUNDLE}/doo"
+          chmod +x "${BUNDLE}/doo"
+          find target/release -maxdepth 1 -name '*.a' -exec cp {} "${BUNDLE}/lib/" \; 2>/dev/null || true
+          find target/release -maxdepth 1 -name '*.dylib' -exec cp {} "${BUNDLE}/lib/" \; 2>/dev/null || true
+          [ -d std ]      && cp -r std/.      "${BUNDLE}/std/"
+          [ -d packages ] && cp -r packages/. "${BUNDLE}/packages/"
+          zip -r "${{ steps.version.outputs.zip_name }}" "${BUNDLE}"
+          echo "Bundle contents:"; ls -lh "${BUNDLE}/"
+
+      # ── Windows bundle ──────────────────────────────────────────────────────
+      - name: "[Windows] Assemble bundle"
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version  = "${{ steps.version.outputs.version }}"
+          $bundle   = "doo-windows-${version}"
+          $zipName  = "${{ steps.version.outputs.zip_name }}"
+
+          New-Item -ItemType Directory -Path "${bundle}\lib","${bundle}\std","${bundle}\packages" -Force | Out-Null
+
+          Copy-Item "target\release\doo.exe" "${bundle}\doo.exe"
+
+          # Static libs
+          Get-ChildItem "target\release" -Filter "*.lib" -File |
+            Copy-Item -Destination "${bundle}\lib\" -ErrorAction SilentlyContinue
+
+          # Stdlib + packages
+          if (Test-Path "std")      { Copy-Item -Recurse "std\*"      "${bundle}\std\"      -Force }
+          if (Test-Path "packages") { Copy-Item -Recurse "packages\*" "${bundle}\packages\" -Force }
+
+          Compress-Archive -Path "${bundle}" -DestinationPath $zipName -Force
+          Write-Host "Bundle contents:"; Get-ChildItem $bundle | Format-Table Name, Length
+
+      # ── Upload zip as workflow artifact (consumed by the publish job) ────────
+      - name: Upload zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: doo-${{ matrix.platform }}-${{ steps.version.outputs.version }}
+          path: ${{ steps.version.outputs.zip_name }}
+          retention-days: 1
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Publish — runs once, after ALL platform builds succeed
+  # Downloads every zip, creates the stable release, uploads all assets,
+  # builds the GHCR image, and cleans up the dev pre-release.
+  # ════════════════════════════════════════════════════════════════════════════
+  publish:
+    name: Publish stable release
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -39,67 +296,32 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ── 1. Read version from Cargo.toml ─────────────────────────────────────
+      # ── Re-derive version (same grep, same result) ──────────────────────────
       - name: Read version
         id: version
         run: |
           VERSION=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/' | tr -d '\r')
           TAG="v${VERSION}"
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "zip_name=doo-linux-${VERSION}.zip" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}"         >> $GITHUB_OUTPUT
+          echo "linux_zip=doo-linux-${VERSION}.zip"           >> $GITHUB_OUTPUT
+          echo "darwin_x86_zip=doo-darwin-x86_64-${VERSION}.zip" >> $GITHUB_OUTPUT
+          echo "darwin_arm_zip=doo-darwin-arm64-${VERSION}.zip"   >> $GITHUB_OUTPUT
+          echo "windows_zip=doo-windows-${VERSION}.zip"       >> $GITHUB_OUTPUT
           echo "Version: ${VERSION}  Tag: ${TAG}"
 
-      # ── 2. Install Rust ──────────────────────────────────────────────────────
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      # ── Download all four platform zips ─────────────────────────────────────
+      - name: Download all platform zips
+        uses: actions/download-artifact@v4
         with:
-          toolchain: stable
-          targets: x86_64-unknown-linux-gnu
+          # Downloads into subdirectories named after each artifact; merge into cwd
+          merge-multiple: true
 
-      # ── 3. Cache Cargo ───────────────────────────────────────────────────────
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+      # ── List what we have (sanity check) ───────────────────────────────────
+      - name: List downloaded assets
+        run: ls -lh *.zip
 
-      # ── 4. Install LLVM 18 + system deps ──────────────────────────────────
-      - name: Install LLVM 18 and system deps
-        run: |
-          # Install LLVM 18 from the official apt repo
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo "deb http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-18 main" \
-            | sudo tee /etc/apt/sources.list.d/llvm18.list
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            llvm-18-dev libpolly-18-dev libclang-18-dev clang-18 lld-18 \
-            libssl-dev libpq-dev zlib1g-dev pkg-config
-          echo "LLVM_SYS_181_PREFIX=/usr/lib/llvm-18" >> $GITHUB_ENV
-
-      # ── 5. Build release binary ──────────────────────────────────────────────
-      - name: Build release binary
-        run: cargo build --release --workspace
-
-      # ── 6. Assemble bundle ───────────────────────────────────────────────────
-      - name: Assemble bundle
-        run: |
-          BUNDLE="doo-linux-${{ steps.version.outputs.version }}"
-          mkdir -p "${BUNDLE}/lib" "${BUNDLE}/std" "${BUNDLE}/packages"
-          cp target/release/doo "${BUNDLE}/doo"
-          chmod +x "${BUNDLE}/doo"
-          find target/release -maxdepth 1 -name '*.a' -exec cp {} "${BUNDLE}/lib/" \; 2>/dev/null || true
-          if [ -d std ]; then cp -r std/. "${BUNDLE}/std/"; fi
-          if [ -d packages ]; then cp -r packages/. "${BUNDLE}/packages/"; fi
-          zip -r "${{ steps.version.outputs.zip_name }}" "${BUNDLE}"
-          echo "Bundle:"
-          ls -lh "${BUNDLE}/"
-
-      # ── 7. Delete dev pre-release (clean slate) ──────────────────────────────
+      # ── Delete dev pre-release (clean slate) ────────────────────────────────
       - name: Delete dev pre-release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -107,26 +329,35 @@ jobs:
           gh release delete dev --yes --cleanup-tag 2>/dev/null || true
           echo "dev pre-release cleaned up"
 
-      # ── 8. Create or update stable release ───────────────────────────────────
+      # ── Create stable GitHub release with all four zips ─────────────────────
       - name: Create stable release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           REPO="${{ github.repository }}"
-          # Delete if tag already exists (re-release same version)
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Delete if same tag already exists (re-release same version)
           gh release delete "${TAG}" --yes --cleanup-tag 2>/dev/null || true
           sleep 2
-          printf '## Install\n\n**Linux / macOS**\n```bash\ncurl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | bash\n```\n\n**Windows**\n```powershell\nirm https://raw.githubusercontent.com/%s/main/install.ps1 | iex\n```\n' \
-            "$REPO" "$REPO" > /tmp/release_notes.md
+
+          printf '## Install\n\n**Linux**\n```bash\ncurl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | bash\n```\n\n**macOS (Intel)**\n```bash\ncurl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | bash\n```\n\n**macOS (Apple Silicon)**\n```bash\ncurl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | bash\n```\n\n**Windows**\n```powershell\nirm https://raw.githubusercontent.com/%s/main/install.ps1 | iex\n```\n\n## Assets\n\n| Platform | File |\n|---|---|\n| Linux x86_64 | `doo-linux-%s.zip` |\n| macOS Intel | `doo-darwin-x86_64-%s.zip` |\n| macOS Apple Silicon | `doo-darwin-arm64-%s.zip` |\n| Windows x86_64 | `doo-windows-%s.zip` |\n' \
+            "$REPO" "$REPO" "$REPO" "$REPO" \
+            "$VERSION" "$VERSION" "$VERSION" "$VERSION" \
+            > /tmp/release_notes.md
+
           gh release create "${TAG}" \
             --latest \
-            --title "Doo ${{ steps.version.outputs.version }}" \
+            --title "Doo ${VERSION}" \
             --notes-file /tmp/release_notes.md \
             --target ${{ github.sha }} \
-            "${{ steps.version.outputs.zip_name }}"
+            "${{ steps.version.outputs.linux_zip }}" \
+            "${{ steps.version.outputs.darwin_x86_zip }}" \
+            "${{ steps.version.outputs.darwin_arm_zip }}" \
+            "${{ steps.version.outputs.windows_zip }}"
 
-      # ── 9. Log in to GHCR ────────────────────────────────────────────────────
+      # ── Log in to GHCR ──────────────────────────────────────────────────────
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -134,28 +365,25 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── 10. Build and push GHCR :latest + :vX.Y.Z ────────────────────────────
+      # ── Build and push GHCR :latest + :vX.Y.Z (uses Linux bundle) ───────────
       - name: Build and push :latest image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           build-args: |
-            DOO_LOCAL_BUNDLE=${{ steps.version.outputs.zip_name }}
+            DOO_LOCAL_BUNDLE=${{ steps.version.outputs.linux_zip }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}
 
-      # ── 11. Delete :dev GHCR tag ──────────────────────────────────────────────
-      # Removes the dev image so DooCloud can't accidentally pull it.
-      # ghcr.io package deletion requires the GITHUB_TOKEN with packages:write.
+      # ── Delete :dev GHCR tag ─────────────────────────────────────────────────
       - name: Delete :dev GHCR tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           OWNER="${{ github.repository_owner }}"
           PKG_NAME="doo-runtime"
-          # Find the version ID for the :dev tag
           VERSION_ID=$(gh api \
             "/users/${OWNER}/packages/container/${PKG_NAME}/versions" \
             --jq '.[] | select(.metadata.container.tags[] == "dev") | .id' 2>/dev/null || echo "")

@@ -1,0 +1,44 @@
+//
+// Full Closure Tests - standalone closures, fn(T)->U types, captures
+//
+
+// fn(T) -> U type as parameter
+fn applyToAll(items: [Int], action: fn(Int) -> Int) -> [Int] {
+    let mut result: [Int] = [];
+    for item in items {
+        result.push(action(item));
+    }
+    return result;
+}
+
+// fn() -> T type (no params)
+fn callTwice(action: fn() -> Int) -> [Int] {
+    return [action(), action()];
+}
+
+fn main() {
+    print("=== Standalone Closure Tests ===\n");
+
+    // Basic closure passed as argument
+    let doubled = applyToAll([1, 2, 3], (x) => x * 2);
+    print("applyToAll doubled:", doubled);
+
+    // Closure with block body
+    let squared = applyToAll([1, 2, 3], (x) => {
+        let result = x * x;
+        return result;
+    });
+    print("applyToAll squared:", squared);
+
+    // No-param closure
+    let counter = callTwice(() => 42);
+    print("callTwice:", counter);
+
+    print("\n=== All Closure Tests Complete ===");
+}
+
+// EXPECT: === Standalone Closure Tests ===
+// EXPECT: applyToAll doubled: [2, 4, 6]
+// EXPECT: applyToAll squared: [1, 4, 9]
+// EXPECT: callTwice: [42, 42]
+// EXPECT: === All Closure Tests Complete ===

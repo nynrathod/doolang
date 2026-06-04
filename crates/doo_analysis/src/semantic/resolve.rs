@@ -469,6 +469,7 @@ pub enum SymbolKindDef {
     Struct,
     Enum,
     Const,
+    Static,
     TypeAlias,
 }
 

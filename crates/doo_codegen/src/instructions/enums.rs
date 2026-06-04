@@ -277,9 +277,6 @@ fn emit_enum_tag<'ctx>(
     let enum_type = get_enum_type(ctx);
 
     if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-        doo_debug!("CODEGEN", "emit_enum_tag: dest={}, enum_val={:?}",
-            dest, enum_val
-        );
     }
 
     // If it's a struct value, extract directly

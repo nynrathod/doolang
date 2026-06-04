@@ -1,0 +1,24 @@
+// Module exporting a struct type and a public static for cross-file testing.
+
+// A simple service struct — simulates Database/Redis/Logger patterns
+struct Service {
+    name: Str,
+    port: Int,
+}
+
+// Associated constructor: Service.new()
+fn Service.new(name: Str, port: Int) -> Service {
+    return Service { name: name, port: port };
+}
+
+// Associated method: service.describe()
+fn Service.describe(self: Service) -> Str {
+    return self.name;
+}
+
+// Public static — accessible from other files via import
+// PascalCase = public, camelCase = private
+static AppService: Service;
+
+// Private static — NOT importable
+static internalCache: Service;

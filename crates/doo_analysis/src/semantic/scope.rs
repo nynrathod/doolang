@@ -35,10 +35,16 @@ pub enum SymbolKind {
     Struct,
     /// Enum type.
     Enum,
+    /// Interface / generic type name.
+    Type,
     /// Import.
     Import,
     /// Loop variable (for-in).
     LoopVar,
+    /// Compile-time constant.
+    Const,
+    /// Runtime global variable (OnceLock semantics).
+    Static,
 }
 
 /// A single scope with its symbols.
@@ -105,6 +111,20 @@ impl ScopeManager {
         if let Some(parent) = self.scopes[self.current].parent {
             self.current = parent;
         }
+    }
+
+    /// Keep exiting scopes until we reach one of the given kind.
+    /// Safety net for unbalanced scope entries from buggy check_stmt handlers.
+    pub fn exit_to_kind(&mut self, target: ScopeKind) {
+        while self.scopes[self.current].kind != target && self.scopes[self.current].parent.is_some()
+        {
+            self.exit_scope();
+        }
+    }
+
+    /// Get the current scope index (for debugging).
+    pub fn current_idx(&self) -> usize {
+        self.current
     }
 
     /// Define a symbol in the current scope.

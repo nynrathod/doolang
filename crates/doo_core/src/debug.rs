@@ -12,8 +12,8 @@
 //!
 //! ```rust,ignore
 //! use doo_core::doo_debug;
-//! doo_debug!("CODEGEN", "Processing function: {}", func_name);
-//! doo_debug!("MIR", "Built {} basic blocks", count);
+//!
+//!
 //! ```
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,9 +51,9 @@ pub fn is_enabled() -> bool {
 ///
 /// ```ignore
 /// use doo_core::doo_debug;
-/// doo_debug!("CODEGEN", "Processing function: {}", "main");
-/// doo_debug!("MIR", "Built {} basic blocks", 5);
-/// doo_debug!("WARN", "Optimization failed: {}", err);
+///
+///
+///
 /// ```
 #[macro_export]
 macro_rules! doo_debug {

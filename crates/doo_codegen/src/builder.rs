@@ -9,7 +9,7 @@ use doo_core::constants::ffi_names::{self, derive_ffi_symbol};
 use doo_core::doo_debug;
 use doo_core::types::{builtin, TypeKind, TypeRegistry};
 use doo_mir::sym::resolve;
-use doo_mir::{MirConst, MirFunction, MirOperand, MirProgram, MirTerminator};
+use doo_mir::{MirConst, MirFunction, MirGlobal, MirOperand, MirProgram, MirTerminator};
 use inkwell::basic_block::BasicBlock;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
@@ -458,6 +458,11 @@ impl<'ctx> CodegenBuilder<'ctx> {
             }
         }
 
+        // Emit LLVM global constants from MirGlobal entries (primitive consts)
+        for global in &mir.globals {
+            self.emit_global(&mut ctx, global);
+        }
+
         // First pass: declare all functions
         for func in &mir.functions {
             self.declare_function(&mut ctx, func);
@@ -469,6 +474,77 @@ impl<'ctx> CodegenBuilder<'ctx> {
         }
 
         ctx.module
+    }
+
+    /// Emit a single LLVM global from a `MirGlobal`.
+    ///
+    /// - `GlobalKind::Const`: Emits a compile-time constant global (inlined at use sites).
+    /// - `GlobalKind::Static`: Emits a OnceLock-style `{ i1, ptr }` global + set/get helpers.
+    fn emit_global(&self, ctx: &mut CodegenContext<'ctx>, global: &MirGlobal) {
+        use doo_mir::GlobalKind;
+        use inkwell::module::Linkage;
+
+        let name = resolve(global.name);
+
+        match global.kind {
+            GlobalKind::Const => {
+                let value = match &global.value {
+                    Some(v) => v,
+                    None => return,
+                };
+                match value {
+                    MirConst::Int(v) => {
+                        let ty = ctx.context.i64_type();
+                        let g = ctx.module.add_global(ty, None, &name);
+                        g.set_initializer(&ty.const_int(*v as u64, true));
+                        g.set_constant(true);
+                        g.set_linkage(Linkage::Internal);
+                        ctx.set_temp(&name, ty.const_int(*v as u64, true).into());
+                    }
+                    MirConst::Float(v) => {
+                        let ty = ctx.context.f64_type();
+                        let g = ctx.module.add_global(ty, None, &name);
+                        g.set_initializer(&ty.const_float(*v));
+                        g.set_constant(true);
+                        g.set_linkage(Linkage::Internal);
+                        ctx.set_temp(&name, ty.const_float(*v).into());
+                    }
+                    MirConst::Bool(v) => {
+                        let ty = ctx.context.i8_type();
+                        let g = ctx.module.add_global(ty, None, &name);
+                        g.set_initializer(&ty.const_int(*v as u64, false));
+                        g.set_constant(true);
+                        g.set_linkage(Linkage::Internal);
+                        ctx.set_temp(&name, ty.const_int(*v as u64, false).into());
+                    }
+                    MirConst::Str(s) => {
+                        if let Ok(g) = ctx.builder.build_global_string_ptr(s, &name) {
+                            ctx.set_temp(&name, g.as_pointer_value().into());
+                        }
+                    }
+                    MirConst::Nil => {}
+                }
+            }
+            GlobalKind::Static => {
+                // Register as a static global for set/get codegen
+                ctx.static_globals.insert(name.clone(), global.type_id);
+
+                // Create OnceLock-style global: { i1 initialized, ptr value }
+                let once_lock_type = ctx.context.struct_type(
+                    &[
+                        ctx.context.bool_type().into(),
+                        ctx.context
+                            .ptr_type(inkwell::AddressSpace::default())
+                            .into(),
+                    ],
+                    false,
+                );
+                let once_lock_global = ctx.module.add_global(once_lock_type, None, &name);
+                once_lock_global.set_initializer(&once_lock_type.const_zero());
+                once_lock_global.set_constant(false);
+                once_lock_global.set_linkage(Linkage::Internal);
+            }
+        }
     }
 
     /// Pre-declare all struct types from the type registry.
@@ -485,46 +561,29 @@ impl<'ctx> CodegenBuilder<'ctx> {
             .filter_map(|type_id| {
                 if let Some(type_info) = ctx.type_registry.get(type_id) {
                     match &type_info.kind {
-                        doo_core::types::TypeKind::Struct { name, fields } => {
+                        doo_core::types::TypeKind::Struct { name, fields, .. } => {
                             return Some((name.clone(), fields.clone()));
                         }
                         // Handle TypeRef to import struct types from other modules
                         // The TypeRef references struct types from imported modules
                         doo_core::types::TypeKind::TypeRef { name: ref_name } => {
-                            if debug {
-                                doo_debug!(
-                                    "CODEGEN",
-                                    "Found TypeRef '{}', looking for struct def",
-                                    ref_name
-                                );
-                            }
+                            if debug {}
                             // Iterate through ALL types to find the struct definition
                             // The struct might be registered under a different type_id
                             for other_tid in ctx.type_registry.all_type_ids().collect::<Vec<_>>() {
                                 if let Some(other_info) = ctx.type_registry.get(other_tid) {
-                                    if let doo_core::types::TypeKind::Struct { name, fields } =
-                                        &other_info.kind
+                                    if let doo_core::types::TypeKind::Struct {
+                                        name, fields, ..
+                                    } = &other_info.kind
                                     {
                                         if name == ref_name {
-                                            if debug {
-                                                doo_debug!(
-                                                    "CODEGEN",
-                                                    "Found struct '{}' via scan",
-                                                    name
-                                                );
-                                            }
+                                            if debug {}
                                             return Some((name.clone(), fields.clone()));
                                         }
                                     }
                                 }
                             }
-                            if debug {
-                                doo_debug!(
-                                    "CODEGEN",
-                                    "WARNING: Could not find struct for TypeRef '{}'",
-                                    ref_name
-                                );
-                            }
+                            if debug {}
                         }
                         _ => {}
                     }
@@ -548,14 +607,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
             let field_names: Vec<String> = fields.iter().map(|(n, _, _)| n.clone()).collect();
             ctx.register_struct_metadata(&name, field_names);
 
-            if debug {
-                doo_debug!(
-                    "CODEGEN",
-                    "Pre-declared struct type: {} with {} fields",
-                    name,
-                    fields.len()
-                );
-            }
+            if debug {}
         }
     }
 
@@ -563,15 +615,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
     fn declare_function(&self, ctx: &mut CodegenContext<'ctx>, func: &MirFunction) {
         let debug = std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok();
         let func_name = resolve(func.name);
-        if debug {
-            doo_debug!(
-                "CODEGEN",
-                "Declaring function {} with return_type={:?} is_closure={}",
-                func_name,
-                func.return_type,
-                func.is_closure
-            );
-        }
+        if debug {}
 
         // Closure functions have special calling convention: (env: ptr, params...) -> return_type
         // Use actual types for parameters and return type (no i64 boxing)
@@ -763,20 +807,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
         ctx.is_closure_function = func.is_closure;
 
         if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-            doo_debug!(
-                "CODEGEN",
-                "Function {} has {} MIR locals:",
-                func_name_str,
-                func.locals.len()
-            );
-            for local in &func.locals {
-                doo_debug!(
-                    "CODEGEN",
-                    "  Local: {} : {:?}",
-                    resolve(local.name),
-                    local.type_id
-                );
-            }
+            for local in &func.locals {}
         }
 
         // Collect all assigned variables from MIR to create allocas
@@ -858,14 +889,6 @@ impl<'ctx> CodegenBuilder<'ctx> {
             let param_value = match llvm_func.get_nth_param(llvm_param_idx) {
                 Some(p) => p,
                 None => {
-                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        doo_debug!(
-                            "CODEGEN",
-                            "ICE: LLVM function missing param at index {} for {}",
-                            llvm_param_idx,
-                            param_name
-                        );
-                    }
                     continue;
                 }
             };
@@ -874,13 +897,6 @@ impl<'ctx> CodegenBuilder<'ctx> {
 
             // Store param directly - closures now use actual types
             if let Err(_) = ctx.builder.build_store(alloca, param_value) {
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                    doo_debug!(
-                        "CODEGEN",
-                        "ICE: failed to store parameter {} into alloca",
-                        param_name
-                    );
-                }
                 continue;
             }
 
@@ -894,14 +910,6 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 match kind {
                     TypeKind::Struct { name, .. } => {
                         ctx.set_temp_struct_type(&param_name, &name);
-                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                            doo_debug!(
-                                "CODEGEN",
-                                "Registered struct param {} as type {}",
-                                param_name,
-                                name
-                            );
-                        }
                     }
                     // CRITICAL: Handle TypeRef for imported/cross-module types
                     // The TypeRef name IS the struct name, use it directly
@@ -925,37 +933,11 @@ impl<'ctx> CodegenBuilder<'ctx> {
 
                         if let Some(name) = struct_name {
                             ctx.set_temp_struct_type(&param_name, &name);
-                            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                                doo_debug!(
-                                    "CODEGEN",
-                                    "Registered TypeRef param {} as struct type {}",
-                                    param_name,
-                                    name
-                                );
-                            }
                         }
                     }
-                    other => {
-                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                            doo_debug!(
-                                "CODEGEN",
-                                "Param {} has non-struct type: {:?} (type_id={:?})",
-                                param_name,
-                                other,
-                                param.type_id
-                            );
-                        }
-                    }
+                    other => if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {},
                 }
             } else {
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                    doo_debug!(
-                        "CODEGEN",
-                        "WARNING: Param {} has unknown type_id={:?}",
-                        param_name,
-                        param.type_id
-                    );
-                }
             }
         }
 
@@ -975,14 +957,6 @@ impl<'ctx> CodegenBuilder<'ctx> {
                     match kind {
                         TypeKind::Struct { name, .. } => {
                             ctx.set_temp_struct_type(&local_name, &name);
-                            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                                doo_debug!(
-                                    "CODEGEN",
-                                    "Registered struct local {} as type {}",
-                                    local_name,
-                                    name
-                                );
-                            }
                         }
                         // CRITICAL: Handle TypeRef for imported/cross-module types
                         // The TypeRef name IS the struct name, use it directly
@@ -1003,14 +977,6 @@ impl<'ctx> CodegenBuilder<'ctx> {
 
                             if let Some(name) = struct_name {
                                 ctx.set_temp_struct_type(&local_name, &name);
-                                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                                    doo_debug!(
-                                        "CODEGEN",
-                                        "Registered TypeRef local {} as struct type {}",
-                                        local_name,
-                                        name
-                                    );
-                                }
                             }
                         }
                         _ => {}
@@ -1021,14 +987,16 @@ impl<'ctx> CodegenBuilder<'ctx> {
 
         // Create allocas for all assigned variables (for proper loop handling)
         for (name, type_id) in &assigned_vars {
+            // Skip static globals — they are OnceLock globals, not stack allocas
+            if ctx.static_globals.contains_key(name) {
+                continue;
+            }
             if ctx.get_local(name).is_none() {
                 let var_type = ctx.get_llvm_type(*type_id);
                 ctx.create_local(name, var_type);
                 // Track assigned variable type for Clone/Drop
                 ctx.set_variable_type(name, *type_id);
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                    doo_debug!("CODEGEN", "Created alloca for variable: {}", name);
-                }
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
             }
         }
 
@@ -1041,6 +1009,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 &capture_names,
                 llvm_func,
                 func.captures_by_value,
+                false, // closures are multi-use; env freed when closure dropped
             );
         }
 
@@ -1050,42 +1019,91 @@ impl<'ctx> CodegenBuilder<'ctx> {
             let bb = block_map[&block_label];
             ctx.builder.position_at_end(bb);
 
-            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                doo_debug!(
-                    "CODEGEN",
-                    "Block {} has {} instructions",
-                    block_label,
-                    mir_block.instructions.len()
-                );
-            }
+            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
 
             // Generate instructions
+            let mut instr_count = 0;
             for instr in &mir_block.instructions {
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                    doo_debug!("CODEGEN", "  Instr: {:?}", instr);
-                }
-                // Use custom emit for Assign to store in alloca
+                instr_count += 1;
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
+                // Use custom emit for Assign to store in alloca.
+                // Also handles static globals (OnceLock set-once semantics).
                 if let doo_mir::MirInstrKind::Assign { dest, value } = &instr.kind {
                     let dest_str = resolve(*dest);
                     if let Some(val) = operand_to_value(ctx, value) {
-                        // Propagate struct type association if present
-                        if let Some(src_name) = get_operand_name(value) {
-                            if let Some(struct_name) = ctx.get_temp_struct_type(&src_name).cloned()
-                            {
-                                ctx.set_temp_struct_type(&dest_str, &struct_name);
+                        // Check if assigning to a static global — direct OnceLock write
+                        if ctx.static_globals.contains_key(&dest_str) {
+                            if let Some(once_lock) = ctx.module.get_global(&dest_str) {
+                                let once_lock_ptr = once_lock.as_pointer_value();
+                                let once_lock_type = ctx.context.struct_type(
+                                    &[
+                                        ctx.context.bool_type().into(),
+                                        ctx.context
+                                            .ptr_type(inkwell::AddressSpace::default())
+                                            .into(),
+                                    ],
+                                    false,
+                                );
+                                if let Ok(ptr_field) = ctx.builder.build_struct_gep(
+                                    once_lock_type,
+                                    once_lock_ptr,
+                                    1,
+                                    "static_ptr_field",
+                                ) {
+                                    let ptr_val = if val.is_pointer_value() {
+                                        val.into_pointer_value()
+                                    } else if val.is_int_value() {
+                                        ctx.builder
+                                            .build_int_to_ptr(
+                                                val.into_int_value(),
+                                                ctx.context
+                                                    .ptr_type(inkwell::AddressSpace::default()),
+                                                "int_to_ptr",
+                                            )
+                                            .ok()
+                                            .unwrap_or_else(|| {
+                                                ctx.context
+                                                    .ptr_type(inkwell::AddressSpace::default())
+                                                    .const_null()
+                                            })
+                                    } else {
+                                        ctx.context
+                                            .ptr_type(inkwell::AddressSpace::default())
+                                            .const_null()
+                                    };
+                                    ctx.builder.build_store(ptr_field, ptr_val).ok();
+                                }
+                                if let Ok(flag_field) = ctx.builder.build_struct_gep(
+                                    once_lock_type,
+                                    once_lock_ptr,
+                                    0,
+                                    "static_flag_field",
+                                ) {
+                                    ctx.builder
+                                        .build_store(
+                                            flag_field,
+                                            ctx.context.bool_type().const_int(1, false),
+                                        )
+                                        .ok();
+                                }
                             }
-                            // Also propagate the variable type from source to dest
-                            if let Some(src_type) = ctx.get_variable_type(&src_name) {
-                                ctx.set_variable_type(&dest_str, src_type);
+                        } else {
+                            // Propagate struct type association if present
+                            if let Some(src_name) = get_operand_name(value) {
+                                if let Some(struct_name) =
+                                    ctx.get_temp_struct_type(&src_name).cloned()
+                                {
+                                    ctx.set_temp_struct_type(&dest_str, &struct_name);
+                                }
+                                if let Some(src_type) = ctx.get_variable_type(&src_name) {
+                                    ctx.set_variable_type(&dest_str, src_type);
+                                }
+                                if let Some(&elem_type) = ctx.array_element_types.get(&src_name) {
+                                    ctx.array_element_types.insert(dest_str.clone(), elem_type);
+                                }
                             }
-                            // Propagate array element types from temp to local for map/filter/slice
-                            // Critical for correct printing of float/int arrays returned from lambdas
-                            if let Some(&elem_type) = ctx.array_element_types.get(&src_name) {
-                                ctx.array_element_types.insert(dest_str.clone(), elem_type);
-                            }
+                            ctx.set_local(dest_str, val);
                         }
-                        // Use set_local which handles type mismatch detection for shadowed variables
-                        ctx.set_local(dest_str, val);
                     }
                 } else {
                     dispatcher.emit(ctx, instr);
@@ -1108,13 +1126,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
             let mut maybe_bb = llvm_func.get_first_basic_block();
             while let Some(bb) = maybe_bb {
                 if bb.get_terminator().is_none() {
-                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        doo_debug!(
-                            "CODEGEN",
-                            "Block {:?} has no terminator, adding default return",
-                            bb.get_name().to_str()
-                        );
-                    }
+                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                     ctx.builder.position_at_end(bb);
 
                     // Check if this is a Result-returning function (has error_type).
@@ -1164,9 +1176,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
         term: &MirTerminator,
         block_map: &HashMap<String, BasicBlock<'ctx>>,
     ) {
-        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-            doo_debug!("CODEGEN", "Emitting terminator: {:?}", term);
-        }
+        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
 
         match term {
             MirTerminator::Return { values } => {
@@ -1261,26 +1271,13 @@ impl<'ctx> CodegenBuilder<'ctx> {
                         _ => operand_to_value(ctx, &values[0]),
                     };
                     if let Some(val) = return_val {
-                        if debug {
-                            doo_debug!(
-                                "CODEGEN",
-                                "Return: got value {:?} for {:?}",
-                                val.get_type(),
-                                &values[0]
-                            );
-                        }
+                        if debug {}
                         // Convert value to expected return type if needed
                         // Closures now use actual types, no i64 conversion needed
                         let final_val = convert_return_value(ctx, val);
                         ctx.builder.build_return(Some(&final_val)).ok();
                     } else {
-                        if debug {
-                            doo_debug!(
-                                "CODEGEN",
-                                "WARNING: Return: operand_to_value returned None for {:?}",
-                                &values[0]
-                            );
-                        }
+                        if debug {}
                         // CRITICAL: If function has error_type, return a default Result struct
                         if ctx.current_function_has_error_type {
                             let result_struct_type = ctx.context.struct_type(
@@ -1311,12 +1308,6 @@ impl<'ctx> CodegenBuilder<'ctx> {
 
                     if llvm_values.len() != values.len() {
                         // Some values couldn't be converted
-                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                            doo_debug!(
-                                "CODEGEN",
-                                "WARNING: Could not convert all tuple return values"
-                            );
-                        }
                         ctx.builder.build_return(None).ok();
                     } else {
                         // Get element types
@@ -1405,7 +1396,6 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 if let Some(target_bb) = block_map.get(&target_str) {
                     ctx.builder.build_unconditional_branch(*target_bb).ok();
                 } else if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                    doo_debug!("CODEGEN", "ERROR: Goto target {} not found", target_str);
                 }
             }
             MirTerminator::Branch {
@@ -1416,19 +1406,10 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 let then_str = resolve(*then_block);
                 let else_str = resolve(*else_block);
                 if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                    doo_debug!("CODEGEN", "Branch cond: {:?}", cond);
-                    if let Some(bb) = ctx.builder.get_insert_block() {
-                        doo_debug!(
-                            "CODEGEN",
-                            "Branch emitting from block: {:?}",
-                            bb.get_name().to_str()
-                        );
-                    }
+                    if let Some(bb) = ctx.builder.get_insert_block() {}
                 }
                 if let Some(cond_val) = operand_to_value(ctx, cond) {
-                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        doo_debug!("CODEGEN", "Branch cond_val: {:?}", cond_val);
-                    }
+                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                     // LLVM conditional branch requires i1 condition.
                     // Bool type is i8 (for C ABI), comparison results are i1.
                     // Convert any non-i1 integer to i1 via icmp ne 0.
@@ -1455,42 +1436,16 @@ impl<'ctx> CodegenBuilder<'ctx> {
                     if let (Some(then_bb), Some(else_bb)) =
                         (block_map.get(&then_str), block_map.get(&else_str))
                     {
-                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                            doo_debug!(
-                                "CODEGEN",
-                                "Building conditional branch to {} / {}",
-                                then_str,
-                                else_str
-                            );
-                        }
                         let result = ctx
                             .builder
                             .build_conditional_branch(cond_bool, *then_bb, *else_bb);
                         if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                            doo_debug!(
-                                "CODEGEN",
-                                "build_conditional_branch result: {:?}",
-                                result.is_ok()
-                            );
-                            if let Err(e) = &result {
-                                doo_debug!("CODEGEN", "build_conditional_branch error: {:?}", e);
-                            }
+                            if let Err(e) = &result {}
                         }
                         result.ok();
                     } else if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        doo_debug!(
-                            "CODEGEN",
-                            "ERROR: Branch targets not found: {} or {}",
-                            then_str,
-                            else_str
-                        );
                     }
                 } else if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                    doo_debug!(
-                        "CODEGEN",
-                        "ERROR: Branch condition not found for {:?}",
-                        cond
-                    );
                 }
             }
             MirTerminator::Switch {

@@ -1,0 +1,211 @@
+// =============================================================================
+// Interface Tests — Comprehensive Coverage
+// =============================================================================
+// Covers:
+//   - Basic interface definition + implicit satisfaction (Go-style)
+//   - Multiple methods in interface
+//   - All primitive types: Int, Float, Bool, Str params/returns
+//   - Error types (fallible methods): ! Str
+//   - Multiple structs implementing same interface
+//   - Interface as function parameter type
+//   - Struct with self-referencing methods
+// =============================================================================
+
+// =============================================================================
+// Test 1: Basic Interface — Single method, Int return
+// =============================================================================
+interface Describable {
+    fn describe(self) -> Str;
+}
+
+struct User {
+    Name: Str,
+    Age: Int,
+}
+
+fn User.describe(self) -> Str {
+    return "${self.Name} is ${self.Age} years old";
+}
+
+struct Product {
+    Title: Str,
+    Price: Float,
+}
+
+fn Product.describe(self) -> Str {
+    return "${self.Title} costs $${self.Price}";
+}
+
+fn PrintDescription(item: Describable) {
+    print(item.describe());
+}
+
+// =============================================================================
+// Test 2: Interface with multiple methods
+// =============================================================================
+interface Calculator {
+    fn add(self, a: Int, b: Int) -> Int;
+    fn multiply(self, a: Int, b: Int) -> Int;
+}
+
+struct MathOps {}
+
+fn MathOps.add(self, a: Int, b: Int) -> Int {
+    return a + b;
+}
+
+fn MathOps.multiply(self, a: Int, b: Int) -> Int {
+    return a * b;
+}
+
+fn RunCalc(calc: Calculator, x: Int, y: Int) -> Int {
+    let sum = calc.add(x, y);
+    let prod = calc.multiply(x, y);
+    print("sum:", sum);
+    print("product:", prod);
+    return sum + prod;
+}
+
+// =============================================================================
+// Test 3: Interface with error types (fallible methods)
+// =============================================================================
+interface Validator {
+    fn validate(self, value: Int) -> Bool ! Str;
+}
+
+struct RangeValidator {
+    Min: Int,
+    Max: Int,
+}
+
+fn RangeValidator.validate(self, value: Int) -> Bool ! Str {
+    if value < self.Min {
+        return Err "value too low: ${value} < ${self.Min}";
+    }
+    if value > self.Max {
+        return Err "value too high: ${value} > ${self.Max}";
+    }
+    return Ok true;
+}
+
+fn CheckWithValidator(v: Validator, val: Int) {
+    let result, err = v.validate(val);
+    if err != nil {
+        print("Validation error:", err);
+    } else {
+        print("Validation passed:", result);
+    }
+}
+
+// =============================================================================
+// Test 4: Interface with floating point
+// =============================================================================
+interface Shape {
+    fn area(self) -> Float;
+    fn perimeter(self) -> Float;
+}
+
+struct Circle {
+    Radius: Float,
+}
+
+fn Circle.area(self) -> Float {
+    return 3.14159 * self.Radius * self.Radius;
+}
+
+fn Circle.perimeter(self) -> Float {
+    return 2.0 * 3.14159 * self.Radius;
+}
+
+struct Rectangle {
+    Width: Float,
+    Height: Float,
+}
+
+fn Rectangle.area(self) -> Float {
+    return self.Width * self.Height;
+}
+
+fn Rectangle.perimeter(self) -> Float {
+    return 2.0 * (self.Width + self.Height);
+}
+
+fn PrintShapeInfo(s: Shape, name: Str) {
+    let a = s.area();
+    let p = s.perimeter();
+    print(name + " area:", a);
+    print(name + " perimeter:", p);
+}
+
+// =============================================================================
+// Test 5: Interface with Bool return and mixed types
+// =============================================================================
+interface Checker {
+    fn isPositive(self) -> Bool;
+    fn label(self) -> Str;
+}
+
+struct Number {
+    Value: Int,
+}
+
+fn Number.isPositive(self) -> Bool {
+    return self.Value > 0;
+}
+
+fn Number.label(self) -> Str {
+    return "Number(${self.Value})";
+}
+
+fn InspectChecker(c: Checker) {
+    let label = c.label();
+    let isPos = c.isPositive();
+    print("label:", label);
+    print("isPositive:", isPos);
+}
+
+// =============================================================================
+// main() — run all tests
+// =============================================================================
+fn main() {
+    print("=== INTERFACE TESTS ===");
+
+    // Test 1: Basic interface polymorphism
+    let user = User { Name: "Alice", Age: 30 };
+    let product = Product { Title: "Widget", Price: 9.99 };
+    PrintDescription(user);
+    PrintDescription(product);
+
+    // Test 2: Multiple methods
+    let math = MathOps {};
+    RunCalc(math, 10, 20);
+
+    // Test 3: Error types
+    let range = RangeValidator { Min: 0, Max: 100 };
+    CheckWithValidator(range, 50);
+    CheckWithValidator(range, 200);
+
+    // Test 4: Float types
+    let circle = Circle { Radius: 5.0 };
+    let rect = Rectangle { Width: 4.0, Height: 7.0 };
+    PrintShapeInfo(circle, "Circle");
+    PrintShapeInfo(rect, "Rectangle");
+
+    // Test 5: Bool and mixed types
+    let num = Number { Value: 42 };
+    InspectChecker(num);
+}
+
+// EXPECT: === INTERFACE TESTS ===
+// EXPECT: Alice is 30 years old
+// EXPECT: Widget costs $9.99
+// EXPECT: sum: 30
+// EXPECT: product: 200
+// EXPECT: Validation passed: true
+// EXPECT: Validation error: value too high: 200 > 100
+// EXPECT: Circle area: 78.53975
+// EXPECT: Circle perimeter: 31.4159
+// EXPECT: Rectangle area: 28
+// EXPECT: Rectangle perimeter: 22
+// EXPECT: label: Number(42)
+// EXPECT: isPositive: true

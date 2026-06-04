@@ -49,33 +49,16 @@ pub(crate) fn convert_arg<'ctx>(
         let has_elem_temps = ctx.array_element_temps.contains_key(&name_str);
 
         if debug {
-            doo_debug!(
-                "CODEGEN",
-                "doo_db_raw_param arg[2]: temp={}, has_elem_type={}, has_elem_temps={}",
-                name_str,
-                has_elem_type,
-                has_elem_temps
-            );
         }
 
         // Empty array: tracked as array but has no element temps
         if has_elem_type && !has_elem_temps {
             if debug {
-                doo_debug!(
-                    "CODEGEN",
-                    "Converting empty array {} to JSON \"[]\"",
-                    name_str
-                );
             }
             let empty_json = ctx.const_string("[]");
             return Some(empty_json.into());
         }
     } else if debug {
-        doo_debug!(
-            "CODEGEN",
-            "doo_db_raw_param arg[2] is not a Temp: {:?}",
-            operand
-        );
     }
 
     // Try single enum → JSON string conversion
@@ -224,11 +207,6 @@ fn try_convert_enum_array_to_json_string<'ctx>(
     if !has_element_temps {
         // This is an empty array - return "[]" directly
         if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-            doo_debug!(
-                "CODEGEN",
-                "try_convert_enum_array_to_json_string: empty array {} -> \"[]\"",
-                var_name
-            );
         }
         return Some(ctx.const_string("[]"));
     }
@@ -243,12 +221,6 @@ fn try_convert_enum_array_to_json_string<'ctx>(
                 variants.iter().map(|(vname, _)| vname.clone()).collect();
 
             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                doo_debug!(
-                    "CODEGEN",
-                    "Converting homogeneous enum array {} with variants: {:?}",
-                    name,
-                    variant_names
-                );
             }
 
             // Get the array pointer
@@ -334,11 +306,6 @@ fn try_convert_mixed_enum_array_to_json_string<'ctx>(
     }
 
     if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-        doo_debug!(
-            "CODEGEN",
-            "Converting mixed enum array with {} elements",
-            enum_infos.len()
-        );
     }
 
     // Generate code to build JSON array string at runtime

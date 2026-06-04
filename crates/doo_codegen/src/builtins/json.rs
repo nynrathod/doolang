@@ -104,47 +104,54 @@ impl JsonBuiltins {
     ) -> Option<BasicValueEnum<'ctx>> {
         let i8_ptr = ctx.context.i8_type().ptr_type(AddressSpace::default());
 
+        // Ensure val is a pointer (handle case where it arrives as i64 due to type inference gaps)
+        let val = if val.is_int_value() {
+            ctx.builder
+                .build_int_to_ptr(val.into_int_value(), i8_ptr, "json_i64_to_ptr")
+                .ok()?
+                .into()
+        } else {
+            val
+        };
+
         // Check if this is a complex type that needs inline codegen
         if let Some(ty) = target_type {
             // Resolve TypeRef before dispatch
             let (resolved_ty, resolved_kind) = Self::resolve_type_ref(ctx, ty);
             let kind = resolved_kind;
-            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                doo_debug!(
-                    "CODEGEN",
-                    "emit_parse: target_type={:?}, kind={:?}",
-                    resolved_ty,
-                    kind
-                );
-            }
             match kind {
-                Some(TypeKind::Struct { name, fields }) => {
-                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        doo_debug!("CODEGEN", "emit_parse -> emit_parse_struct for '{}'", name);
-                    }
+                Some(TypeKind::Struct {
+                    name,
+                    fields,
+                    field_json_names,
+                }) => {
+                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                     // Extract just name and type for parsing (visibility not needed)
                     let field_pairs: Vec<_> =
                         fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
-                    return Self::emit_parse_struct(ctx, val, ty, &name, &field_pairs);
+                    return Self::emit_parse_struct(
+                        ctx,
+                        val,
+                        ty,
+                        &name,
+                        &field_pairs,
+                        &field_json_names,
+                    );
                 }
                 Some(TypeKind::Enum { name, variants }) => {
-                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        doo_debug!("CODEGEN", "emit_parse -> emit_parse_enum for '{}'", name);
-                    }
+                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                     return Self::emit_parse_enum(ctx, val, ty, &name, &variants);
                 }
                 Some(TypeKind::Array { element: elem_type }) => {
                     let (_resolved_elem, resolved_elem_kind) =
                         Self::resolve_type_ref(ctx, elem_type);
                     match resolved_elem_kind {
-                        Some(TypeKind::Struct { name, fields }) => {
-                            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                                doo_debug!(
-                                    "CODEGEN",
-                                    "emit_parse -> emit_parse_array_struct for '[{}]'",
-                                    name
-                                );
-                            }
+                        Some(TypeKind::Struct {
+                            name,
+                            fields,
+                            field_json_names,
+                        }) => {
+                            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                             let field_pairs: Vec<_> =
                                 fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
                             return Self::emit_parse_array_struct(
@@ -153,16 +160,11 @@ impl JsonBuiltins {
                                 elem_type,
                                 &name,
                                 &field_pairs,
+                                &field_json_names,
                             );
                         }
                         Some(TypeKind::Enum { name, variants }) => {
-                            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                                doo_debug!(
-                                    "CODEGEN",
-                                    "emit_parse -> emit_parse_array_enum for '[{}]'",
-                                    name
-                                );
-                            }
+                            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                             return Self::emit_parse_array_enum(
                                 ctx, val, elem_type, &name, &variants,
                             );
@@ -270,15 +272,7 @@ impl JsonBuiltins {
             None => (ffi_names::DOO_JSON_PARSE, i8_ptr.into()),
         };
 
-        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-            doo_debug!(
-                "CODEGEN",
-                "JSON.parse: target_type={:?}, fn_name={}, ret_type={:?}",
-                target_type,
-                fn_name,
-                ret_type
-            );
-        }
+        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
 
         // Get or declare the FFI function
         let func = ctx.get_function(fn_name).unwrap_or_else(|| {
@@ -298,6 +292,7 @@ impl JsonBuiltins {
         _ty: TypeId,
         name: &str,
         fields: &[(String, TypeId)],
+        field_json_names: &std::collections::HashMap<String, String>,
     ) -> Option<BasicValueEnum<'ctx>> {
         let i8_ptr = ctx.context.i8_type().ptr_type(AddressSpace::default());
         let i64_type = ctx.i64_type();
@@ -389,19 +384,16 @@ impl JsonBuiltins {
 
         // ── For each field, use typed extraction (zero re-serialization for primitives) ──
         for (i, (fname, fty)) in fields.iter().enumerate() {
-            let field_name_str = ctx.const_string(fname);
+            // Use @json name if present, else Doo field name
+            let json_key = field_json_names
+                .get(fname)
+                .cloned()
+                .unwrap_or_else(|| fname.clone());
+            let field_name_str = ctx.const_string(&json_key);
             let (_, kind_raw) = Self::resolve_type_ref(ctx, *fty);
             let kind = kind_raw;
 
-            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                doo_debug!(
-                    "CODEGEN",
-                    "emit_parse_struct field '{}': type_id={:?}, kind={:?}",
-                    fname,
-                    fty,
-                    kind
-                );
-            }
+            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
 
             // P06: use physical field index for GEP
             let physical_i = ctx.physical_field_index(name, i) as u32;
@@ -615,9 +607,22 @@ impl JsonBuiltins {
         elem_ty: TypeId,
         struct_name: &str,
         struct_fields: &[(String, TypeId)],
+        field_json_names: &std::collections::HashMap<String, String>,
     ) -> Option<BasicValueEnum<'ctx>> {
         let i64_type = ctx.i64_type();
         let ptr_type = ctx.ptr_type();
+
+        // Ensure json_str is a pointer (handle case where it arrives as i64)
+        let json_ptr: BasicValueEnum<'ctx> = if json_str.is_int_value() {
+            ctx.builder
+                .build_int_to_ptr(json_str.into_int_value(), ptr_type, "json_i64_to_ptr")
+                .ok()?
+                .into()
+        } else if json_str.is_pointer_value() {
+            json_str
+        } else {
+            json_str
+        };
 
         // ── Get or declare helper FFI functions ──
         let array_count_fn = Self::get_or_declare_array_count(ctx);
@@ -626,7 +631,7 @@ impl JsonBuiltins {
         // ── Get array element count ──
         let count = ctx
             .builder
-            .build_call(array_count_fn, &[json_str.into()], "arr_count")
+            .build_call(array_count_fn, &[json_ptr.into()], "arr_count")
             .ok()?
             .try_as_basic_value()
             .basic()?
@@ -661,12 +666,12 @@ impl JsonBuiltins {
         idx_phi.add_incoming(&[(&i64_type.const_zero(), loop_preheader)]);
         let idx = idx_phi.as_basic_value().into_int_value();
 
-        // Get element JSON string: doo_json_array_get_element(json_str, idx)
+        // Get element JSON string: doo_json_array_get_element(json_ptr, idx)
         let elem_json = ctx
             .builder
             .build_call(
                 array_get_element_fn,
-                &[json_str.into(), idx.into()],
+                &[json_ptr.into(), idx.into()],
                 "elem_json",
             )
             .ok()?
@@ -674,8 +679,14 @@ impl JsonBuiltins {
             .basic()?;
 
         // Parse element into typed struct (this generates inline codegen, may create basic blocks)
-        let struct_ptr =
-            Self::emit_parse_struct(ctx, elem_json, elem_ty, struct_name, struct_fields)?;
+        let struct_ptr = Self::emit_parse_struct(
+            ctx,
+            elem_json,
+            elem_ty,
+            struct_name,
+            struct_fields,
+            field_json_names,
+        )?;
 
         // Store struct pointer at data[idx]
         let elem_slot = unsafe {
@@ -722,12 +733,24 @@ impl JsonBuiltins {
         let i64_type = ctx.i64_type();
         let ptr_type = ctx.ptr_type();
 
+        // Ensure json_str is a pointer (handle case where it arrives as i64)
+        let json_ptr: BasicValueEnum<'ctx> = if json_str.is_int_value() {
+            ctx.builder
+                .build_int_to_ptr(json_str.into_int_value(), ptr_type, "json_i64_to_ptr")
+                .ok()?
+                .into()
+        } else if json_str.is_pointer_value() {
+            json_str
+        } else {
+            json_str
+        };
+
         let array_count_fn = Self::get_or_declare_array_count(ctx);
         let array_get_element_fn = Self::get_or_declare_array_get_element(ctx);
 
         let count = ctx
             .builder
-            .build_call(array_count_fn, &[json_str.into()], "arr_count")
+            .build_call(array_count_fn, &[json_ptr.into()], "arr_count")
             .ok()?
             .try_as_basic_value()
             .basic()?
@@ -762,7 +785,7 @@ impl JsonBuiltins {
             .builder
             .build_call(
                 array_get_element_fn,
-                &[json_str.into(), idx.into()],
+                &[json_ptr.into(), idx.into()],
                 "elem_json",
             )
             .ok()?
@@ -1271,6 +1294,7 @@ impl JsonBuiltins {
             TypeKind::Struct {
                 name: struct_name,
                 fields,
+                field_json_names,
             } => {
                 let start_fn = Self::get_or_declare_start_object(ctx);
                 let end_fn = Self::get_or_declare_end_object(ctx);
@@ -1304,8 +1328,12 @@ impl JsonBuiltins {
                             .ok()?;
                     }
 
-                    // Write Key
-                    let key_str = ctx.const_string(fname);
+                    // Write Key — use @json name if present, else Doo field name
+                    let json_key = field_json_names
+                        .get(fname)
+                        .cloned()
+                        .unwrap_or_else(|| fname.clone());
+                    let key_str = ctx.const_string(&json_key);
                     ctx.builder
                         .build_call(key_fn, &[writer.into(), key_str.into()], "")
                         .ok()?;

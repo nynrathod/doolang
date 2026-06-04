@@ -178,12 +178,6 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 elem_type,
             } => {
                 if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                    doo_debug!(
-                        "CODEGEN",
-                        "ArrayCreate: {} with {} elements",
-                        resolve(*dest),
-                        elements.len()
-                    );
                 }
                 let elem_llvm_ty = ctx.get_llvm_type(*elem_type);
                 let len_i32 = ctx.i32_type().const_int(elements.len() as u64, false);
@@ -191,7 +185,6 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 if data_ptr.is_none()
                     && std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok()
                 {
-                    doo_debug!("CODEGEN", "ArrayCreate: alloc_with_header failed!");
                     return None;
                 }
                 let data_ptr = data_ptr?;
@@ -297,7 +290,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 let val = match ctx.get_type_kind(*elem_type) {
                     Some(doo_core::types::TypeKind::Struct {
                         ref name,
-                        ref fields,
+                        ref fields, ..
                     }) => {
                         if val.is_pointer_value() {
                             let field_pairs: Vec<_> =

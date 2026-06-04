@@ -354,13 +354,6 @@ pub(crate) fn emit_ffi_call<'ctx>(
     args: &[MirOperand],
 ) -> Option<BasicValueEnum<'ctx>> {
     if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-        doo_debug!(
-            "CODEGEN",
-            "FfiCall: {} with {} args -> {:?}",
-            symbol,
-            args.len(),
-            dest
-        );
     }
 
     // Declare FFI function if not already declared

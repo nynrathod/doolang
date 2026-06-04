@@ -198,8 +198,9 @@ impl<'a> ExhaustivenessChecker<'a> {
     /// Check a single item.
     fn check_item(&mut self, item: &HirItem) {
         match item {
+            HirItem::Const(_) | HirItem::Static(_) => {}
             HirItem::Function(func) => self.check_function(func),
-            HirItem::Struct(_) | HirItem::Enum(_) | HirItem::Import(_) | HirItem::Policy(_) => {}
+            HirItem::Struct(_) | HirItem::Enum(_) | HirItem::Import(_) | HirItem::Policy(_) | HirItem::Interface(_) => {}
         }
     }
 

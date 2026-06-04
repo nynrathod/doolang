@@ -80,7 +80,8 @@ impl<'ctx> CodegenContext<'ctx> {
                 | TypeKind::Tuple { .. }
                 | TypeKind::Struct { .. }
                 | TypeKind::Function { .. }
-                | TypeKind::TypeRef { .. } => self
+                | TypeKind::TypeRef { .. }
+                | TypeKind::TypeParam { .. } => self
                     .context
                     .i8_type()
                     .ptr_type(AddressSpace::default())
@@ -91,6 +92,13 @@ impl<'ctx> CodegenContext<'ctx> {
                     let ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
                     self.context
                         .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false)
+                        .into()
+                }
+                TypeKind::Interface { .. } => {
+                    // Interface layout: fat pointer { data_ptr, vtable_ptr }
+                    let ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
+                    self.context
+                        .struct_type(&[ptr_type.into(), ptr_type.into()], false)
                         .into()
                 }
             }
@@ -217,7 +225,7 @@ impl<'ctx> CodegenContext<'ctx> {
                 if let Some(info) = self.type_registry.get(type_id) {
                     if let TypeKind::Struct {
                         name: sname,
-                        fields,
+                        fields, ..
                     } = &info.kind
                     {
                         if sname == name {
@@ -252,7 +260,7 @@ impl<'ctx> CodegenContext<'ctx> {
             if let Some(info) = self.type_registry.get(type_id) {
                 if let TypeKind::Struct {
                     name: sname,
-                    fields,
+                    fields, ..
                 } = &info.kind
                 {
                     if sname == name {

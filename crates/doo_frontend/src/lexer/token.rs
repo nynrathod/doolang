@@ -67,6 +67,8 @@ pub enum TokenKind {
     Struct,
     /// `enum`
     Enum,
+    /// `interface`
+    Interface,
     /// `if`
     If,
     /// `else`
@@ -95,6 +97,13 @@ pub enum TokenKind {
     True,
     /// `false`
     False,
+
+    /// `const`
+    Const,
+    /// `static`
+    Static,
+    /// `impl`
+    Impl,
 
     // === RBAC ===
     /// `policy`
@@ -237,6 +246,9 @@ impl TokenKind {
     /// Get the keyword for this token kind, if it's a keyword.
     pub fn keyword_str(&self) -> Option<&'static str> {
         match self {
+            Self::Const => Some("const"),
+            Self::Static => Some("static"),
+            Self::Impl => Some("impl"),
             Self::Let => Some("let"),
             Self::Mut => Some("mut"),
             Self::Fn => Some("fn"),
@@ -244,6 +256,7 @@ impl TokenKind {
             Self::As => Some("as"),
             Self::Struct => Some("struct"),
             Self::Enum => Some("enum"),
+            Self::Interface => Some("interface"),
             Self::If => Some("if"),
             Self::Else => Some("else"),
             Self::For => Some("for"),
@@ -337,6 +350,9 @@ impl TokenKind {
         match self {
             Self::Eof => "end of file",
             Self::Error => "error",
+            Self::Const => "`const`",
+            Self::Static => "`static`",
+            Self::Impl => "`impl`",
             Self::Let => "`let`",
             Self::Mut => "`mut`",
             Self::Fn => "`fn`",
@@ -344,6 +360,7 @@ impl TokenKind {
             Self::As => "`as`",
             Self::Struct => "`struct`",
             Self::Enum => "`enum`",
+            Self::Interface => "`interface`",
             Self::If => "`if`",
             Self::Else => "`else`",
             Self::For => "`for`",

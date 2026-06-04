@@ -34,6 +34,7 @@ impl std::fmt::Display for TypeKind {
             }
             TypeKind::Struct { name, .. } => write!(f, "{}", name),
             TypeKind::Enum { name, .. } => write!(f, "{}", name),
+            TypeKind::Interface { name, .. } => write!(f, "{}", name),
             TypeKind::Function { params, returns } => {
                 write!(f, "fn(")?;
                 for (i, p) in params.iter().enumerate() {
@@ -47,6 +48,7 @@ impl std::fmt::Display for TypeKind {
             TypeKind::TypeRef { name } => write!(f, "{}", name),
             TypeKind::Any => write!(f, "Any"),
             TypeKind::Error => write!(f, "Error"),
+            TypeKind::TypeParam { name } => write!(f, "{}", name),
         }
     }
 }

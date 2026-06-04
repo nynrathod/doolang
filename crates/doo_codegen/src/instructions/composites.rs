@@ -583,13 +583,14 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                         .builder
                         .get_insert_block()
                         .map(|b| b.get_name().to_string_lossy().to_string());
-                    doo_debug!("CODEGEN", "FieldGet {} in block {:?}", dest_str, blk);
                 }
                 if let Some(obj_ptr) = operand_to_value(ctx, object) {
                     if obj_ptr.is_pointer_value() {
                         let ptr = obj_ptr.into_pointer_value();
 
                         let var_name = Self::get_operand_name(object);
+                        // Save a copy for later use (var_name is consumed by and_then below)
+                        let var_name_for_clone = var_name.clone();
                         let struct_name = var_name.and_then(|name| {
                             if let Some(st) = ctx.get_temp_struct_type(&name).cloned() {
                                 return Some(st);
@@ -613,25 +614,48 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                     }
                                 }
                             }
+                            // Static globals store their TypeId at registration time but are
+                            // never written to variable_types or temp_struct_types.  Without
+                            // this fallback, FieldGet on a static (e.g. `DB.Connected`) cannot
+                            // resolve the struct layout, emits nothing, and the branch
+                            // condition stays unset — causing the "ensure terminators" pass to
+                            // insert `ret i32 0` immediately after the static assignment.
+                            let type_id_opt =
+                                ctx.static_globals.get(name.as_str()).copied().or_else(|| {
+                                    let lowered = name.to_lowercase();
+                                    ctx.static_globals
+                                        .iter()
+                                        .find(|(k, _)| k.to_lowercase() == lowered)
+                                        .map(|(_, &v)| v)
+                                });
+                            if let Some(type_id) = type_id_opt {
+                                if let Some(kind) = ctx.get_type_kind(type_id) {
+                                    match kind {
+                                        TypeKind::Struct { name: sname, .. } => {
+                                            return Some(sname);
+                                        }
+                                        TypeKind::TypeRef { name: ref_name } => {
+                                            if let Some(resolved_tid) =
+                                                ctx.type_registry.lookup(&ref_name)
+                                            {
+                                                if let Some(TypeKind::Struct {
+                                                    name: sname, ..
+                                                }) = ctx.get_type_kind(resolved_tid)
+                                                {
+                                                    return Some(sname);
+                                                }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
                             None
                         });
 
                         if debug {
                             if struct_name.is_none() {
-                                doo_debug!(
-                                    "CODEGEN",
-                                    "WARNING: FieldGet {} has no struct type for {:?}",
-                                    dest_str,
-                                    object
-                                );
                             } else {
-                                doo_debug!(
-                                    "CODEGEN",
-                                    "FieldGet {} using struct_name={:?} for field={}",
-                                    dest_str,
-                                    struct_name,
-                                    field_str
-                                );
                             }
                         }
 
@@ -639,16 +663,7 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                             let field_index = ctx
                                 .get_field_index(&struct_name, &field_str)
                                 .unwrap_or_else(|| field_str.parse::<u32>().unwrap_or(0));
-                            if debug {
-                                doo_debug!(
-                                    "CODEGEN",
-                                    "FieldGet {} field_index={} for {}.{}",
-                                    dest_str,
-                                    field_index,
-                                    struct_name,
-                                    field_str
-                                );
-                            }
+                            if debug {}
 
                             if let Some(struct_type) = ctx.get_or_build_struct_type(&struct_name) {
                                 // Use non-inbounds GEP to avoid UB when ptr comes from
@@ -737,18 +752,81 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                     if let Ok(val) =
                                         ctx.builder.build_load(load_type, field_ptr, &dest_str)
                                     {
+                                        // CRITICAL: Deep-clone non-Copy fields (arrays, structs)
+                                        // extracted from local variables. Without this, the field
+                                        // value is a pointer into the struct's memory. When the
+                                        // struct is dropped, the field data is freed and anyone
+                                        // holding the pointer gets a use-after-free crash.
+                                        // This is the root cause of crashes on schema save
+                                        // (e.g., `let schemas = body.Schemas` where body is
+                                        // later dropped, freeing the Schemas array).
+                                        let val = if val.is_pointer_value() {
+                                            let is_local =
+                                                var_name_for_clone.as_ref().map_or(false, |n| {
+                                                    // Check if the source is a named local variable
+                                                    // (not a temp like _t0, _t1, or internal __var)
+                                                    !n.starts_with("_t")
+                                                        && !n.starts_with("__")
+                                                        && !n.starts_with('%')
+                                                        && ctx.get_value(n).is_some()
+                                                });
+                                            if is_local {
+                                                if let Some(ft_id) = field_type_id {
+                                                    let kind = ctx.get_type_kind(ft_id);
+                                                    match kind {
+                                                        Some(TypeKind::Array { element }) => {
+                                                            super::memory::clone_array(
+                                                                ctx,
+                                                                val.into_pointer_value(),
+                                                                element,
+                                                            )
+                                                            .map(|p| p.into())
+                                                            .unwrap_or(val)
+                                                        }
+                                                        Some(TypeKind::Struct {
+                                                            name,
+                                                            fields,
+                                                            ..
+                                                        }) => {
+                                                            let field_pairs: Vec<_> = fields
+                                                                .iter()
+                                                                .map(|(n, t, _)| (n.clone(), *t))
+                                                                .collect();
+                                                            super::memory::clone_struct(
+                                                                ctx,
+                                                                val.into_pointer_value(),
+                                                                &name,
+                                                                &field_pairs,
+                                                            )
+                                                            .map(|p| p.into())
+                                                            .unwrap_or(val)
+                                                        }
+                                                        _ => val,
+                                                    }
+                                                } else {
+                                                    val
+                                                }
+                                            } else {
+                                                val
+                                            }
+                                        } else {
+                                            val
+                                        };
+
                                         ctx.set_temp(&dest_str, val);
 
                                         if let Some(nested_name) = nested_struct_name {
-                                            if debug {
-                                                doo_debug!(
-                                                    "CODEGEN",
-                                                    "FieldGet {} setting nested struct type to {}",
-                                                    dest_str,
-                                                    nested_name
-                                                );
-                                            }
+                                            if debug {}
                                             ctx.set_temp_struct_type(&dest_str, &nested_name);
+                                        }
+
+                                        // CRITICAL: Propagate field_type_id to variable_type.
+                                        // Without this, Clone instructions that use this temp
+                                        // as source will get None from get_variable_type() and
+                                        // fall back to clone_string, causing strlen on binary
+                                        // array data → garbage allocation → crash.
+                                        if let Some(ft_id) = field_type_id {
+                                            ctx.set_variable_type(&dest_str, ft_id);
                                         }
 
                                         return Some(val);

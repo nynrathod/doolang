@@ -54,3 +54,36 @@ pub extern "C" fn doo_random_base62(len: i64) -> *const c_char {
         .collect();
     doo_ffi_core::memory::doo_alloc_string(&result) as *const c_char
 }
+
+// ============================================================================
+// String replace-all — replaces ALL occurrences, unlike the first-only compiler builtin
+// ============================================================================
+
+/// FFI: `doo_string_replace_all(haystack: *const c_char, needle: *const c_char, replacement: *const c_char) -> *const c_char`
+///
+/// Replace ALL occurrences of `needle` with `replacement` in `haystack`.
+/// Returns a heap-allocated C string (caller-owned via doo_alloc_string).
+/// If needle is empty, returns a copy of haystack.
+#[no_mangle]
+pub extern "C" fn doo_string_replace_all(
+    haystack: *const c_char,
+    needle: *const c_char,
+    replacement: *const c_char,
+) -> *const c_char {
+    let haystack = unsafe { std::ffi::CStr::from_ptr(haystack) }
+        .to_str()
+        .unwrap_or("");
+    let needle = unsafe { std::ffi::CStr::from_ptr(needle) }
+        .to_str()
+        .unwrap_or("");
+    let replacement = unsafe { std::ffi::CStr::from_ptr(replacement) }
+        .to_str()
+        .unwrap_or("");
+
+    if needle.is_empty() {
+        return doo_ffi_core::memory::doo_alloc_string(haystack) as *const c_char;
+    }
+
+    let result = haystack.replace(needle, replacement);
+    doo_ffi_core::memory::doo_alloc_string(&result) as *const c_char
+}

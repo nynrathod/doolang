@@ -164,11 +164,6 @@ fn register_user_middleware<'ctx>(
             // Skip built-in middlewares — they register themselves in the runtime
             if is_builtin_middleware(mw_name) {
                 if debug {
-                    doo_debug!(
-                        "CODEGEN",
-                        "Skipping built-in middleware registration: {}",
-                        mw_name
-                    );
                 }
                 continue;
             }
@@ -201,12 +196,6 @@ fn register_user_middleware<'ctx>(
             );
 
             if debug {
-                doo_debug!(
-                    "CODEGEN",
-                    "Registered user middleware: {} -> {}",
-                    mw_name,
-                    wrapper.get_name().to_string_lossy()
-                );
             }
         }
     }

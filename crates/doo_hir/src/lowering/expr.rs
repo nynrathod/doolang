@@ -1,11 +1,12 @@
 //! Expression lowering.
 
 use super::{hir_binop_to_kind, hir_unaryop_to_kind};
+use super::type_infer::unwrap_optional_type;
 use super::{Lower, LowerError};
 use crate::types::*;
 use doo_core::{
     constants::ffi_names,
-    infer::{infer_binop_result_type, infer_unaryop_result_type},
+    infer::{infer_binop_result_type, infer_unaryop_result_type, BinOpKind},
     types::{builtin, TypeId, TypeKind, TypeRegistry},
 };
 use doo_frontend::ast::{Expr, ExprKind};
@@ -19,7 +20,13 @@ impl Lower {
             ExprKind::StrLit(v) => HirExprKind::Const(ConstValue::Str(v.clone())),
             ExprKind::Nil => HirExprKind::Const(ConstValue::Nil),
 
-            ExprKind::Ident(name) => HirExprKind::Local { name: name.clone() },
+            ExprKind::Ident(name) => {
+                // Inline const at use site (untyped path)
+                if let Some(const_expr) = self.known_consts.get(name).cloned() {
+                    return self.lower_expr(&const_expr);
+                }
+                HirExprKind::Local { name: name.clone() }
+            }
 
             ExprKind::Binary { left, op, right } => HirExprKind::BinOp {
                 op: self.lower_binop(*op),
@@ -295,6 +302,10 @@ impl Lower {
             ExprKind::Nil => HirExprKind::Const(ConstValue::Nil),
 
             ExprKind::Ident(name) => {
+                // Inline compile-time constant if the name is a known const
+                if let Some(const_expr) = self.known_consts.get(name).cloned() {
+                    return self.lower_expr_typed(&const_expr, registry);
+                }
                 // Look up the variable type if tracked
                 let kind = HirExprKind::Local { name: name.clone() };
                 if let Some(&type_id) = self.var_types.get(name) {
@@ -766,7 +777,12 @@ impl Lower {
                 let lhs_type = lhs.type_id.unwrap_or(builtin::ANY);
                 let rhs_type = rhs.type_id.unwrap_or(builtin::ANY);
                 let op_kind = hir_binop_to_kind(*op);
-                out.type_id = Some(infer_binop_result_type(op_kind, lhs_type, rhs_type));
+                let mut inferred = infer_binop_result_type(op_kind, lhs_type, rhs_type);
+                // NullCoalesce (??): unwrap Optional/Result from the inferred type
+                if op_kind == BinOpKind::NullCoalesce {
+                    inferred = unwrap_optional_type(registry, inferred);
+                }
+                out.type_id = Some(inferred);
             }
             HirExprKind::Field { object, field } => {
                 // Infer field access type from struct type, resolving TypeRef chains

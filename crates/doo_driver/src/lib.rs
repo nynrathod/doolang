@@ -115,18 +115,39 @@ pub fn run_command_with_compiler(
 
     let debug_enabled = debug || cfg!(debug_assertions);
 
-    // Determine working directory for .env loading
-    let run_root: PathBuf = if path.is_file() {
-        let parent = path.parent().unwrap_or_else(|| Path::new("."));
-        let parent = if parent.as_os_str().is_empty() {
-            Path::new(".")
+    // Determine working directory for .env loading.
+    // Walk up from the entry file to find the nearest .env.
+    // Falls back to the entry file's directory.
+    let run_root: PathBuf = {
+        let start = if path.is_file() {
+            let p = path.parent().unwrap_or_else(|| Path::new("."));
+            if p.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                p
+            }
         } else {
-            parent
+            &path
         };
-        parent.to_path_buf()
-    } else {
-        path.clone()
+        let mut current = start.to_path_buf();
+        loop {
+            if current.join(".env").exists() {
+                break;
+            }
+            match current.parent() {
+                Some(parent) if parent != current => current = parent.to_path_buf(),
+                _ => {
+                    current = start.to_path_buf();
+                    break;
+                }
+            }
+        }
+        current
     };
+
+    // Canonicalize to absolute path so spawned processes resolve correctly.
+    // Relative paths (e.g., "." or "tests/...") cause Windows os error 123.
+    let run_root = run_root.canonicalize().unwrap_or(run_root);
 
     let temp_name = format!("temp_doo_{}", std::process::id());
 

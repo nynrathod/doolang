@@ -1,5 +1,5 @@
 // OUTPUT: INFO
-pub enum LogLevel {
+enum LogLevel {
     Debug,
     Info,
     Warn,

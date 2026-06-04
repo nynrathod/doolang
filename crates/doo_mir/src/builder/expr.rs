@@ -33,6 +33,28 @@ pub fn build_expr_with_expected_type(
         }
     }
 
+    // CRITICAL: Propagate expected type to array expressions.
+    // When a Let statement has a type annotation like `let mut arr: [Str] = []`,
+    // the empty array infers elem_type = ANY (no elements to infer from).
+    // We must use the expected_type to fix the array's element type, otherwise
+    // subsequent method calls like .join() won't know the correct element type
+    // and will use %p formatting instead of string operations.
+    if let HirExprKind::Array(_) = &expr.kind {
+        let operand = build_expr(builder, expr);
+
+        if let Some(exp_tid) = expected_type {
+            if let Some(exp_kind) = builder.type_registry.get(exp_tid) {
+                if let TypeKind::Array { .. } = &exp_kind.kind {
+                    // The expected type is a concrete array type, use it
+                    if let MirOperand::Temp(temp_name) = operand {
+                        builder.set_temp_type(temp_name, exp_tid);
+                    }
+                }
+            }
+        }
+        return operand;
+    }
+
     // For other expressions, use the regular build_expr
     build_expr(builder, expr)
 }
@@ -92,13 +114,18 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
     // DEBUG: Track what kind of expressions are being processed
     let is_add_func = builder.current_func.as_ref().map(|f| resolve(f.name).contains("add")).unwrap_or(false);
     if is_add_func {
-        doo_debug!("MIR", "build_expr: Processing {:?} in add function", expr.kind);
+
     }
 
     match &expr.kind {
         HirExprKind::Const(cv) => MirOperand::Const(builder.const_to_mir(cv)),
 
         HirExprKind::Local { name } => {
+            // Static globals: emit Global operand for OnceLock-backed statics
+            if builder.static_names.contains(name) {
+                return MirOperand::Global(sym(name));
+            }
+
             // Built-in modules (JSON, Math, File, etc.) are treated as globals, not locals
             if builder.is_module_name(name) {
                 return MirOperand::Global(sym(name));
@@ -252,6 +279,24 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         HirBinOp::And | HirBinOp::Or => {
                             Some(doo_core::types::builtin::BOOL)
                         }
+                        HirBinOp::NullCoalesce => {
+                            // Nil coalescing: result type is the non-nil type, unwrapping Optional/Result
+                            let lt = lhs.type_id.filter(|&t| t != doo_core::types::builtin::ANY && t != doo_core::types::builtin::VOID);
+                            let rt = rhs.type_id.filter(|&t| t != doo_core::types::builtin::ANY && t != doo_core::types::builtin::VOID);
+                            lt.or(rt).or_else(|| {
+                                let inferred = builder.infer_operand_type(&l);
+                                if inferred != doo_core::types::builtin::ANY && inferred != doo_core::types::builtin::VOID {
+                                    Some(inferred)
+                                } else {
+                                    let rhs_inferred = builder.infer_operand_type(&r);
+                                    if rhs_inferred != doo_core::types::builtin::ANY {
+                                        Some(rhs_inferred)
+                                    } else {
+                                        None
+                                    }
+                                }
+                            }).map(|tid| builder.unwrap_optional_type(tid))
+                        }
                         _ => {
                             // For Add/Sub/Mul/Div/Mod, use LHS type, or infer from operands
                             // CRITICAL: Filter out ANY from lhs.type_id — closure params may have
@@ -315,6 +360,49 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
         }
 
         HirExprKind::Call { func, args } => {
+            // Check if this is a closure variable call (e.g., `action(item)` where `action` is a closure)
+            // If func is a Local/Global whose type is a Function, emit ClosureCall instead of Call
+            let is_closure_call = match &func.kind {
+                HirExprKind::Local { .. } | HirExprKind::Global { .. } => {
+                    func.type_id.map_or(false, |tid| {
+                        builder.type_registry.get(tid)
+                            .map_or(false, |info| matches!(info.kind, TypeKind::Function { .. }))
+                    })
+                }
+                _ => false,
+            };
+
+            if is_closure_call {
+                // Build the closure operand (the closure value itself)
+                let closure_op = builder.build_expr(func);
+                let dest = builder.new_temp();
+
+                // Build arguments
+                let arg_ops: Vec<_> = args.iter()
+                    .map(|a| builder.build_expr(a))
+                    .collect();
+
+                builder.emit(
+                    MirInstrKind::ClosureCall {
+                        dest: Some(dest),
+                        closure: closure_op,
+                        args: arg_ops,
+                    },
+                    span,
+                );
+
+                // Set return type on dest if we can infer it from the function type
+                if let Some(func_type) = func.type_id {
+                    if let Some(info) = builder.type_registry.get(func_type) {
+                        if let TypeKind::Function { returns, .. } = &info.kind {
+                            builder.set_temp_type(dest, *returns);
+                        }
+                    }
+                }
+
+                return MirOperand::Temp(dest);
+            }
+
             let func_name = builder.expr_to_name(func);
             // Resolve alias to get canonical function name
             let resolved_func_name = builder.resolve_function_name(&func_name);
@@ -404,11 +492,52 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 MirOperand::Temp(dest)
             } else {
                 let dest = builder.new_temp();
+
+                // Coerce arguments to interface types when needed.
+                // If a parameter expects an interface type but the argument is a
+                // concrete struct, emit InterfaceConstruct to build the fat pointer.
+                let mut coerced_args: Vec<MirOperand> = Vec::with_capacity(arg_ops.len());
+                for (i, arg_op) in arg_ops.into_iter().enumerate() {
+                    let needs_interface_coercion = param_types
+                        .as_ref()
+                        .and_then(|types| types.get(i).copied())
+                        .and_then(|param_type| {
+                            let is_interface = builder
+                                .type_registry
+                                .get(param_type)
+                                .map(|info| matches!(info.kind, TypeKind::Interface { .. }))
+                                .unwrap_or(false);
+                            if is_interface {
+                                let arg_type = builder.infer_operand_type(&arg_op);
+                                let is_concrete = arg_type != param_type;
+                                Some((arg_type, param_type))
+                            } else {
+                                None
+                            }
+                        });
+                    if let Some((arg_type, iface_type)) = needs_interface_coercion {
+                        let iface_dest = builder.new_temp();
+                        builder.emit(
+                            MirInstrKind::InterfaceConstruct {
+                                dest: iface_dest,
+                                value: arg_op,
+                                concrete_type: arg_type,
+                                interface_type: iface_type,
+                            },
+                            span,
+                        );
+                        builder.set_temp_type(iface_dest, iface_type);
+                        coerced_args.push(MirOperand::Temp(iface_dest));
+                    } else {
+                        coerced_args.push(arg_op);
+                    }
+                }
+
                 builder.emit(
                     MirInstrKind::Call {
                         dest: Some(dest),
                         func: sym(&resolved_func_name),
-                        args: arg_ops,
+                        args: coerced_args,
                     },
                     span,
                 );
@@ -542,9 +671,14 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             }
 
             // Check if receiver is a module-like name (uppercase first char = static module call)
-            // Modules like JSON, Math, File, etc. don't exist as local variables
+            // Modules like JSON, Math, File, etc. don't exist as local variables.
+            // CRITICAL: Static variables (e.g., `static DB: Database`) also start with
+            // uppercase but are NOT modules — they are runtime instances. Treating them
+            // as modules causes wrong method name mangling (_method_DB_rawWithParams
+            // instead of _method_Database_rawWithParams), breaking FFI dispatch.
             let is_module_receiver = matches!(&receiver.kind, HirExprKind::Local { name } 
-                if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false));
+                if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+                && !builder.static_names.contains(name));
 
             // Build receiver FIRST - for modules, use Global instead of Local
             // We need the receiver built before we can determine its type for FFI lookup
@@ -568,10 +702,15 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 .or_else(|| {
                     // If HIR didn't have type, check the built operand
                     // This is CRITICAL for method chaining like .use(...).use(...)
-                    // where the receiver is a temp from a previous call
+                    // where the receiver is a temp from a previous call.
+                    // Also handles static globals (e.g., `DB.raw(...)`) via static_types.
                     match &recv {
                         MirOperand::Temp(name) => builder.get_temp_type(*name),
                         MirOperand::Local(name) => builder.get_local_type(&resolve(*name)),
+                        MirOperand::Global(name) => {
+                            let n = resolve(*name);
+                            builder.static_types.get(&n).copied()
+                        }
                         _ => None,
                     }
                 })
@@ -590,8 +729,28 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             } else {
                 // Get type name from receiver_type (already computed with all fallbacks)
                 builder.type_registry.get(receiver_type).and_then(|info| {
-                    if let TypeKind::Struct { name, .. } = &info.kind {
-                        Some(name.clone())
+                    match &info.kind {
+                        TypeKind::Struct { name, .. } => Some(name.clone()),
+                        // Handle TypeRef: resolve through to the struct name
+                        TypeKind::TypeRef { name } => Some(name.clone()),
+                        _ => None,
+                    }
+                })
+                // Fallback for static variables: look up the static's declared type
+                // This handles `static DB: Database` where receiver_type might be ANY
+                .or_else(|| {
+                    if let HirExprKind::Local { name } = &receiver.kind {
+                        if let Some(&static_tid) = builder.static_types.get(name) {
+                            builder.type_registry.get(static_tid).and_then(|info| {
+                                match &info.kind {
+                                    TypeKind::Struct { name, .. } => Some(name.clone()),
+                                    TypeKind::TypeRef { name } => Some(name.clone()),
+                                    _ => None,
+                                }
+                            })
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
@@ -640,6 +799,32 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 // Method functions are named _method_{TypeName}_{method}
                 // CRITICAL: Use receiver_type_name for static calls (e.g., Server.new())
                 // where receiver_type may be ANY but we know the type name from the receiver
+                
+                // For interface receivers, extract return type from the interface definition
+                if let Some(info) = builder.type_registry.get(receiver_type) {
+                    if let TypeKind::Interface { methods, .. } = &info.kind {
+                        for (mname, _params, ret, err) in methods {
+                            if mname == method {
+                                if let (Some(ok_type), Some(err_type)) = (ret, err) {
+                                    // Fallible method: return type is Result<ok, err>
+                                    // Look up the registered Result type
+                                    let ok_name = builder.type_registry.get(*ok_type)
+                                        .map(|t| t.name.clone()).unwrap_or_else(|| "?".to_string());
+                                    let err_name = builder.type_registry.get(*err_type)
+                                        .map(|t| t.name.clone()).unwrap_or_else(|| "?".to_string());
+                                    let result_name = format!("{} ! {}", ok_name, err_name);
+                                    if let Some(result_tid) = builder.type_registry.lookup(&result_name) {
+                                        return Some(result_tid);
+                                    }
+                                    // Fallback: return just the Ok type
+                                    return ret.clone();
+                                }
+                                return ret.clone();
+                            }
+                        }
+                    }
+                }
+                
                 let type_name = receiver_type_name.as_ref().cloned().or_else(|| {
                     builder.type_registry.get(receiver_type).and_then(|info| {
                         if let TypeKind::Struct { name, .. } = &info.kind {
@@ -1452,7 +1637,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         let resolved_name = builder.resolve_function_name(name);
                         let found = builder.function_result_types.contains_key(&resolved_name);
                         if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                            doo_debug!("MIR", "Try: Call '{}' resolved to '{}', is_result={}", name, resolved_name, found);
+
                         }
                         found
                     } else {
@@ -1467,8 +1652,23 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         // Check if this is a type name (static call) or a variable (instance call)
                         // Type names start with uppercase, variables start with lowercase
                         if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
-                            // Static method call: Database::postgres() - receiver is the type name
-                            Some(name.clone())
+                            // CRITICAL: Static variables (e.g., `static DB: Database`) also start
+                            // with uppercase but are NOT type names — resolve their actual type
+                            // from static_types. This mirrors the fix in MethodCall at line ~657.
+                            if builder.static_names.contains(name) {
+                                // Static variable: resolve the declared type name
+                                builder.static_types.get(name)
+                                    .and_then(|&tid| builder.type_registry.get(tid))
+                                    .and_then(|info| match &info.kind {
+                                        TypeKind::Struct { name: type_name, .. } => Some(type_name.clone()),
+                                        TypeKind::TypeRef { name: type_name } => Some(type_name.clone()),
+                                        _ => None,
+                                    })
+                                    .or_else(|| Some(name.clone()))
+                            } else {
+                                // True static/module call: Database::postgres() - receiver is the type name
+                                Some(name.clone())
+                            }
                         } else {
                             // Variable name - need to look up its type
                             // First try the temp type registry for variables
@@ -1511,26 +1711,26 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         let mangled_name = format!("_method_{}_{}", type_name, method);
                         let found = builder.function_result_types.contains_key(&mangled_name);
                         if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                            doo_debug!("MIR", "Try: MethodCall '{}.{}' -> '{}', is_result={}", type_name, method, mangled_name, found);
+
                         }
                         found
                     } else {
                         if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                            doo_debug!("MIR", "Try: MethodCall method='{}' - no receiver type found", method);
+
                         }
                         false
                     }
                 }
                 _ => {
                     if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        doo_debug!("MIR", "Try: Unknown inner expr kind {:?}", std::mem::discriminant(&inner.kind));
+
                     }
                     false
                 },
             };
             
             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                doo_debug!("MIR", "Try: is_result_type={}", is_result_type);
+
             }
             
             // If not a Result type, just return the value directly
@@ -1545,8 +1745,17 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             let expected_type = value_type;
             
             // Track the unwrapped type for downstream code
+            // Use the Ok inner type, NOT the full Result type
             if let Some(type_id) = expected_type {
-                builder.set_temp_type(dest, type_id);
+                // If this is a Result, unwrap to get the Ok inner type
+                let inner_type = builder.type_registry.get(type_id)
+                    .and_then(|info| match &info.kind {
+                        TypeKind::Result { ok, .. } => Some(*ok),
+                        TypeKind::Optional { inner } => Some(*inner),
+                        _ => None,
+                    })
+                    .unwrap_or(type_id);
+                builder.set_temp_type(dest, inner_type);
             }
 
             // Check if Ok
@@ -1754,31 +1963,67 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             let closure_name = format!("__closure_{}", builder.closure_counter);
             builder.closure_counter += 1;
 
+            // Collect free variables from the body — these must be captured
+            // from the outer scope (same approach as Spawn handling).
+            // Closure params are NOT captures — pass them as initial_defined.
+            let param_names: std::collections::HashSet<String> =
+                params.iter().map(|(n, _)| n.clone()).collect();
+            let captures = super::capture::collect_free_vars(body, builder, &param_names);
+
+            // Look up actual types for each captured variable from the outer scope.
+            let captures_with_types: Vec<(String, CoreTypeId)> = captures
+                .iter()
+                .map(|name| {
+                    let type_id = builder
+                        .current_func
+                        .as_ref()
+                        .and_then(|f| {
+                            f.locals
+                                .iter()
+                                .find(|l| resolve(l.name) == *name)
+                                .map(|l| l.type_id)
+                        })
+                        .or_else(|| builder.temp_types.get(&sym(name)).copied())
+                        .unwrap_or(builtin::INT);
+                    (name.clone(), type_id)
+                })
+                .collect();
+
             // Store the closure for later processing (don't build body inline!)
-            // The body will be built as a separate MIR function
-            builder
-                .pending_closures
-                .push((closure_name.clone(), params.clone(), body.clone(), Vec::new(), false));
+            // The body will be built as a separate MIR function with captures injected
+            // as additional locals in build_closure_function
+            builder.pending_closures.push((
+                closure_name.clone(),
+                params.clone(),
+                body.clone(),
+                captures_with_types.clone(),
+                true, // closures capture by value (copied into the env)
+            ));
 
             // Emit ClosureCreate instruction that references the closure function
             let dest = builder.new_temp();
             let span = builder.convert_span(expr.span);
-            
+
             // Set the closure's function type on the temp if HIR provided it
-            // This enables proper type inference for lambda methods like map/filter/reduce
             if let Some(func_type) = expr.type_id {
                 builder.set_temp_type(dest, func_type);
             }
-            // If HIR didn't provide type, the body type might still be set
-            // Store closure info for later type lookup
             let return_type = body.type_id.unwrap_or(builtin::ANY);
-            builder.closure_return_types.insert(closure_name.clone(), return_type);
-            
+            builder
+                .closure_return_types
+                .insert(closure_name.clone(), return_type);
+
+            // Build capture operands from the outer scope
+            let capture_operands: Vec<MirOperand> = captures
+                .iter()
+                .map(|name| MirOperand::Local(sym(name)))
+                .collect();
+
             builder.emit(
                 MirInstrKind::ClosureCreate {
                     dest,
                     func: sym(&closure_name),
-                    captures: Vec::new(), // TODO: capture analysis
+                    captures: capture_operands,
                 },
                 span,
             );
@@ -1861,7 +2106,12 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             builder.closure_counter += 1;
 
             // Collect free variables from the body — these must be captured
-            let captures = super::capture::collect_free_vars(body, builder);
+            // Spawn body has no params, so initial_defined is empty
+            let captures = super::capture::collect_free_vars(
+                body,
+                builder,
+                &std::collections::HashSet::new(),
+            );
 
             // Look up actual types for each captured variable from the outer scope.
             // This is critical: Bool is i8, Int is i64, Str is ptr, etc.

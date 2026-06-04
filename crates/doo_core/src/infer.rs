@@ -27,6 +27,9 @@ pub enum BinOpKind {
     Ge,
     And,
     Or,
+    /// Nil coalescing: a ?? b — returns a if a != nil, else b.
+    /// Result type is the common type of both operands (both must match).
+    NullCoalesce,
 }
 
 /// Unary operator types
@@ -45,6 +48,15 @@ pub fn infer_binop_result_type(op: BinOpKind, lhs: TypeId, rhs: TypeId) -> TypeI
         Eq | Ne | Lt | Le | Gt | Ge => builtin::BOOL,
         // Logical operators return Bool
         And | Or => builtin::BOOL,
+        // Nil coalescing: a ?? b returns the non-nil type.
+        // If lhs is nil (VOID), use rhs type. Otherwise use lhs type.
+        NullCoalesce => {
+            if lhs == builtin::VOID || lhs == builtin::ANY {
+                rhs
+            } else {
+                lhs
+            }
+        }
         // Arithmetic operators return the operand type
         Add | Sub | Mul | Div | Mod => {
             // Int + Int = Int

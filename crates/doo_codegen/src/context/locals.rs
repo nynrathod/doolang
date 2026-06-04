@@ -68,17 +68,7 @@ impl<'ctx> CodegenContext<'ctx> {
             // store as temp instead to avoid LLVM type errors
             let value_type = value.get_type();
             let types_match = *alloca_ty == value_type;
-            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                doo_debug!(
-                    "CODEGEN",
-                    "set_local '{}': alloca_ty={:?}, value_ty={:?}, match={}",
-                    name,
-                    alloca_ty,
-                    value_type,
-                    types_match
-                );
-            }
-            if types_match {
+if types_match {
                 // Types match - store to alloca
                 let _ = self.builder.build_store(*ptr, value);
                 // Clear any stale temp entry - the alloca is the source of truth now
@@ -101,14 +91,7 @@ impl<'ctx> CodegenContext<'ctx> {
                     ) {
                         let _ = self.builder.build_store(ptr, converted);
                         self.temps.remove(&name);
-                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                            doo_debug!(
-                                "CODEGEN",
-                                "set_local '{}': converted ptr->int via ptrtoint",
-                                name
-                            );
-                        }
-                        return;
+return;
                     }
                 }
 
@@ -152,14 +135,7 @@ impl<'ctx> CodegenContext<'ctx> {
                         let converted_val: BasicValueEnum = safe.into();
                         let _ = self.builder.build_store(ptr, converted_val);
                         self.temps.remove(&name);
-                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                            doo_debug!(
-                                "CODEGEN",
-                                "set_local '{}': converted int->ptr via safe inttoptr",
-                                name
-                            );
-                        }
-                        return;
+return;
                     }
                 }
 
@@ -207,15 +183,7 @@ impl<'ctx> CodegenContext<'ctx> {
                                 let _ = self.builder.build_store(new_alloca, value);
                                 self.locals.insert(name.clone(), (new_alloca, value_type));
                                 self.temps.remove(&name);
-                                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                                    doo_debug!(
-                                        "CODEGEN",
-                                        "set_local '{}': recreated alloca with correct type {:?}",
-                                        name,
-                                        value_type
-                                    );
-                                }
-                                return;
+return;
                             }
                             // Restore position if alloca creation failed
                             self.builder.position_at_end(current_bb);
@@ -225,14 +193,7 @@ impl<'ctx> CodegenContext<'ctx> {
 
                 // Last resort - store as temp (shadows the local for this scope)
                 // get_value checks temps first, so this will be found before the alloca
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                    doo_debug!(
-                        "CODEGEN",
-                        "set_local type mismatch for '{}': using temp instead",
-                        name
-                    );
-                }
-                self.temps.insert(name, value);
+self.temps.insert(name, value);
             }
         } else {
             // Fallback to temp storage (for temporaries without allocas)
@@ -285,7 +246,7 @@ impl<'ctx> CodegenContext<'ctx> {
     /// Store a temporary value.
     pub fn set_temp(&mut self, name: &str, value: BasicValueEnum<'ctx>) {
         if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-            doo_debug!("CODEGEN", "set_temp: {} = {:?}", name, value);
+
         }
         self.temps.insert(name.to_string(), value);
     }
@@ -306,43 +267,22 @@ impl<'ctx> CodegenContext<'ctx> {
         // Check temps first
         if let Some(v) = self.temps.get(name) {
             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                doo_debug!("CODEGEN", "get_value({}) found in temps", name);
+
             }
             return Some(*v);
         }
         // Check locals - return loaded value
         if let Some((ptr, ty)) = self.locals.get(name) {
             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                doo_debug!(
-                    "CODEGEN",
-                    "get_value({}) loading from local, ty={:?}",
-                    name,
-                    ty
-                );
             }
             let result = self.builder.build_load(*ty, *ptr, name);
             if result.is_err() {
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                    doo_debug!(
-                        "CODEGEN",
-                        "ERROR: build_load failed for {}: {:?}",
-                        name,
-                        result
-                    );
-                }
-            } else if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                doo_debug!("CODEGEN", "get_value({}) loaded successfully", name);
+} else if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
+
             }
             return result.ok();
         }
-        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-            doo_debug!(
-                "CODEGEN",
-                "WARNING: Variable {} not found in temps or locals",
-                name
-            );
-        }
-        None
+None
     }
 
     // ========================================================================

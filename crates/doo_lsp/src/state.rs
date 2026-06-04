@@ -64,6 +64,7 @@ pub enum SymbolKind {
     Field,
     Variable,
     Import,
+    Const,
 }
 
 /// Global LSP server state.
@@ -487,11 +488,65 @@ fn extract_symbols_from_item(
                 return_type: None,
             });
         }
+        Item::Const(c) => {
+            let (line, col) = line_index.line_col(c.span.start);
+            symbols.push(SymbolDef {
+                name: c.name.clone(),
+                kind: SymbolKind::Const,
+                line: line.saturating_sub(1),
+                col: col.saturating_sub(1),
+                type_info: None,
+                doc: None,
+                params: Vec::new(),
+                return_type: None,
+            });
+        }
+        Item::Static(s) => {
+            let (line, col) = line_index.line_col(s.span.start);
+            symbols.push(SymbolDef {
+                name: s.name.clone(),
+                kind: SymbolKind::Variable,
+                line: line.saturating_sub(1),
+                col: col.saturating_sub(1),
+                type_info: Some(format!("{:?}", s.type_expr.kind)),
+                doc: None,
+                params: Vec::new(),
+                return_type: None,
+            });
+        }
         Item::Statement(_) => {
             // Top-level let bindings could be extracted later
         }
         Item::Policy(_) => {
             // Policy blocks are not exposed as LSP symbols
+        }
+        Item::Interface(_) => {
+            // Interface definitions are not exposed as LSP symbols
+        }
+        Item::Impl(impl_decl) => {
+            // Impl blocks are desugared to individual methods — expose the methods
+            for method in &impl_decl.methods {
+                let (line, col) = line_index.line_col(method.span.start);
+                let params: Vec<ParamInfo> = method
+                    .params
+                    .iter()
+                    .map(|(name, type_expr)| ParamInfo {
+                        name: name.clone(),
+                        type_name: type_expr.as_ref().map(|t| format!("{:?}", t.kind)),
+                    })
+                    .collect();
+                let return_type = method.return_type.as_ref().map(|t| format!("{:?}", t.kind));
+                symbols.push(SymbolDef {
+                    name: format!("{}::{}", impl_decl.struct_name, method.name),
+                    kind: SymbolKind::Function,
+                    line: line.saturating_sub(1),
+                    col: col.saturating_sub(1),
+                    type_info: return_type.clone(),
+                    doc: None,
+                    params,
+                    return_type,
+                });
+            }
         }
     }
 }

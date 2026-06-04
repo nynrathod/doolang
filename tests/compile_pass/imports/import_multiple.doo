@@ -1,7 +1,7 @@
 // OUTPUT: Multiple imports test
-import std::io
-import std::fs
-import std::net
+import std::io;
+import std::fs;
+import std::net;
 
 fn main() {
     print("Multiple imports test");

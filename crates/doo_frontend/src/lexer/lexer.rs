@@ -25,6 +25,9 @@ fn keyword_map() -> &'static FxHashMap<&'static str, TokenKind> {
         let mut map = FxHashMap::default();
 
         // Declaration keywords
+        map.insert("const", TokenKind::Const);
+        map.insert("static", TokenKind::Static);
+        map.insert("impl", TokenKind::Impl);
         map.insert("let", TokenKind::Let);
         map.insert("mut", TokenKind::Mut);
         map.insert("fn", TokenKind::Fn);
@@ -32,6 +35,7 @@ fn keyword_map() -> &'static FxHashMap<&'static str, TokenKind> {
         map.insert("as", TokenKind::As);
         map.insert("struct", TokenKind::Struct);
         map.insert("enum", TokenKind::Enum);
+        map.insert("interface", TokenKind::Interface);
         map.insert("match", TokenKind::Match);
 
         // Control flow
@@ -139,6 +143,13 @@ impl<'a> Lexer<'a> {
 
         // String literals
         if c == '"' {
+            // Check for triple-quoted multi-line string
+            if self.pos + 2 < self.chars.len()
+                && self.chars[self.pos + 1] == '"'
+                && self.chars[self.pos + 2] == '"'
+            {
+                return self.scan_multiline_string();
+            }
             return self.scan_string();
         }
 
@@ -375,6 +386,303 @@ impl<'a> Lexer<'a> {
         };
 
         self.make_token_at(kind, &value, start_offset)
+    }
+
+    /// Scan a multi-line string literal delimited by `"""..."""`.
+    ///
+    /// Rules:
+    /// - `"""` starts and ends the string
+    /// - Leading whitespace is auto-trimmed based on the closing `"""` indentation
+    /// - `${expr}` interpolation is supported
+    /// - Escape sequences (`\n`, `\t`, `\\`, `\"`, `\u{...}`) are processed
+    /// - Newlines are preserved
+    fn scan_multiline_string(&mut self) -> Token {
+        let start_offset = self.byte_offset;
+
+        // Skip the opening `"""`
+        self.advance(); // first "
+        self.advance(); // second "
+        self.advance(); // third "
+
+        // If the first character after opening """ is a newline, skip it.
+        // This allows:
+        //   let s = """
+        //       hello
+        //   """;
+        if !self.is_at_end() && self.current() == '\n' {
+            self.advance();
+            self.line += 1;
+            self.col = 1;
+        } else if !self.is_at_end() && self.current() == '\r' {
+            self.advance();
+            if !self.is_at_end() && self.current() == '\n' {
+                self.advance();
+            }
+            self.line += 1;
+            self.col = 1;
+        }
+
+        let mut value = String::new();
+        let mut length = 0;
+        let mut has_interpolation = false;
+        let mut closing_indent: Option<u32> = None;
+
+        while !self.is_at_end() {
+            // Check for closing `"""`
+            if self.current() == '"'
+                && self.pos + 1 < self.chars.len()
+                && self.chars[self.pos + 1] == '"'
+                && self.pos + 2 < self.chars.len()
+                && self.chars[self.pos + 2] == '"'
+            {
+                // Record the indent level from the column of the closing """
+                closing_indent = Some(self.col.saturating_sub(1));
+                // Skip the closing """
+                self.advance(); // first "
+                self.advance(); // second "
+                self.advance(); // third "
+                break;
+            }
+
+            length += 1;
+            if length > MAX_STRING_LENGTH {
+                // Skip to end of string and return error
+                while !self.is_at_end() {
+                    if self.current() == '"'
+                        && self.pos + 1 < self.chars.len()
+                        && self.chars[self.pos + 1] == '"'
+                        && self.pos + 2 < self.chars.len()
+                        && self.chars[self.pos + 2] == '"'
+                    {
+                        self.advance();
+                        self.advance();
+                        self.advance();
+                        break;
+                    }
+                    if self.current() == '\n' {
+                        self.line += 1;
+                        self.col = 1;
+                    }
+                    self.advance();
+                }
+                return self.make_token_at(
+                    TokenKind::Error,
+                    "String literal too long",
+                    start_offset,
+                );
+            }
+
+            // Check for interpolation ${...}
+            if self.current() == '$' && self.peek() == Some('{') {
+                has_interpolation = true;
+                value.push(self.current());
+                self.advance();
+                value.push(self.current());
+                self.advance();
+                // Include everything until matching }
+                let mut brace_depth = 1;
+                while !self.is_at_end() && brace_depth > 0 {
+                    let c = self.current();
+                    if c == '{' {
+                        brace_depth += 1;
+                    } else if c == '}' {
+                        brace_depth -= 1;
+                    } else if c == '\n' {
+                        self.line += 1;
+                        self.col = 1;
+                    }
+                    value.push(c);
+                    self.advance();
+                }
+                continue;
+            }
+
+            if self.current() == '\\' && !self.is_at_end() {
+                self.advance(); // Skip backslash
+                if !self.is_at_end() {
+                    let escaped = match self.current() {
+                        'n' => Some('\n'),
+                        'r' => Some('\r'),
+                        't' => Some('\t'),
+                        '\\' => Some('\\'),
+                        '"' => Some('"'),
+                        '0' => Some('\0'),
+                        '$' => Some('$'),
+                        'u' => {
+                            // Unicode escape: \u{XXXX}
+                            self.advance(); // skip 'u'
+                            if !self.is_at_end() && self.current() == '{' {
+                                self.advance(); // skip '{'
+                                let mut hex = String::new();
+                                while !self.is_at_end() && self.current() != '}' && hex.len() < 6 {
+                                    hex.push(self.current());
+                                    self.advance();
+                                }
+                                if !self.is_at_end() && self.current() == '}' {
+                                    self.advance(); // skip '}'
+                                    if let Ok(code) = u32::from_str_radix(&hex, 16) {
+                                        if let Some(c) = char::from_u32(code) {
+                                            value.push(c);
+                                            continue;
+                                        }
+                                    }
+                                }
+                                // Invalid unicode escape — skip to closing """
+                                while !self.is_at_end() {
+                                    if self.current() == '"'
+                                        && self.pos + 1 < self.chars.len()
+                                        && self.chars[self.pos + 1] == '"'
+                                        && self.pos + 2 < self.chars.len()
+                                        && self.chars[self.pos + 2] == '"'
+                                    {
+                                        self.advance();
+                                        self.advance();
+                                        self.advance();
+                                        break;
+                                    }
+                                    if self.current() == '\n' {
+                                        self.line += 1;
+                                        self.col = 1;
+                                    }
+                                    self.advance();
+                                }
+                                return self.make_token_at(
+                                    TokenKind::Error,
+                                    &format!("Invalid unicode escape: \\u{{{}}}", hex),
+                                    start_offset,
+                                );
+                            } else {
+                                // \u without { — invalid
+                                while !self.is_at_end() {
+                                    if self.current() == '"'
+                                        && self.pos + 1 < self.chars.len()
+                                        && self.chars[self.pos + 1] == '"'
+                                        && self.pos + 2 < self.chars.len()
+                                        && self.chars[self.pos + 2] == '"'
+                                    {
+                                        self.advance();
+                                        self.advance();
+                                        self.advance();
+                                        break;
+                                    }
+                                    if self.current() == '\n' {
+                                        self.line += 1;
+                                        self.col = 1;
+                                    }
+                                    self.advance();
+                                }
+                                return self.make_token_at(
+                                    TokenKind::Error,
+                                    "Invalid escape sequence: \\u (expected \\u{XXXX})",
+                                    start_offset,
+                                );
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some(c) = escaped {
+                        value.push(c);
+                        self.advance();
+                    } else {
+                        // Invalid escape sequence — skip to closing """ and return error
+                        let bad = self.current();
+                        while !self.is_at_end() {
+                            if self.current() == '"'
+                                && self.pos + 1 < self.chars.len()
+                                && self.chars[self.pos + 1] == '"'
+                                && self.pos + 2 < self.chars.len()
+                                && self.chars[self.pos + 2] == '"'
+                            {
+                                self.advance();
+                                self.advance();
+                                self.advance();
+                                break;
+                            }
+                            if self.current() == '\n' {
+                                self.line += 1;
+                                self.col = 1;
+                            }
+                            self.advance();
+                        }
+                        return self.make_token_at(
+                            TokenKind::Error,
+                            &format!("Invalid escape sequence: \\{}", bad),
+                            start_offset,
+                        );
+                    }
+                }
+            } else if self.current() == '\n' {
+                self.line += 1;
+                self.col = 1;
+                value.push(self.current());
+                self.advance();
+            } else {
+                value.push(self.current());
+                self.advance();
+            }
+        }
+
+        // If we reached end of file without finding closing """
+        if closing_indent.is_none() {
+            return self.make_token_at(
+                TokenKind::Error,
+                "Unterminated multi-line string",
+                start_offset,
+            );
+        }
+
+        // Apply auto-trimming based on closing """ indentation
+        let indent = closing_indent.unwrap() as usize;
+        let trimmed = Self::trim_multiline_string(&value, indent);
+
+        // Return StringTemplate if has interpolation, otherwise regular String
+        let kind = if has_interpolation {
+            TokenKind::StringTemplate
+        } else {
+            TokenKind::String
+        };
+
+        self.make_token_at(kind, &trimmed, start_offset)
+    }
+
+    /// Trim leading whitespace from each line of a multi-line string.
+    ///
+    /// For each line, removes up to `indent` leading whitespace characters.
+    /// Also removes trailing whitespace from the last line.
+    fn trim_multiline_string(raw: &str, indent: usize) -> String {
+        let mut result = String::with_capacity(raw.len());
+        let mut first_line = true;
+
+        for line in raw.lines() {
+            if !first_line {
+                result.push('\n');
+            }
+            first_line = false;
+
+            // Count leading whitespace
+            let mut chars = line.chars();
+            let mut stripped = 0;
+            for c in chars.by_ref() {
+                if c == ' ' || c == '\t' {
+                    stripped += 1;
+                } else {
+                    // Put back the first non-whitespace char
+                    result.push(c);
+                    break;
+                }
+                if stripped >= indent {
+                    break;
+                }
+            }
+            // Push remaining characters
+            for c in chars {
+                result.push(c);
+            }
+        }
+
+        // Trim trailing newline if the last line only had whitespace
+        // (the closing """ line)
+        result
     }
 
     fn scan_number(&mut self) -> Token {

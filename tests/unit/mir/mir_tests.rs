@@ -483,7 +483,7 @@ fn call_multiple_return_uses() {
 #[test]
 fn call_expression_body() {
     assert!(mir_ok(
-        "fn double(x: Int) -> Int => x * 2\nfn main() { print(double(21)); }"
+        "fn double(x: Int) -> Int => x * 2;\nfn main() { print(double(21)); }"
     ));
 }
 
@@ -901,9 +901,9 @@ fn complex_calculator() {
     assert!(mir_ok(
         r#"
 
-fn add(a: Int, b: Int) -> Int => a + b
-fn sub(a: Int, b: Int) -> Int => a - b
-fn mul(a: Int, b: Int) -> Int => a * b
+fn add(a: Int, b: Int) -> Int => a + b;
+fn sub(a: Int, b: Int) -> Int => a - b;
+fn mul(a: Int, b: Int) -> Int => a * b;
 fn main() {
     let r1 = add(10, 20);
     let r2 = sub(30, 5);
@@ -920,7 +920,7 @@ fn complex_config_loader() {
         r#"
 
 struct Config { timeout: Int, retries: Int }
-fn Config.isValid(self) -> Bool => self.timeout > 0 && self.retries > 0
+fn Config.isValid(self) -> Bool => self.timeout > 0 && self.retries > 0;
 fn defaultConfig() -> Config { return Config { timeout: 30, retries: 3 }; }
 fn main() { let cfg = defaultConfig(); print(cfg.timeout); }
 
@@ -984,8 +984,8 @@ fn complex_user_system() {
         r#"
 
 struct User { name: Str, age: Int }
-fn User.isAdult(self) -> Bool => self.age >= 18
-fn User.greeting(self) -> Str => "Hello, ${self.name}"
+fn User.isAdult(self) -> Bool => self.age >= 18;
+fn User.greeting(self) -> Str => "Hello, ${self.name}";
 fn main() {
     let users = [User { name: "Alice", age: 25 }, User { name: "Bob", age: 15 }];
     for u in users {

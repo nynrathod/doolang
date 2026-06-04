@@ -97,6 +97,66 @@ impl<'ctx> InstructionHandler<'ctx> for MemoryHandler {
             MirInstrKind::Assign { dest, value } => {
                 let val = operand_to_value(ctx, value)?;
                 let dest_str = resolve(*dest);
+                // Check if assigning to a static global — directly write to OnceLock global
+                if ctx.static_globals.contains_key(&dest_str) {
+                    // Direct store to the OnceLock { i1 flag, ptr value } global
+                    if let Some(once_lock) = ctx.module.get_global(&dest_str) {
+                        let once_lock_ptr = once_lock.as_pointer_value();
+                        let once_lock_type = ctx.context.struct_type(
+                            &[
+                                ctx.context.bool_type().into(),
+                                ctx.context
+                                    .ptr_type(inkwell::AddressSpace::default())
+                                    .into(),
+                            ],
+                            false,
+                        );
+                        // GEP to field 1 (ptr) and store the value
+                        if let Ok(ptr_field) = ctx.builder.build_struct_gep(
+                            once_lock_type,
+                            once_lock_ptr,
+                            1,
+                            "static_ptr_field",
+                        ) {
+                            let ptr_val = if val.is_pointer_value() {
+                                val.into_pointer_value()
+                            } else if val.is_int_value() {
+                                ctx.builder
+                                    .build_int_to_ptr(
+                                        val.into_int_value(),
+                                        ctx.context.ptr_type(inkwell::AddressSpace::default()),
+                                        "int_to_ptr",
+                                    )
+                                    .ok()
+                                    .unwrap_or_else(|| {
+                                        ctx.context
+                                            .ptr_type(inkwell::AddressSpace::default())
+                                            .const_null()
+                                    })
+                            } else {
+                                ctx.context
+                                    .ptr_type(inkwell::AddressSpace::default())
+                                    .const_null()
+                            };
+                            ctx.builder.build_store(ptr_field, ptr_val).ok();
+                        }
+                        // GEP to field 0 (i1 flag) and set to true
+                        if let Ok(flag_field) = ctx.builder.build_struct_gep(
+                            once_lock_type,
+                            once_lock_ptr,
+                            0,
+                            "static_flag_field",
+                        ) {
+                            ctx.builder
+                                .build_store(
+                                    flag_field,
+                                    ctx.context.bool_type().const_int(1, false),
+                                )
+                                .ok();
+                        }
+                    }
+                    return Some(val);
+                }
                 // Propagate struct type association if present
                 if let Some(src_name) = get_operand_name(value) {
                     // First try temp_struct_type (most specific)
@@ -133,6 +193,14 @@ impl<'ctx> InstructionHandler<'ctx> for MemoryHandler {
                 let src_str = resolve(*src);
                 let dest_str = resolve(*dest);
                 let val = ctx.get_value(&src_str)?;
+                // Propagate struct type from source to borrow dest (needed for FieldGet)
+                let struct_name = ctx.get_temp_struct_type(&src_str).cloned().or_else(|| {
+                    ctx.get_variable_type(&src_str)
+                        .and_then(|tid| ctx.get_struct_name_from_type_id(tid))
+                });
+                if let Some(name) = struct_name {
+                    ctx.set_temp_struct_type(&dest_str, &name);
+                }
                 ctx.set_local(dest_str.clone(), val);
                 // Track borrow origin so mutating operations can store back
                 ctx.set_borrow_origin(&dest_str, &src_str);
@@ -206,7 +274,7 @@ fn emit_deep_clone<'ctx>(
         }
 
         // Struct: allocate new struct and clone fields
-        Some(TypeKind::Struct { name, fields }) => {
+        Some(TypeKind::Struct { name, fields, .. }) => {
             // Propagate struct type association
             ctx.set_temp_struct_type(dest, name);
             if val.is_pointer_value() {
@@ -253,22 +321,14 @@ fn emit_deep_clone<'ctx>(
             }
         }
 
-        // Unknown type or const: fallback to shallow copy
-        // For pointer types, assume it's a string (most common case)
+        // Unknown type: do NOT assume string — that can cause strlen on binary
+        // array/struct data leading to garbage allocations and crashes.
+        // Just return the value as-is (the caller already has the pointer).
         None => {
-            // If the source has a struct type association, propagate it even if we don't know the TypeKind
             if let Some(ref struct_name) = src_struct_type {
                 ctx.set_temp_struct_type(dest, struct_name);
             }
-            if val.is_pointer_value() {
-                // Heuristic: if it's a pointer and we don't know the type,
-                // assume it's a string and clone it
-                clone_string(ctx, val.into_pointer_value())
-                    .map(|p| p.into())
-                    .unwrap_or(val)
-            } else {
-                val
-            }
+            val
         }
 
         // Other complex types: shallow copy for now
@@ -565,6 +625,7 @@ pub(crate) fn clone_struct<'ctx>(
             Some(TypeKind::Struct {
                 ref name,
                 ref fields,
+                ..
             }) if src_val.is_pointer_value() => {
                 // Deep-clone nested struct fields to prevent use-after-free
                 let fp: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
@@ -630,7 +691,7 @@ pub(crate) fn clone_struct<'ctx>(
 ///
 /// For primitive types (Int, Float, Bool), uses memcpy for efficiency.
 /// For pointer types (Str), clones each element individually.
-fn clone_array<'ctx>(
+pub(crate) fn clone_array<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     src_ptr: inkwell::values::PointerValue<'ctx>,
     element_type: doo_core::types::TypeId,
@@ -688,7 +749,7 @@ fn clone_array<'ctx>(
     // struct elements. Without this, clone_array does a shallow pointer copy
     // and the original array's drop frees the structs — leaving dangling ptrs.
     let struct_info: Option<(String, Vec<(String, doo_core::types::TypeId)>)> = match &type_kind {
-        Some(doo_core::types::TypeKind::Struct { name, fields }) => {
+        Some(doo_core::types::TypeKind::Struct { name, fields, .. }) => {
             let field_pairs: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
             Some((name.clone(), field_pairs))
         }
@@ -839,7 +900,7 @@ fn clone_array<'ctx>(
 /// the operation succeeded.
 ///
 /// Maps are stored as arrays of (key, value) pairs with a header.
-fn clone_map<'ctx>(
+pub(crate) fn clone_map<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     src_ptr: inkwell::values::PointerValue<'ctx>,
     key_type: doo_core::types::TypeId,
@@ -1036,7 +1097,7 @@ fn clone_map<'ctx>(
 ///
 /// Optional values are represented as nullable pointers - null means None,
 /// non-null means Some(value). For non-null, we clone the inner value.
-fn clone_optional<'ctx>(
+pub(crate) fn clone_optional<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     src_ptr: inkwell::values::PointerValue<'ctx>,
     inner_type: doo_core::types::TypeId,
@@ -1134,7 +1195,7 @@ pub(crate) fn emit_drop<'ctx>(ctx: &mut CodegenContext<'ctx>, var_name: &str) {
         }
 
         // Struct: drop each field, then free
-        Some(TypeKind::Struct { name, fields }) => {
+        Some(TypeKind::Struct { name, fields, .. }) => {
             // Extract just name and type for drop_struct (visibility not needed)
             let field_pairs: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
             drop_struct(ctx, ptr, name, &field_pairs);
@@ -1327,6 +1388,7 @@ fn drop_struct<'ctx>(
                         Some(TypeKind::Struct {
                             name: nested_name,
                             fields: nested_fields,
+                            ..
                         }) => {
                             let nested_name = nested_name.clone();
                             // Extract just name and type for nested drop_struct
@@ -1509,7 +1571,7 @@ fn drop_array<'ctx>(
                     // Drop based on element type
                     match &type_kind {
                         Some(TypeKind::Str) => drop_string(ctx, elem_ptr_val),
-                        Some(TypeKind::Struct { name, fields }) => {
+                        Some(TypeKind::Struct { name, fields, .. }) => {
                             let name = name.clone();
                             let pairs: Vec<_> =
                                 fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
@@ -1790,7 +1852,7 @@ fn drop_by_type_kind<'ctx>(
 ) {
     match kind {
         Some(TypeKind::Str) => drop_string(ctx, ptr),
-        Some(TypeKind::Struct { name, fields }) => {
+        Some(TypeKind::Struct { name, fields, .. }) => {
             let name = name.clone();
             let pairs: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
             drop_struct(ctx, ptr, &name, &pairs);

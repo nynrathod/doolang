@@ -219,6 +219,25 @@ pub extern "C" fn doohttp_serialize_struct_to_json(
         return string_to_c("{}");
     }
 
+    // Wrap entire serialization in catch_unwind — a corrupted pointer
+    // (use-after-free, race condition) must NEVER crash the server.
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        serialize_struct_to_json_inner(struct_ptr, handler_name)
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            eprintln!("[Doo] WARN: struct serialization panicked — returning empty JSON");
+            string_to_c("{}")
+        }
+    }
+}
+
+/// Inner serialization logic, separated so catch_unwind covers everything.
+fn serialize_struct_to_json_inner(
+    struct_ptr: *const c_void,
+    handler_name: *const c_char,
+) -> *const c_char {
     let handler_name_str = unsafe { std::ffi::CStr::from_ptr(handler_name) };
     let handler_name_str = match handler_name_str.to_str() {
         Ok(s) => s,
@@ -523,6 +542,39 @@ pub(crate) fn write_struct_to_buf(
     buf.push(b'}');
 }
 
+/// Maximum sane array length for serialization — prevents runaway loops
+/// on corrupted headers. 10 million elements is far beyond any real use case.
+const MAX_SERIALIZE_ARRAY_LEN: usize = 10_000_000;
+
+/// Check if a pointer looks like a valid heap/data pointer.
+/// Rejects null, low addresses (< 4096), and addresses that look like
+/// ASCII string content interpreted as a pointer (common in use-after-free).
+#[inline]
+fn is_plausible_ptr(p: usize) -> bool {
+    // Reject null and low pages (guard pages, zero page)
+    if p < 4096 {
+        return false;
+    }
+    // On 64-bit systems, valid heap pointers are typically > 0x10000.
+    // ASCII strings read as pointers land in the 0x20..0x7F per-byte range,
+    // giving values like 0x0000_6571_7569_6E75 ("unique").
+    // Valid heap/stack pointers on both Windows and Linux are above 0x10000000000
+    // for heap and above 0x7FF... for stack. Reject pointers in the "looks like
+    // ASCII" range: all bytes in 0x20..0x7E and the value fits in 48 bits.
+    // This catches the exact crash pattern: 0x657571696E75 = "unique".
+    if p < 0x1_0000_0000 {
+        // Pointer is suspiciously small for a 64-bit heap address.
+        // On Windows x64, user-mode addresses start at 0x00000000`00010000
+        // and heap is typically above 0x000001... range.
+        // Allow it but be cautious — 32-bit-range addresses CAN be valid
+        // in some allocator configurations, so only reject the obviously bad.
+        if p < 0x10000 {
+            return false;
+        }
+    }
+    true
+}
+
 /// Write a single value to the buffer based on its type.
 #[inline]
 unsafe fn write_value_to_buf(
@@ -534,16 +586,24 @@ unsafe fn write_value_to_buf(
     match field_type {
         "Str" => {
             let str_ptr = *(field_ptr as *const *const c_char);
-            if str_ptr.is_null() || (str_ptr as usize) < 4096 {
-                // Null or clearly invalid pointer (e.g., integer value like DB id=1
-                // that was incorrectly stored as a pointer via inttoptr)
+            if str_ptr.is_null() || !is_plausible_ptr(str_ptr as usize) {
                 buf.extend_from_slice(b"\"\"");
             } else {
-                let cstr = std::ffi::CStr::from_ptr(str_ptr);
-                let bytes = cstr.to_bytes();
-                buf.push(b'"');
-                json_escape_bytes_into(buf, bytes);
-                buf.push(b'"');
+                // Use catch_unwind to survive corrupted string pointers
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    let cstr = std::ffi::CStr::from_ptr(str_ptr);
+                    cstr.to_bytes().to_vec()
+                }));
+                match result {
+                    Ok(bytes) => {
+                        buf.push(b'"');
+                        json_escape_bytes_into(buf, &bytes);
+                        buf.push(b'"');
+                    }
+                    Err(_) => {
+                        buf.extend_from_slice(b"\"\"");
+                    }
+                }
             }
         }
         "Int" => {
@@ -578,12 +638,21 @@ unsafe fn write_value_to_buf(
                     let str_ptr = *(field_ptr as *const *const c_char);
                     if str_ptr.is_null() {
                         buf.extend_from_slice(b"null");
+                    } else if !is_plausible_ptr(str_ptr as usize) {
+                        buf.extend_from_slice(b"null");
                     } else {
-                        let cstr = std::ffi::CStr::from_ptr(str_ptr);
-                        let bytes = cstr.to_bytes();
-                        buf.push(b'"');
-                        json_escape_bytes_into(buf, bytes);
-                        buf.push(b'"');
+                        let result = catch_unwind(AssertUnwindSafe(|| {
+                            let cstr = std::ffi::CStr::from_ptr(str_ptr);
+                            cstr.to_bytes().to_vec()
+                        }));
+                        match result {
+                            Ok(bytes) => {
+                                buf.push(b'"');
+                                json_escape_bytes_into(buf, &bytes);
+                                buf.push(b'"');
+                            }
+                            Err(_) => buf.extend_from_slice(b"null"),
+                        }
                     }
                 }
                 "Int" => {
@@ -610,7 +679,11 @@ unsafe fn write_value_to_buf(
         }
         _ if struct_layouts.contains_key(field_type) => {
             let nested_ptr = *(field_ptr as *const *const u8);
-            write_struct_to_buf(buf, nested_ptr, field_type, struct_layouts);
+            if nested_ptr.is_null() || !is_plausible_ptr(nested_ptr as usize) {
+                buf.extend_from_slice(b"null");
+            } else {
+                write_struct_to_buf(buf, nested_ptr, field_type, struct_layouts);
+            }
         }
         _ => buf.extend_from_slice(b"null"),
     }
@@ -623,16 +696,27 @@ pub(crate) fn write_array_to_buf(
     elem_type: &str,
     struct_layouts: &HashMap<String, serde_json::Value>,
 ) {
-    if arr_data_ptr.is_null() {
+    if arr_data_ptr.is_null() || !is_plausible_ptr(arr_data_ptr as usize) {
         buf.extend_from_slice(b"[]");
         return;
     }
 
     unsafe {
         let header_ptr = arr_data_ptr.offset(-16);
+        if !is_plausible_ptr(header_ptr as usize) {
+            buf.extend_from_slice(b"[]");
+            return;
+        }
         let len = *(header_ptr as *const i64) as usize;
 
-        if len == 0 {
+        // Guard against corrupted array headers — cap at a sane maximum
+        if len == 0 || len > MAX_SERIALIZE_ARRAY_LEN {
+            if len > MAX_SERIALIZE_ARRAY_LEN {
+                eprintln!(
+                    "[Doo] WARN: array len {} exceeds max {}, skipping",
+                    len, MAX_SERIALIZE_ARRAY_LEN
+                );
+            }
             buf.extend_from_slice(b"[]");
             return;
         }

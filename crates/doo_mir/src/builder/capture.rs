@@ -29,10 +29,16 @@ fn is_intrinsic_name(name: &str) -> bool {
 }
 
 /// Collect free variables from an HIR expression body.
+/// `initial_defined` should include any names already in scope (e.g., closure params)
+/// that should NOT be treated as captures.
 /// Returns a sorted Vec of variable names that must be captured.
-pub fn collect_free_vars(body: &HirExpr, builder: &MirBuilder) -> Vec<String> {
+pub fn collect_free_vars(
+    body: &HirExpr,
+    builder: &MirBuilder,
+    initial_defined: &HashSet<String>,
+) -> Vec<String> {
     let mut referenced = HashSet::new();
-    let mut defined = HashSet::new();
+    let mut defined = initial_defined.clone();
     walk_expr(body, &mut referenced, &mut defined);
 
     let mut free_vars: Vec<String> = referenced

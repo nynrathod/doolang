@@ -17,12 +17,72 @@ pub(crate) fn operand_to_value<'ctx>(
         MirOperand::Const(c) => Some(const_to_value(ctx, c)),
         MirOperand::Local(name) | MirOperand::Temp(name) | MirOperand::Global(name) => {
             let name_str = resolve(*name);
+            // Resolve static globals case-insensitively so `db` can correctly map to `DB`.
+            // HIR/MIR may preserve lowercase aliases for statics, and dropping this mapping
+            // causes argument omission in calls (e.g. missing first Database arg).
+            let resolved_static_name = if ctx.static_globals.contains_key(&name_str) {
+                Some(name_str.clone())
+            } else {
+                let lowered = name_str.to_lowercase();
+                ctx.static_globals
+                    .keys()
+                    .find(|k| k.to_lowercase() == lowered)
+                    .cloned()
+            };
+            // Check if this is a static global — directly read from OnceLock global
+            if let Some(static_name) = resolved_static_name {
+                if let Some(once_lock) = ctx.module.get_global(&static_name) {
+                    let once_lock_ptr = once_lock.as_pointer_value();
+                    let once_lock_type = ctx.context.struct_type(
+                        &[
+                            ctx.context.bool_type().into(),
+                            ctx.context
+                                .ptr_type(inkwell::AddressSpace::default())
+                                .into(),
+                        ],
+                        false,
+                    );
+                    let ptr_field = ctx.builder.build_struct_gep(
+                        once_lock_type,
+                        once_lock_ptr,
+                        1,
+                        "static_get_ptr",
+                    );
+                    if let Ok(ptr_field) = ptr_field {
+                        let loaded = ctx
+                            .builder
+                            .build_load(
+                                ctx.context.ptr_type(inkwell::AddressSpace::default()),
+                                ptr_field,
+                                "static_val",
+                            )
+                            .ok();
+                        if let Some(loaded_val) = loaded {
+                            return Some(loaded_val);
+                        }
+                    }
+                }
+                return Some(
+                    ctx.context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .const_null()
+                        .into(),
+                );
+            }
+            // Check if this is a type name — return null ptr for static method calls
+            if ctx.type_registry.lookup(&name_str).is_some() {
+                return Some(
+                    ctx.context
+                        .ptr_type(inkwell::AddressSpace::default())
+                        .const_null()
+                        .into(),
+                );
+            }
             // First try to get as a value (local variable, temp, etc.)
             if let Some(val) = ctx.get_value(&name_str) {
                 return Some(val);
             }
             // Fall back to function reference - convert function to pointer value
-            // This handles cases like passing `getUserHandler` as a callback argument
             if let Some(func) = ctx.get_function(&name_str) {
                 return Some(func.as_global_value().as_pointer_value().into());
             }
@@ -72,8 +132,49 @@ pub(crate) fn coerce_arg_to_param_type<'ctx>(
 
     // Special case: PointerValue passed where struct is expected
     // This happens when JSON.parse returns a pointer to enum but function expects struct by value
+    // OR when a concrete struct is passed where an interface fat pointer {ptr, ptr} is expected.
     if val.is_pointer_value() && expected.is_struct_type() {
-        // Load the struct from the pointer
+        let struct_type = expected.into_struct_type();
+        let field_types = struct_type.get_field_types();
+
+        // Check if this is an interface fat pointer: { i8*, i8* }
+        // Interface fat pointers have exactly 2 pointer fields.
+        let is_interface_fat_ptr = field_types.len() == 2
+            && field_types[0].is_pointer_type()
+            && field_types[1].is_pointer_type();
+
+        if is_interface_fat_ptr {
+            // Build interface fat pointer from concrete struct pointer.
+            // { data_ptr, vtable_ptr } where vtable_ptr = null for now.
+            let data_ptr = val.into_pointer_value();
+            let i8_ptr_type = ctx
+                .context
+                .i8_type()
+                .ptr_type(inkwell::AddressSpace::default());
+            let data_i8_ptr = ctx
+                .builder
+                .build_pointer_cast(data_ptr, i8_ptr_type, "iface_data")
+                .ok()
+                .unwrap_or_else(|| i8_ptr_type.const_null());
+            let vtable_ptr = i8_ptr_type.const_null();
+
+            let mut fat_ptr = struct_type.get_undef();
+            if let Ok(s) =
+                ctx.builder
+                    .build_insert_value(fat_ptr, data_i8_ptr, 0, "iface_data_field")
+            {
+                fat_ptr = s.into_struct_value();
+            }
+            if let Ok(s) =
+                ctx.builder
+                    .build_insert_value(fat_ptr, vtable_ptr, 1, "iface_vtable_field")
+            {
+                fat_ptr = s.into_struct_value();
+            }
+            return fat_ptr.into();
+        }
+
+        // Normal case: load struct from pointer
         let loaded = ctx
             .builder
             .build_load(expected, val.into_pointer_value(), "arg_load")

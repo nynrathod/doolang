@@ -473,7 +473,8 @@ impl StringBuiltins {
     }
 
     // =========================================================================
-    // replace(old: Str, new: Str) -> Str (first occurrence only for simplicity)
+    // replace(old: Str, new: Str) -> Str (replaces ALL occurrences)
+    // Delegates to doo_string_replace_all in the runtime for correct all-occurrence behavior.
     // =========================================================================
     fn emit_replace<'ctx>(
         ctx: &mut CodegenContext<'ctx>,
@@ -491,185 +492,20 @@ impl StringBuiltins {
         let new_ptr = args[1].into_pointer_value();
         let new_ptr = crate::utils::null_coerce_str(ctx, new_ptr);
 
-        let strlen = get_or_declare_strlen(ctx);
-        let strstr = get_or_declare_strstr(ctx);
-        let malloc = get_or_declare_malloc(ctx);
-        let memcpy = get_or_declare_memcpy(ctx);
+        let replace_all_fn = get_or_declare_string_replace_all(ctx);
 
-        let hay_len = ctx
+        let result = ctx
             .builder
-            .build_call(strlen, &[str_ptr.into()], "hay_len")
-            .ok()?
-            .try_as_basic_value()
-            .basic()?
-            .into_int_value();
-        let old_len = ctx
-            .builder
-            .build_call(strlen, &[old_ptr.into()], "old_len")
-            .ok()?
-            .try_as_basic_value()
-            .basic()?
-            .into_int_value();
-        let new_len = ctx
-            .builder
-            .build_call(strlen, &[new_ptr.into()], "new_len")
-            .ok()?
-            .try_as_basic_value()
-            .basic()?
-            .into_int_value();
-
-        let found_ptr = ctx
-            .builder
-            .build_call(strstr, &[str_ptr.into(), old_ptr.into()], "found")
-            .ok()?
-            .try_as_basic_value()
-            .basic()?
-            .into_pointer_value();
-        let is_null = ctx.builder.build_is_null(found_ptr, "is_null").ok()?;
-
-        let current_fn = ctx.builder.get_insert_block()?.get_parent()?;
-        let not_found_bb = ctx
-            .context
-            .append_basic_block(current_fn, "replace_not_found");
-        let found_bb = ctx.context.append_basic_block(current_fn, "replace_found");
-        let end_bb = ctx.context.append_basic_block(current_fn, "replace_end");
-
-        let res_alloca = ctx.alloca_in_entry_block(
-            ctx.context.i8_type().ptr_type(AddressSpace::default()),
-            "replace_res",
-        )?;
-
-        ctx.builder
-            .build_conditional_branch(is_null, not_found_bb, found_bb)
-            .ok()?;
-
-        // Not found: return copy of original string
-        ctx.builder.position_at_end(not_found_bb);
-        let size = ctx
-            .builder
-            .build_int_add(hay_len, ctx.context.i64_type().const_int(1, false), "size")
-            .ok()?;
-        let out_ptr = ctx
-            .builder
-            .build_call(malloc, &[size.into()], "out")
-            .ok()?
-            .try_as_basic_value()
-            .basic()?
-            .into_pointer_value();
-        ctx.builder
-            .build_call(memcpy, &[out_ptr.into(), str_ptr.into(), size.into()], "")
-            .ok()?;
-        ctx.builder.build_store(res_alloca, out_ptr).ok()?;
-        ctx.builder.build_unconditional_branch(end_bb).ok()?;
-
-        // Found: build prefix + new + suffix
-        ctx.builder.position_at_end(found_bb);
-        let hay_i = ctx
-            .builder
-            .build_ptr_to_int(str_ptr, ctx.context.i64_type(), "hay_i")
-            .ok()?;
-        let found_i = ctx
-            .builder
-            .build_ptr_to_int(found_ptr, ctx.context.i64_type(), "found_i")
-            .ok()?;
-        let prefix_len = ctx
-            .builder
-            .build_int_sub(found_i, hay_i, "prefix_len")
-            .ok()?;
-        let suffix_start = ctx
-            .builder
-            .build_int_add(prefix_len, old_len, "suffix_start")
-            .ok()?;
-        let suffix_len = ctx
-            .builder
-            .build_int_sub(hay_len, suffix_start, "suffix_len")
-            .ok()?;
-
-        let t1 = ctx.builder.build_int_add(prefix_len, new_len, "t1").ok()?;
-        let total_no_nul = ctx.builder.build_int_add(t1, suffix_len, "t2").ok()?;
-        let total = ctx
-            .builder
-            .build_int_add(
-                total_no_nul,
-                ctx.context.i64_type().const_int(1, false),
-                "total",
-            )
-            .ok()?;
-
-        let out_ptr = ctx
-            .builder
-            .build_call(malloc, &[total.into()], "out")
-            .ok()?
-            .try_as_basic_value()
-            .basic()?
-            .into_pointer_value();
-
-        // copy prefix
-        ctx.builder
             .build_call(
-                memcpy,
-                &[out_ptr.into(), str_ptr.into(), prefix_len.into()],
-                "",
+                replace_all_fn,
+                &[str_ptr.into(), old_ptr.into(), new_ptr.into()],
+                "replace_all",
             )
-            .ok()?;
-        // copy new
-        let dst_new = unsafe {
-            ctx.builder
-                .build_gep(ctx.context.i8_type(), out_ptr, &[prefix_len], "dst_new")
-        }
-        .ok()?;
-        ctx.builder
-            .build_call(
-                memcpy,
-                &[dst_new.into(), new_ptr.into(), new_len.into()],
-                "",
-            )
-            .ok()?;
-        // copy suffix
-        let dst_off = ctx
-            .builder
-            .build_int_add(prefix_len, new_len, "dst_off")
-            .ok()?;
-        let dst_suffix = unsafe {
-            ctx.builder
-                .build_gep(ctx.context.i8_type(), out_ptr, &[dst_off], "dst_suf")
-        }
-        .ok()?;
-        let src_suffix = unsafe {
-            ctx.builder
-                .build_gep(ctx.context.i8_type(), str_ptr, &[suffix_start], "src_suf")
-        }
-        .ok()?;
-        ctx.builder
-            .build_call(
-                memcpy,
-                &[dst_suffix.into(), src_suffix.into(), suffix_len.into()],
-                "",
-            )
-            .ok()?;
-        // nul
-        let nul_ptr = unsafe {
-            ctx.builder
-                .build_gep(ctx.context.i8_type(), out_ptr, &[total_no_nul], "nul")
-        }
-        .ok()?;
-        ctx.builder
-            .build_store(nul_ptr, ctx.context.i8_type().const_int(0, false))
-            .ok()?;
+            .ok()?
+            .try_as_basic_value()
+            .basic()?;
 
-        ctx.builder.build_store(res_alloca, out_ptr).ok()?;
-        ctx.builder.build_unconditional_branch(end_bb).ok()?;
-
-        ctx.builder.position_at_end(end_bb);
-        let res = ctx
-            .builder
-            .build_load(
-                ctx.context.i8_type().ptr_type(AddressSpace::default()),
-                res_alloca,
-                "replace",
-            )
-            .ok()?;
-        Some(res)
+        Some(result)
     }
 
     // =========================================================================
@@ -1452,5 +1288,22 @@ fn get_or_declare_string_split<'ctx>(
             let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
             ctx.module
                 .add_function(ffi_names::DOO_STRING_SPLIT, fn_type, None)
+        })
+}
+
+fn get_or_declare_string_replace_all<'ctx>(
+    ctx: &CodegenContext<'ctx>,
+) -> inkwell::values::FunctionValue<'ctx> {
+    ctx.module
+        .get_function(ffi_names::DOO_STRING_REPLACE_ALL)
+        .unwrap_or_else(|| {
+            let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+            // doo_string_replace_all(haystack: *const c_char, needle: *const c_char, replacement: *const c_char) -> *const c_char
+            let fn_type = ptr_type.fn_type(
+                &[ptr_type.into(), ptr_type.into(), ptr_type.into()],
+                false,
+            );
+            ctx.module
+                .add_function(ffi_names::DOO_STRING_REPLACE_ALL, fn_type, None)
         })
 }

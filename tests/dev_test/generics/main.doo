@@ -1,0 +1,97 @@
+// Generics: Comprehensive monomorphization test
+// Tests ALL generic patterns to verify full implementation.
+
+// === 1. Single type param ===
+fn identity<T>(x: T) -> T {
+    return x;
+}
+
+// === 2. Multiple type params ===
+fn makePair<A, B>(a: A, b: B) -> (A, B) {
+    return (a, b);
+}
+
+// === 3. Generic operating on value ===
+fn double<T>(x: T) -> T {
+    return x;
+}
+
+// === 4. Nested generic calls ===
+fn wrap<T>(x: T) -> T {
+    return identity(x);
+}
+
+// === 5. Multiple calls with same type (dedup test) ===
+fn echo<T>(x: T) -> T {
+    return x;
+}
+
+// === 6. Generic over array [T] ===
+fn first<T>(items: [T]) -> T {
+    return items[0];
+}
+
+// === 7. Generic struct ===
+struct Wrapper<T> {
+    Value: T,
+    Label: Str,
+}
+
+fn main() {
+    // 1. Single type param with all primitive types
+    let a = identity(42);
+    print(a);
+
+    let b = identity("hello");
+    print(b);
+
+    let c = identity(true);
+    print(c);
+
+    let d = identity(3.14);
+    print(d);
+
+    // 2. Multiple type params
+    let pair = makePair(1, "one");
+    print(pair);
+
+    let pair2 = makePair("two", 2);
+    print(pair2);
+
+    // 3. Generic calling generic (nested monomorphization)
+    let w = wrap(99);
+    print(w);
+
+    let w2 = wrap("wrapped");
+    print(w2);
+
+    // 4. Same generic function called multiple times with same type (dedup)
+    let e1 = echo(10);
+    let e2 = echo(20);
+    print(e1);
+    print(e2);
+
+    // 5. Generic in expressions (not just let)
+    print(identity(777));
+    print(identity("inline"));
+
+    // 6. Generic over array [T] — primitive element types
+    let arrInt = first([10, 20, 30]);
+    print(arrInt);
+    let arrStr = first(["Alice", "Bob"]);
+    print(arrStr);
+    let arrFloat = first([1.5, 2.5]);
+    print(arrFloat);
+    let arrBool = first([true, false]);
+    print(arrBool);
+
+    // 7. Generic struct instantiation
+    let intBox = Wrapper { Value: 42, Label: "age" };
+    print("intBox",intBox.Value);
+    print(intBox.Label);
+    let strBox = Wrapper { Value: "hello", Label: "greeting" };
+    print(strBox.Value);
+    print(strBox.Label);
+
+    print("All generic tests passed!");
+}

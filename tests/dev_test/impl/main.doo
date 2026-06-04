@@ -1,0 +1,73 @@
+//
+// Impl Block Test Suite
+// Tests Rust-like `impl TypeName { fn method() ... }` syntax
+//
+
+struct User {
+    name: Str,
+    email: Str,
+    age: Int,
+}
+
+impl User {
+    fn fullInfo(self) -> Str {
+        return "${self.name} <${self.email}>, age ${self.age}";
+    }
+
+    fn isAdult(self) -> Bool {
+        return self.age >= 18;
+    }
+
+    fn greet(self) -> Str {
+        return "Hello, " + self.name;
+    }
+}
+
+struct Calculator {
+    value: Int,
+}
+
+impl Calculator {
+    fn add(self, n: Int) -> Int {
+        return self.value + n;
+    }
+
+    fn multiply(self, n: Int) -> Int {
+        return self.value * n;
+    }
+}
+
+fn main() {
+    print("=== Impl Block Test Suite ===\n");
+
+    // Test 1: Basic impl methods
+    let user = User { name: "Alice", email: "alice@doo.dev", age: 25 };
+    print("Test 1 - fullInfo:", user.fullInfo());
+    print("Test 1 - isAdult:", user.isAdult());
+    print("Test 1 - greet:", user.greet());
+
+    // Test 2: Child (not adult)
+    let child = User { name: "Bob", email: "bob@doo.dev", age: 10 };
+    print("Test 2 - isAdult:", child.isAdult());
+
+    // Test 3: Calculator
+    let calc = Calculator { value: 100 };
+    print("Test 3 - add:", calc.add(50));
+    print("Test 3 - multiply:", calc.multiply(3));
+
+    // Test 4: Verify existing fn Type.method() still works alongside impl
+    let p = Point { x: 10, y: 20 };
+    print("Test 4 - distance:", p.distance());
+
+    print("\n=== All Impl Tests Complete ===");
+}
+
+// Traditional method syntax — must still work
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+fn Point.distance(self) -> Float {
+    return Float.parse("" + (self.x * self.x + self.y * self.y));
+}

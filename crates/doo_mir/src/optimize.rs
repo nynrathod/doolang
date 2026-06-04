@@ -174,6 +174,8 @@ impl ConstantFolding {
                 BinaryOp::Ne => MirConst::Bool(l != r),
                 _ => return None,
             }),
+            // Nil coalescing constant folding: nil ?? x → x
+            (MirConst::Nil, rhs) if op == BinaryOp::NullCoalesce => Some(rhs.clone()),
             _ => None,
         }
     }

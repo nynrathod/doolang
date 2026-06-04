@@ -1,0 +1,131 @@
+// =============================================================================
+// TYPED ERROR ENUMS — Comprehensive Test
+// =============================================================================
+// Doo already supports enum types as errors (! AppError)
+// This tests: Ok/Err return, match destructuring, payload variants, unit variants
+
+enum AppError {
+    NotFound(Str),
+    Unauthorized,
+    BadRequest(Str),
+    Forbidden,
+    Internal(Str),
+    TooManyRequests(Int),
+}
+
+// --- Functions using different error variants ---
+
+fn findUser(id: Int) -> Str ! AppError {
+    if id == 0 {
+        return Err AppError::NotFound("user 0 not found");
+    }
+    if id == 99 {
+        return Err AppError::Unauthorized;
+    }
+    if id == -1 {
+        return Err AppError::Forbidden;
+    }
+    return Ok "user_" + id;
+}
+
+fn divide(a: Int, b: Int) -> Int ! AppError {
+    if b == 0 {
+        return Err AppError::BadRequest("division by zero");
+    }
+    return Ok a / b;
+}
+
+fn dangerousOp() -> Str ! AppError {
+    return Err AppError::Internal("database connection refused");
+}
+
+fn rateLimited(id: Int) -> Str ! AppError {
+    if id > 100 {
+        return Err AppError::TooManyRequests(60);
+    }
+    return Ok "ok";
+}
+
+// --- Main: test all variants ---
+
+fn main() {
+    // Test 1: NotFound with payload
+    let r1, e1 = findUser(0);
+    match e1 {
+        AppError::NotFound(msg) => print("[404]", msg),
+        _ => print("FAIL: expected NotFound"),
+    }
+
+    // Test 2: Unauthorized (unit variant, no payload)
+    let r2, e2 = findUser(99);
+    match e2 {
+        AppError::Unauthorized => print("[401] Unauthorized"),
+        _ => print("FAIL: expected Unauthorized"),
+    }
+
+    // Test 3: Forbidden (unit)
+    let r3, e3 = findUser(-1);
+    match e3 {
+        AppError::Forbidden => print("[403] Forbidden"),
+        _ => print("FAIL: expected Forbidden"),
+    }
+
+    // Test 4: BadRequest with payload
+    let r4, e4 = divide(10, 0);
+    match e4 {
+        AppError::BadRequest(msg) => print("[400]", msg),
+        _ => print("FAIL: expected BadRequest"),
+    }
+
+    // Test 5: Internal with payload
+    let r5, e5 = dangerousOp();
+    match e5 {
+        AppError::Internal(msg) => print("[500]", msg),
+        _ => print("FAIL: expected Internal"),
+    }
+
+    // Test 6: TooManyRequests with Int payload
+    let r6, e6 = rateLimited(200);
+    match e6 {
+        AppError::TooManyRequests(secs) => print("[429] retry after", secs, "seconds"),
+        _ => print("FAIL: expected TooManyRequests"),
+    }
+
+    // Test 7: Ok case — no error
+    let r7, e7 = findUser(42);
+    match e7 {
+        _ => print("[200] success:", r7),
+    }
+
+    // Test 8: Ok divide
+    let r8, e8 = divide(100, 5);
+    match e8 {
+        _ => print("[200] result:", r8),
+    }
+
+    // Test 9: Ok rate limited
+    let r9, e9 = rateLimited(50);
+    match e9 {
+        _ => print("[200] rate limit ok:", r9),
+    }
+
+    // Test 10: Match with wildcard fallback
+    match e1 {
+        AppError::NotFound(msg) => print("[404] wildcard match:", msg),
+        _ => print("FAIL: wildcard didn't match"),
+    }
+
+    print("=== All Typed Error Enum Tests Complete ===");
+}
+
+// EXPECT: [404] user 0 not found
+// EXPECT: [401] Unauthorized
+// EXPECT: [403] Forbidden
+// EXPECT: [400] division by zero
+// EXPECT: [500] database connection refused
+// EXPECT: [429] retry after 60 seconds
+// EXPECT: [200] success: user_42
+// EXPECT: [200] result: 20
+// EXPECT: [200] rate limit ok: ok
+// EXPECT: [404] wildcard match: user 0 not found
+// EXPECT: === All Typed Error Enum Tests Complete ===

@@ -10,6 +10,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "doo")]
 #[command(about = "doo language CLI")]
+#[command(long_about = "doo language CLI\n\nIssues / support: https://github.com/nynrathod/doolang/issues")]
 #[command(version)]
 pub struct Cli {
     #[command(subcommand)]

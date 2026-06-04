@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn test_function_body_with_multiple_statements() {
-        let prog = parse("fn foo() { let x = 10\n let y = 20\n print(x + y) }");
+        let prog = parse("fn foo() { let x = 10;\n let y = 20;\n print(x + y) }");
         assert_eq!(prog.items.len(), 1);
         match &prog.items[0] {
             Item::Function(f) => {
@@ -505,7 +505,7 @@ mod tests {
 
     #[test]
     fn test_function_multiline_body() {
-        let prog = parse("fn multi() {\n  let a = 1\n  let b = 2\n  let c = 3\n}");
+        let prog = parse("fn multi() {\n  let a = 1;\n  let b = 2;\n  let c = 3;\n}");
         assert_eq!(prog.items.len(), 1);
         match &prog.items[0] {
             Item::Function(f) => {
@@ -717,7 +717,7 @@ mod tests {
 
     #[test]
     fn test_struct_multiline_fields() {
-        let prog = parse("struct User {\n  name: Str,\n  age: Int,\n  email: Str\n}");
+        let prog = parse("struct User {\n  name: Str,\n  age: Int,\n  email: Str,\n}");
         assert_eq!(prog.items.len(), 1);
         match &prog.items[0] {
             Item::Struct(s) => {
@@ -1055,7 +1055,7 @@ mod tests {
 
     #[test]
     fn test_enum_multiline() {
-        let prog = parse("enum Color {\n  Red,\n  Green,\n  Blue\n}");
+        let prog = parse("enum Color {\n  Red,\n  Green,\n  Blue,\n}");
         assert_eq!(prog.items.len(), 1);
         match &prog.items[0] {
             Item::Enum(e) => {
@@ -1304,7 +1304,7 @@ mod tests {
 
     #[test]
     fn test_import_multiline_items() {
-        let prog = parse("import std::io {\n  File,\n  Reader,\n  Writer\n}");
+        let prog = parse("import std::io {\n  File,\n  Reader,\n  Writer,\n}");
         assert_eq!(prog.items.len(), 1);
         match &prog.items[0] {
             Item::Import(i) => {
@@ -1637,7 +1637,7 @@ mod tests {
 
     #[test]
     fn test_let_multiple_vars() {
-        let prog = parse("fn main() { let x = 1\n let y = 2 }");
+        let prog = parse("fn main() { let x = 1;\n let y = 2 }");
         assert_eq!(prog.items.len(), 1);
         match &prog.items[0] {
             Item::Function(f) => {

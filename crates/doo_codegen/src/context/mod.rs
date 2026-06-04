@@ -242,6 +242,14 @@ pub struct CodegenContext<'ctx> {
     /// Populated from enum variants with `@inherits(...)` decorators.
     /// Emitted as `doo_http_register_role_hierarchy(enum_name, hierarchy_json)`.
     pub enum_inheritance: FxHashMap<String, Vec<(String, Vec<String>)>>,
+
+    // ========================================================================
+    // Static Globals (OnceLock-style runtime globals)
+    // ========================================================================
+    /// Set of static global names (declared with `static Name: Type`).
+    /// Used to detect assignments to statics (→ __static_set_X) and reads
+    /// from statics (→ __static_get_X).
+    pub static_globals: FxHashMap<String, TypeId>,
 }
 
 impl<'ctx> CodegenContext<'ctx> {
@@ -309,6 +317,7 @@ impl<'ctx> CodegenContext<'ctx> {
             has_async: false,
             rbac_policies: FxHashMap::default(),
             enum_inheritance: FxHashMap::default(),
+            static_globals: FxHashMap::default(),
         }
     }
 
@@ -318,7 +327,6 @@ impl<'ctx> CodegenContext<'ctx> {
             .get(type_id)
             .map(|info| info.kind.clone());
         if std::env::var(doo_core::constants::env_vars::DOO_DEBUG_TYPES).is_ok() {
-            doo_debug!("TYPES", "get_type_kind({:?}) = {:?}", type_id, result);
         }
         result
     }

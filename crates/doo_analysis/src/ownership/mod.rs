@@ -621,10 +621,22 @@ impl OwnershipAnalyzer {
                 }
             }
             HirExprKind::Field { object, .. } => {
-                self.analyze_expr(object);
+                // Field access is a read, not a move — borrow the object
+                if let HirExprKind::Local { name } = &object.kind {
+                    self.results
+                        .record(name, object.span, Decision::Borrow { mutable: false });
+                } else {
+                    self.analyze_expr(object);
+                }
             }
             HirExprKind::Index { object, index } => {
-                self.analyze_expr(object);
+                // Index access is a read, not a move — borrow the object
+                if let HirExprKind::Local { name } = &object.kind {
+                    self.results
+                        .record(name, object.span, Decision::Borrow { mutable: false });
+                } else {
+                    self.analyze_expr(object);
+                }
                 self.analyze_expr(index);
             }
             HirExprKind::Array(elements) | HirExprKind::Tuple(elements) => {

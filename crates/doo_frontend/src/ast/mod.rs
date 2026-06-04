@@ -3,16 +3,16 @@
 //! The AST represents the syntactic structure of Doo programs after parsing.
 //! All nodes are typed with spans for precise error reporting.
 
-mod expr;
-mod stmt;
 mod decl;
+mod expr;
 mod pattern;
+mod stmt;
 mod types;
 
-pub use expr::*;
-pub use stmt::*;
 pub use decl::*;
+pub use expr::*;
 pub use pattern::*;
+pub use stmt::*;
 pub use types::*;
 
 use doo_core::Span;
@@ -35,16 +35,24 @@ impl Program {
 /// Top-level items in a program.
 #[derive(Debug, Clone)]
 pub enum Item {
+    /// Compile-time constant declaration
+    Const(ConstDecl),
+    /// Runtime global variable declaration (OnceLock semantics)
+    Static(StaticDecl),
     /// Function declaration
     Function(FunctionDecl),
     /// Struct declaration
     Struct(StructDecl),
     /// Enum declaration
     Enum(EnumDecl),
+    /// Interface declaration
+    Interface(InterfaceDecl),
     /// Import statement
     Import(ImportDecl),
     /// RBAC policy block
     Policy(PolicyDecl),
+    /// Impl block for struct methods
+    Impl(ImplDecl),
     /// Standalone statement (for scripting)
     Statement(Stmt),
 }
@@ -52,12 +60,33 @@ pub enum Item {
 impl Item {
     pub fn span(&self) -> Span {
         match self {
+            Self::Const(c) => c.span,
+            Self::Static(s) => s.span,
             Self::Function(f) => f.span,
             Self::Struct(s) => s.span,
             Self::Enum(e) => e.span,
+            Self::Interface(i) => i.span,
             Self::Import(i) => i.span,
             Self::Policy(p) => p.span,
+            Self::Impl(i) => i.span,
             Self::Statement(s) => s.span(),
+        }
+    }
+
+    /// Whether this top-level item requires a trailing semicolon.
+    /// Items ending with `}` (functions, structs, enums, etc.) do not need `;`.
+    /// For standalone statements, delegates to StmtKind::needs_semicolon()
+    /// so that block-ending statements (if, for) also don't require `;`.
+    pub fn needs_semicolon(&self) -> bool {
+        match self {
+            Self::Const(_) | Self::Static(_) | Self::Import(_) => true,
+            Self::Statement(stmt) => stmt.kind.needs_semicolon(),
+            Self::Function(_)
+            | Self::Struct(_)
+            | Self::Enum(_)
+            | Self::Interface(_)
+            | Self::Policy(_)
+            | Self::Impl(_) => false,
         }
     }
 }

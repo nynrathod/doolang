@@ -21,12 +21,6 @@ pub(crate) fn emit_handler_metadata_registration<'ctx>(
     let metadata_json = build_handler_metadata_json(ctx, handler_name);
 
     if debug {
-        doo_debug!(
-            "CODEGEN",
-            "Registering handler metadata for {}: {}",
-            handler_name,
-            metadata_json
-        );
     }
 
     // Get or declare doo_http_register_handler_with_metadata
@@ -110,12 +104,6 @@ pub(crate) fn emit_struct_metadata_registration_for_auth_crud<'ctx>(
     };
 
     if debug {
-        doo_debug!(
-            "CODEGEN",
-            "Registering struct metadata for {}: {}",
-            symbol,
-            struct_name
-        );
     }
 
     // Look up the struct in the type registry
@@ -184,7 +172,6 @@ pub(crate) fn emit_enum_metadata_if_needed<'ctx>(
         let debug = std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok();
 
         if debug {
-            doo_debug!("CODEGEN", "Registering enum metadata: {}", name);
         }
 
         // Build variants JSON array
@@ -578,6 +565,7 @@ fn type_id_to_string_inner(
             }
             TypeKind::Struct { name, .. } => name.clone(),
             TypeKind::Enum { name, .. } => name.clone(),
+            TypeKind::Interface { name, .. } => name.clone(),
             TypeKind::Function { .. } => "Function".to_string(),
             TypeKind::Map { key, value } => {
                 let key_str = type_id_to_string_inner(registry, *key);
@@ -599,6 +587,7 @@ fn type_id_to_string_inner(
             TypeKind::TypeRef { name } => name.clone(),
             TypeKind::Any => "Any".to_string(),
             TypeKind::Error => "Error".to_string(),
+            TypeKind::TypeParam { name } => name.clone(),
         }
     } else {
         "Unknown".to_string()
@@ -636,12 +625,6 @@ pub(crate) fn emit_policy_metadata_if_present<'ctx>(
 
     let debug = std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok();
     if debug {
-        doo_debug!(
-            "CODEGEN",
-            "Registering RBAC policy for {}: {}",
-            struct_name,
-            policy_json
-        );
     }
 
     // Get or declare doo_http_register_policy(name: *const c_char, policy_json: *const c_char)
@@ -731,12 +714,6 @@ fn emit_role_hierarchy_for_enum<'ctx>(
 
     let debug = std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok();
     if debug {
-        doo_debug!(
-            "CODEGEN",
-            "Registering role hierarchy for {}: {}",
-            enum_name,
-            hierarchy_json
-        );
     }
 
     let void_type = ctx.context.void_type();

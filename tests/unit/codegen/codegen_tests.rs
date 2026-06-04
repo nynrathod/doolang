@@ -1252,8 +1252,8 @@ fn main() {
 fn complex_calculator() {
     assert!(compiles_ok(
         r#"
-fn add(a: Int, b: Int) -> Int => a + b
-fn sub(a: Int, b: Int) -> Int => a - b
+fn add(a: Int, b: Int) -> Int => a + b;
+fn sub(a: Int, b: Int) -> Int => a - b;
 fn main() { let r = add(10, sub(30, 5)); print(r); }
 "#
     ));
@@ -1296,7 +1296,7 @@ fn complex_user_system() {
     assert!(compiles_ok(
         r#"
 struct User { name: Str, age: Int }
-fn User.isAdult(self) -> Bool => self.age >= 18
+fn User.isAdult(self) -> Bool => self.age >= 18;
 fn main() {
     let users = [User { name: "Alice", age: 25 }, User { name: "Bob", age: 15 }];
     for u in users { if u.isAdult() { print(u.name); } }
@@ -1310,7 +1310,7 @@ fn complex_config() {
     assert!(compiles_ok(
         r#"
 struct Config { timeout: Int, retries: Int }
-fn Config.isValid(self) -> Bool => self.timeout > 0 && self.retries > 0
+fn Config.isValid(self) -> Bool => self.timeout > 0 && self.retries > 0;
 fn defaultConfig() -> Config { return Config { timeout: 30, retries: 3 }; }
 fn main() { let cfg = defaultConfig(); print(cfg.timeout); }
 "#

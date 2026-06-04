@@ -51,7 +51,7 @@ impl<'ctx> CodegenContext<'ctx> {
         // This handles TypeRef cases where lookup returns the TypeRef, not the actual struct
         for type_id in self.type_registry.all_type_ids() {
             if let Some(info) = self.type_registry.get(type_id) {
-                if let TypeKind::Struct { name, fields } = &info.kind {
+                if let TypeKind::Struct { name, fields, .. } = &info.kind {
                     if name == struct_name {
                         let logical = fields
                             .iter()
@@ -77,7 +77,7 @@ impl<'ctx> CodegenContext<'ctx> {
         // This handles TypeRef cases where lookup returns the TypeRef, not the actual struct
         for type_id in self.type_registry.all_type_ids() {
             if let Some(info) = self.type_registry.get(type_id) {
-                if let TypeKind::Struct { name, fields } = &info.kind {
+                if let TypeKind::Struct { name, fields, .. } = &info.kind {
                     if name == struct_name {
                         return fields
                             .iter()
@@ -108,7 +108,7 @@ impl<'ctx> CodegenContext<'ctx> {
         // This handles TypeRef cases where lookup returns the TypeRef, not the actual struct
         for type_id in self.type_registry.all_type_ids() {
             if let Some(info) = self.type_registry.get(type_id) {
-                if let TypeKind::Struct { name, fields } = &info.kind {
+                if let TypeKind::Struct { name, fields, .. } = &info.kind {
                     if name == struct_name {
                         return Some(fields.iter().map(|(_, type_id, _)| *type_id).collect());
                     }

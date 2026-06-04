@@ -1,14 +1,12 @@
 //! Statement lowering and desugaring.
 
+use super::Lower;
+use crate::types::*;
 use doo_core::{
     doo_debug,
     types::{builtin, TypeId, TypeKind, TypeRegistry},
 };
-use doo_frontend::ast::{
-    self, ElseBranch, ExprKind, IncDecOp, PatternKind, Stmt, StmtKind,
-};
-use crate::types::*;
-use super::Lower;
+use doo_frontend::ast::{self, ElseBranch, ExprKind, IncDecOp, PatternKind, Stmt, StmtKind};
 
 impl Lower {
     pub(crate) fn lower_stmt(&mut self, stmt: &Stmt) -> HirStmt {
@@ -43,11 +41,6 @@ impl Lower {
             }
 
             StmtKind::Assign { target, value } => {
-                doo_debug!(
-                    "HIR",
-                    "lower_stmt NON-TYPED: Assign statement, target pattern: {:?}",
-                    target.kind
-                );
                 let target_expr = self.pattern_to_expr(target);
                 HirStmtKind::Assign {
                     target: target_expr,
@@ -269,11 +262,6 @@ impl Lower {
     }
 
     pub(crate) fn lower_stmt_typed(&mut self, stmt: &Stmt, registry: &mut TypeRegistry) -> HirStmt {
-        doo_debug!(
-            "HIR",
-            "lower_stmt_typed: Processing statement: {:?}",
-            std::mem::discriminant(&stmt.kind)
-        );
         let kind = match &stmt.kind {
             StmtKind::Let {
                 mutable,
@@ -343,11 +331,6 @@ impl Lower {
             }
 
             StmtKind::Assign { target, value } => {
-                doo_debug!(
-                    "HIR",
-                    "lower_stmt: Assign statement, target pattern: {:?}",
-                    target.kind
-                );
                 let target_expr = self.pattern_to_expr(target);
                 HirStmtKind::Assign {
                     target: target_expr,

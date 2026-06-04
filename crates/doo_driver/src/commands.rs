@@ -1203,13 +1203,19 @@ pub fn run_upgrade() -> i32 {
     let current_version = env!("CARGO_PKG_VERSION");
     println!("{} Current version: v{}", INFO, current_version);
 
-    // Detect platform
+    // Detect platform — must match zip naming: linux | darwin-x86_64 | darwin-arm64 | windows
+    // On macOS we check the CPU arch at runtime so a universal binary works correctly
+    // on both Intel Macs and Apple Silicon Macs.
     let platform = if cfg!(target_os = "windows") {
-        "windows"
+        "windows".to_string()
     } else if cfg!(target_os = "macos") {
-        "mac"
+        // std::env::consts::ARCH reflects the *running* arch (arm vs x86_64)
+        match std::env::consts::ARCH {
+            "aarch64" => "darwin-arm64".to_string(),
+            _         => "darwin-x86_64".to_string(),
+        }
     } else {
-        "linux"
+        "linux".to_string()
     };
 
     println!("{} Detected platform: {}", INFO, platform);
@@ -1253,7 +1259,7 @@ pub fn run_upgrade() -> i32 {
 
     // Download and extract new version
     if let Err(e) =
-        download_and_upgrade(&install_dir, platform, &latest_version, latest_version_num)
+        download_and_upgrade(&install_dir, &platform, &latest_version, latest_version_num)
     {
         eprintln!("{} Upgrade failed: {}", ERROR, e);
         return 1;

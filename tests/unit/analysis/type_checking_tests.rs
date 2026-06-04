@@ -1338,7 +1338,7 @@ enum Shape { Circle(Float), Rect(Float, Float) }
 fn area(s: Shape) -> Float {
     match s {
         Shape::Circle(r) => 3.14 * r * r,
-        Shape::Rect(w, h) => w * h
+        Shape::Rect(w, h) => w * h,
     }
 }
 "#

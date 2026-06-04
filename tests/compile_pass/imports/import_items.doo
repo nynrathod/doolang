@@ -1,5 +1,5 @@
 // OUTPUT: Import specific items test
-import std::io { File, Reader }
+import std::io { File, Reader };
 
 fn main() {
     print("Import specific items test");

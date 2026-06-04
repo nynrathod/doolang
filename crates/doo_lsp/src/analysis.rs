@@ -28,6 +28,7 @@ pub enum CompletionKind {
     EnumMember,
     Field,
     Variable,
+    Constant,
     Keyword,
     Module,
 }
@@ -35,7 +36,7 @@ pub enum CompletionKind {
 /// Doo language keywords for completion.
 const KEYWORDS: &[&str] = &[
     "fn", "struct", "enum", "import", "let", "mut", "if", "else", "for", "in", "while", "loop",
-    "break", "continue", "return", "match", "true", "false", "nil", "async", "await", "try",
+    "break", "continue", "return", "match", "const", "true", "false", "nil", "async", "await", "try",
     "catch", "throw", "spawn",
 ];
 
@@ -200,6 +201,9 @@ fn format_symbol_hover(sym: &SymbolDef) -> String {
         SymbolKind::Import => {
             format!("```doo\nimport {}\n```", sym.name)
         }
+        SymbolKind::Const => {
+            format!("```doo\nconst {} = ...\n```", sym.name)
+        }
     }
 }
 
@@ -216,6 +220,7 @@ fn symbol_to_completion(sym: &SymbolDef) -> CompletionItem {
         SymbolKind::Field => (CompletionKind::Field, sym.type_info.clone()),
         SymbolKind::Variable => (CompletionKind::Variable, sym.type_info.clone()),
         SymbolKind::Import => (CompletionKind::Module, None),
+        SymbolKind::Const => (CompletionKind::Constant, None),
     };
 
     let insert_text = if sym.kind == SymbolKind::Function {

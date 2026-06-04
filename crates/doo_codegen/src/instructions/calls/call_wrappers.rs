@@ -145,11 +145,6 @@ pub(crate) fn get_or_generate_ws_handler_wrapper<'ctx>(
             }
         }
         None => {
-            doo_debug!(
-                "CODEGEN",
-                "Warning: WS handler {} not found",
-                user_func_name
-            );
         }
     }
 
@@ -254,11 +249,6 @@ pub(crate) fn get_or_generate_ws_event_handler_wrapper<'ctx>(
             }
         }
         None => {
-            doo_debug!(
-                "CODEGEN",
-                "Warning: WS event handler {} not found",
-                user_func_name
-            );
         }
     }
 
@@ -350,11 +340,6 @@ pub(crate) fn get_or_generate_ws_lifecycle_handler_wrapper<'ctx>(
             }
         }
         None => {
-            doo_debug!(
-                "CODEGEN",
-                "Warning: WS lifecycle handler {} not found",
-                user_func_name
-            );
         }
     }
 
@@ -409,12 +394,6 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
 
     let debug = std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok();
     if debug {
-        doo_debug!(
-            "CODEGEN",
-            "Generating FFI wrapper for {} (used by {})",
-            user_func_name,
-            ffi_symbol
-        );
     }
 
     // Check if this is an FFI function that needs to be called via its external symbol
@@ -442,11 +421,6 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
             Some(f) => f,
             None => {
                 // Function not found - create a dummy wrapper that returns null
-                doo_debug!(
-                    "CODEGEN",
-                    "Warning: Function {} not found for wrapper generation",
-                    user_func_name
-                );
                 return create_dummy_wrapper(ctx, &wrapper_name);
             }
         }
@@ -507,8 +481,6 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
         && user_param_count == 2;
 
     if debug {
-        doo_debug!("CODEGEN", "User function {} has {} params, returns {:?}, return_type_name={:?}, returns_struct={}, is_middleware={}, is_ffi={}",
-            user_func_name, user_param_count, user_return_type, return_type_name, returns_struct, is_middleware, ffi_symbol_info.is_some());
     }
 
     // Create wrapper function with FFI signature:
@@ -876,14 +848,6 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
             let has_jwt_middleware = route_context.has_jwt_middleware();
 
             if debug {
-                doo_debug!(
-                    "CODEGEN",
-                    "Handler {} with {} params, path_params={:?}, jwt={}",
-                    user_func_name,
-                    param_count,
-                    path_param_names,
-                    has_jwt_middleware
-                );
             }
 
             // Get or declare doo_json_get_field for extracting specific fields from params JSON
@@ -914,11 +878,6 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 if is_server_param {
                     // Server param: call doo_http_get_server_instance() → ptr
                     if debug {
-                        doo_debug!(
-                            "CODEGEN",
-                            "Param {} is Server — injecting global server instance",
-                            idx
-                        );
                     }
                     let get_server_fn = ctx
                         .module
@@ -956,20 +915,12 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 let source_ptr = if has_jwt_middleware && param_count == 1 && is_int_param {
                     // JWT handler with single Int param - get from user_id field
                     if debug {
-                        doo_debug!("CODEGEN", "Param {} from user_id (JWT)", idx);
                     }
                     load_request_field(ctx, 6, "user_id")
                 } else if idx < path_param_names.len() {
                     // This param corresponds to a path parameter
                     let path_param_name = path_param_names.get(idx).cloned().unwrap_or_default();
                     if debug {
-                        doo_debug!(
-                            "CODEGEN",
-                            "Param {} from params (path param: {}, is_struct={})",
-                            idx,
-                            path_param_name,
-                            is_struct_param
-                        );
                     }
                     let params_json = load_request_field(ctx, 4, "params");
 
@@ -995,7 +946,6 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 } else {
                     // Default: use body
                     if debug {
-                        doo_debug!("CODEGEN", "Param {} from body", idx);
                     }
                     load_request_field(ctx, 2, "body_json")
                 };
@@ -1007,12 +957,6 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 } else {
                     // Fallback: pass null pointer for this param
                     if debug {
-                        doo_debug!(
-                            "CODEGEN",
-                            "Warning: Failed to parse param {} for {}",
-                            idx,
-                            user_func_name
-                        );
                     }
                     call_args.push(ptr_type.const_null().into());
                 }
@@ -1027,13 +971,6 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
             } else {
                 // Fallback to passing request_ptr if parsing fails
                 if debug {
-                    doo_debug!(
-                        "CODEGEN",
-                        "Warning: Param count mismatch for {}, expected {} got {}",
-                        user_func_name,
-                        param_count,
-                        call_args.len()
-                    );
                 }
                 None
             }
@@ -1068,13 +1005,6 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
         });
 
         if debug {
-            doo_debug!(
-                "CODEGEN",
-                "Middleware {} user_returns_result_struct={} error_type={:?}",
-                user_func_name,
-                user_returns_result_struct,
-                error_type_name
-            );
         }
 
         // Allocate DooResult on heap
@@ -1089,13 +1019,6 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
 
         if let Some(val) = user_result {
             if debug {
-                doo_debug!(
-                    "CODEGEN",
-                    "Middleware {} val.is_struct_value()={}, user_returns_result_struct={}",
-                    user_func_name,
-                    val.is_struct_value(),
-                    user_returns_result_struct
-                );
             }
 
             // If the function returns a struct type { i64, ptr } (SimpleResult), we need to extract values
@@ -1525,11 +1448,6 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 } else {
                     // Fallback: treat as pointer
                     if debug {
-                        doo_debug!(
-                            "CODEGEN",
-                            "Warning: Failed to extract struct value for {}",
-                            user_func_name
-                        );
                     }
                     let response_ptr = if val.is_pointer_value() {
                         val.into_pointer_value()

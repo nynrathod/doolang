@@ -1,0 +1,19 @@
+// Option type and nil-coalescing test
+
+struct User {
+    Name: Str,
+    Age: Int,
+}
+
+// Function that returns an optional User
+fn FindUser(id: Int) -> User? ! Str {
+    if id == 1 {
+        return Ok User{Name: "Alice", Age: 30};
+    }
+    return Ok nil;
+}
+
+// Function to get a default user
+fn DefaultUser() -> User {
+    return User{Name: "Unknown", Age: 0};
+}

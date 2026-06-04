@@ -38,7 +38,13 @@ pub fn json_value_to_typed_param(
                     .map(|x| match x {
                         serde_json::Value::Number(n) => n.as_i64().unwrap_or(0) as i16,
                         serde_json::Value::String(s) => s.parse::<i16>().unwrap_or(0),
-                        serde_json::Value::Bool(b) => if *b { 1i16 } else { 0i16 },
+                        serde_json::Value::Bool(b) => {
+                            if *b {
+                                1i16
+                            } else {
+                                0i16
+                            }
+                        }
                         _ => 0i16,
                     })
                     .collect::<Vec<i16>>(),
@@ -52,7 +58,13 @@ pub fn json_value_to_typed_param(
                     .map(|x| match x {
                         serde_json::Value::Number(n) => n.as_i64().unwrap_or(0) as i32,
                         serde_json::Value::String(s) => s.parse::<i32>().unwrap_or(0),
-                        serde_json::Value::Bool(b) => if *b { 1i32 } else { 0i32 },
+                        serde_json::Value::Bool(b) => {
+                            if *b {
+                                1i32
+                            } else {
+                                0i32
+                            }
+                        }
                         _ => 0i32,
                     })
                     .collect::<Vec<i32>>(),
@@ -66,7 +78,13 @@ pub fn json_value_to_typed_param(
                     .map(|x| match x {
                         serde_json::Value::Number(n) => n.as_i64().unwrap_or(0),
                         serde_json::Value::String(s) => s.parse::<i64>().unwrap_or(0),
-                        serde_json::Value::Bool(b) => if *b { 1i64 } else { 0i64 },
+                        serde_json::Value::Bool(b) => {
+                            if *b {
+                                1i64
+                            } else {
+                                0i64
+                            }
+                        }
                         _ => 0i64,
                     })
                     .collect::<Vec<i64>>(),
@@ -80,7 +98,13 @@ pub fn json_value_to_typed_param(
                     .map(|x| match x {
                         serde_json::Value::Number(n) => n.as_f64().unwrap_or(0.0) as f32,
                         serde_json::Value::String(s) => s.parse::<f32>().unwrap_or(0.0),
-                        serde_json::Value::Bool(b) => if *b { 1.0f32 } else { 0.0f32 },
+                        serde_json::Value::Bool(b) => {
+                            if *b {
+                                1.0f32
+                            } else {
+                                0.0f32
+                            }
+                        }
                         _ => 0.0f32,
                     })
                     .collect::<Vec<f32>>(),
@@ -94,7 +118,13 @@ pub fn json_value_to_typed_param(
                     .map(|x| match x {
                         serde_json::Value::Number(n) => n.as_f64().unwrap_or(0.0),
                         serde_json::Value::String(s) => s.parse::<f64>().unwrap_or(0.0),
-                        serde_json::Value::Bool(b) => if *b { 1.0f64 } else { 0.0f64 },
+                        serde_json::Value::Bool(b) => {
+                            if *b {
+                                1.0f64
+                            } else {
+                                0.0f64
+                            }
+                        }
                         _ => 0.0f64,
                     })
                     .collect::<Vec<f64>>(),
@@ -205,9 +235,7 @@ pub fn json_values_to_pg_params_typed(
 }
 
 /// Convert JSON values to PostgreSQL parameter types WITHOUT type info (fallback).
-pub fn json_values_to_pg_params(
-    values: &[serde_json::Value],
-) -> Vec<Box<dyn ToSql + Sync + Send>> {
+pub fn json_values_to_pg_params(values: &[serde_json::Value]) -> Vec<Box<dyn ToSql + Sync + Send>> {
     values.iter().map(json_value_to_untyped_param).collect()
 }
 

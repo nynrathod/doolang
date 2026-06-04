@@ -317,7 +317,7 @@ impl TypeInference {
                     match &info.kind {
                         TypeKind::Struct {
                             name: struct_name,
-                            fields,
+                            fields, ..
                         } => {
                             for (fname, ftype, is_public) in fields {
                                 if fname == field {
@@ -329,7 +329,6 @@ impl TypeInference {
                                         if std::env::var(doo_core::constants::env_vars::DOO_DEBUG)
                                             .is_ok()
                                         {
-                                            doo_debug!("VISIBILITY", "Warning: Accessing private field '{}' on struct '{}'", field, struct_name);
                                         }
                                     }
                                     return *ftype;
@@ -581,6 +580,14 @@ impl TypeInference {
             HirBinOp::And | HirBinOp::Or => builtin::BOOL,
             // Bitwise - preserve Int
             HirBinOp::BitAnd | HirBinOp::BitOr => builtin::INT,
+            // Nil coalescing: result type is the non-nil operand type
+            HirBinOp::NullCoalesce => {
+                if lhs == builtin::VOID || lhs == builtin::ANY {
+                    rhs
+                } else {
+                    lhs
+                }
+            }
         }
     }
 

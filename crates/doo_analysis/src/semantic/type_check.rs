@@ -13,8 +13,8 @@ use doo_core::{
     Span,
 };
 use doo_hir::{
-    HirBinOp, HirExpr, HirExprKind, HirFunction, HirItem, HirMatchPattern, HirProgram, HirStmt,
-    HirStmtKind,
+    ConstValue, HirBinOp, HirExpr, HirExprKind, HirFunction, HirItem, HirMatchPattern, HirProgram,
+    HirStmt, HirStmtKind,
 };
 
 /// Type checking error.
@@ -198,6 +198,70 @@ impl TypeChecker {
         self.scopes.enter_scope(super::scope::ScopeKind::Global);
         for item in &program.items {
             match item {
+                HirItem::Const(c) => {
+                    // Detect duplicate const names
+                    if self.scopes.lookup(&c.name).is_some() {
+                        self.errors.push(TypeError {
+                            kind: TypeErrorKind::InvalidOp(format!(
+                                "constant '{}' is already defined",
+                                c.name
+                            )),
+                            span: c.span,
+                        });
+                    } else {
+                        // Validate that the value is a compile-time constant expression
+                        if !is_const_evaluable(&c.value_expr) {
+                            self.errors.push(TypeError {
+                                kind: TypeErrorKind::InvalidOp(format!(
+                                    "const '{}' must be assigned a compile-time constant value \
+                                     (literal, const arithmetic, array/map of literals)",
+                                    c.name
+                                )),
+                                span: c.span,
+                            });
+                        }
+                        self.define_symbol(Symbol {
+                            name: c.name.clone(),
+                            kind: SymbolKind::Const,
+                            type_id: Some(c.type_id),
+                            mutable: false,
+                            span: c.span,
+                            used: false,
+                        });
+                    }
+                }
+                HirItem::Static(s) => {
+                    // Detect duplicate static names
+                    if self.scopes.lookup(&s.name).is_some() {
+                        self.errors.push(TypeError {
+                            kind: TypeErrorKind::InvalidOp(format!(
+                                "static '{}' is already defined",
+                                s.name
+                            )),
+                            span: s.span,
+                        });
+                    } else {
+                        // Validate that the static has a type annotation
+                        let type_id = s.type_id.unwrap_or(builtin::ANY);
+                        if type_id == builtin::ANY {
+                            self.errors.push(TypeError {
+                                kind: TypeErrorKind::InvalidOp(format!(
+                                    "static '{}' requires a type annotation",
+                                    s.name
+                                )),
+                                span: s.span,
+                            });
+                        }
+                        self.define_symbol(Symbol {
+                            name: s.name.clone(),
+                            kind: SymbolKind::Static,
+                            type_id: s.type_id,
+                            mutable: true, // Assignable once in main(); OnceLock enforces set-once
+                            span: s.span,
+                            used: false,
+                        });
+                    }
+                }
                 HirItem::Function(func) => {
                     let return_type = func.return_type.unwrap_or(builtin::VOID);
 
@@ -282,6 +346,41 @@ impl TypeChecker {
                         });
                     }
                 }
+                HirItem::Interface(i) => {
+                    // Register interface as a type in scope
+                    let iface_key = format!("__interface_{}", i.name);
+                    if self.scopes.lookup(&iface_key).is_some() {
+                        self.errors.push(TypeError {
+                            kind: TypeErrorKind::InvalidOp(format!(
+                                "interface '{}' is already defined",
+                                i.name
+                            )),
+                            span: i.span,
+                        });
+                    } else {
+                        self.define_symbol(Symbol {
+                            name: iface_key,
+                            kind: SymbolKind::Variable,
+                            type_id: None,
+                            mutable: false,
+                            span: i.span,
+                            used: false,
+                        });
+                    }
+                    // Also register the interface name as a known type so it can be
+                    // used in type annotations without triggering "undefined type" errors
+                    let type_id = self.registry.lookup(&i.name);
+                    if let Some(tid) = type_id {
+                        self.define_symbol(Symbol {
+                            name: i.name.clone(),
+                            kind: SymbolKind::Type,
+                            type_id: Some(tid),
+                            mutable: false,
+                            span: i.span,
+                            used: false,
+                        });
+                    }
+                }
                 _ => {}
             }
         }
@@ -349,6 +448,7 @@ impl TypeChecker {
                 // Skip common types that might be forward-declared by FFI or runtime
                 let struct_key = format!("__struct_{}", name);
                 let enum_key = format!("__enum_{}", name);
+                let interface_key = format!("__interface_{}", name);
                 // Skip built-in / FFI types that are always available
                 let is_builtin = matches!(
                     name.as_str(),
@@ -365,6 +465,7 @@ impl TypeChecker {
                 if !is_builtin
                     && self.scopes.lookup(&struct_key).is_none()
                     && self.scopes.lookup(&enum_key).is_none()
+                    && self.scopes.lookup(&interface_key).is_none()
                 {
                     self.errors.push(TypeError {
                         kind: TypeErrorKind::Undefined(name.clone(), None),
@@ -453,6 +554,8 @@ impl TypeChecker {
             }
         }
 
+        self.scopes.exit_scope();
+
         // MissingReturn: function has a return type but body doesn't end with return
         if let Some(ret_type) = func.return_type {
             if ret_type != builtin::VOID && !found_return && func.name != "main" {
@@ -479,8 +582,6 @@ impl TypeChecker {
                 }
             }
         }
-
-        self.scopes.exit_scope();
 
         // Restore previous function context
         self.current_return_type = prev_return_type;
@@ -2151,6 +2252,45 @@ impl TypeChecker {
                     });
                 }
             }
+            // Null coalescing: both sides must have compatible types.
+            // a ?? b — a and b must be type-compatible (after unwrapping Optional from a).
+            HirBinOp::NullCoalesce => {
+                // Unwrap Optional/Result from the types to get inner types
+                let unwrap = |tid: TypeId| -> TypeId {
+                    if let Some(info) = self.registry.get(tid) {
+                        match &info.kind {
+                            TypeKind::Optional { inner } => *inner,
+                            TypeKind::Result { ok, .. } => *ok,
+                            _ => tid,
+                        }
+                    } else {
+                        tid
+                    }
+                };
+                let lhs_inner = unwrap(lhs_type);
+                let rhs_inner = unwrap(rhs_type);
+
+                // If lhs is non-nil (not VOID), check compatibility with rhs
+                if lhs_inner != builtin::VOID
+                    && lhs_inner != builtin::ANY
+                    && rhs_inner != builtin::VOID
+                    && rhs_inner != builtin::ANY
+                    && lhs_inner != rhs_inner
+                {
+                    let both_numeric = (lhs_inner == builtin::INT || lhs_inner == builtin::FLOAT)
+                        && (rhs_inner == builtin::INT || rhs_inner == builtin::FLOAT);
+                    if !both_numeric {
+                        self.errors.push(TypeError {
+                            kind: TypeErrorKind::Incompatible {
+                                left: lhs_inner,
+                                right: rhs_inner,
+                                operation: "??".to_string(),
+                            },
+                            span,
+                        });
+                    }
+                }
+            }
             // Logical, bitwise, In — no additional checks here
             _ => {}
         }
@@ -2317,5 +2457,27 @@ impl TypeChecker {
 
         // All elements matched - return the expected tuple type
         expected_type
+    }
+}
+
+/// Check whether a HIR expression is a valid compile-time constant expression.
+///
+/// Allowed:
+/// - Literal values (Int, Float, Bool, Str, Nil)
+/// - Negation of a literal
+/// - Arithmetic/comparison of two const-evaluable expressions
+/// - Arrays where all elements are const-evaluable
+/// - Maps where all keys and values are const-evaluable
+/// - Const references (already inlined by HIR lowering, appear as Const nodes)
+fn is_const_evaluable(expr: &HirExpr) -> bool {
+    match &expr.kind {
+        HirExprKind::Const(_) => true,
+        HirExprKind::UnaryOp { operand, .. } => is_const_evaluable(operand),
+        HirExprKind::BinOp { lhs, rhs, .. } => is_const_evaluable(lhs) && is_const_evaluable(rhs),
+        HirExprKind::Array(elements) => elements.iter().all(is_const_evaluable),
+        HirExprKind::Map(pairs) => pairs
+            .iter()
+            .all(|(k, v)| is_const_evaluable(k) && is_const_evaluable(v)),
+        _ => false,
     }
 }

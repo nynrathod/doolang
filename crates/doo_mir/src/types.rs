@@ -53,6 +53,8 @@ pub struct MirProgram {
     pub structs: HashMap<Sym, StructDef>,
     /// Enum metadata: name -> variant definitions
     pub enums: HashMap<Sym, EnumDef>,
+    /// Interface metadata: name -> method definitions
+    pub interfaces: HashMap<Sym, InterfaceDef>,
     /// RBAC policy metadata: struct_name -> policy JSON string
     /// The key is the guarded struct name (e.g. "Post").
     pub policies: HashMap<Sym, String>,
@@ -60,11 +62,21 @@ pub struct MirProgram {
     pub entry_point: Option<Sym>,
 }
 
+/// Kind of global: compile-time const vs runtime static (OnceLock).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalKind {
+    /// Compile-time constant — value baked into binary, inlined at use sites.
+    Const,
+    /// Runtime static — OnceLock semantics, set exactly once in main(), immutable after.
+    Static,
+}
+
 /// Global constant or variable
 #[derive(Debug, Clone)]
 pub struct MirGlobal {
     pub name: Sym,
     pub type_id: TypeId,
+    pub kind: GlobalKind,
     pub value: Option<MirConst>,
 }
 
@@ -103,6 +115,23 @@ pub struct VariantDef {
     pub decorators: Vec<Decorator>,
 }
 
+/// Interface definition metadata
+#[derive(Debug, Clone)]
+pub struct InterfaceDef {
+    pub name: Sym,
+    /// Method signatures: (name, param_types, return_type, error_type)
+    pub methods: Vec<InterfaceMethodDef>,
+}
+
+/// A method signature within an interface
+#[derive(Debug, Clone)]
+pub struct InterfaceMethodDef {
+    pub name: Sym,
+    pub param_types: Vec<TypeId>,
+    pub return_type: Option<TypeId>,
+    pub error_type: Option<TypeId>,
+}
+
 /// Decorator on struct/field
 #[derive(Debug, Clone)]
 pub struct Decorator {
@@ -117,6 +146,7 @@ impl MirProgram {
             globals: Vec::new(),
             structs: HashMap::new(),
             enums: HashMap::new(),
+            interfaces: HashMap::new(),
             policies: HashMap::new(),
             entry_point: None,
         }
@@ -149,24 +179,7 @@ impl MirProgram {
     pub fn validate(&self) -> Result<(), MirError> {
         for func in &self.functions {
             if let Err(e) = func.validate() {
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                    doo_debug!(
-                        "MIR",
-                        "Validation failed in function '{}': {}",
-                        resolve(func.name),
-                        e
-                    );
-                    doo_debug!(
-                        "MIR",
-                        "  params: {:?}",
-                        func.params.iter().map(|p| &p.name).collect::<Vec<_>>()
-                    );
-                    doo_debug!(
-                        "MIR",
-                        "  locals: {:?}",
-                        func.locals.iter().map(|l| &l.name).collect::<Vec<_>>()
-                    );
-                }
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                 return Err(e);
             }
         }
@@ -764,6 +777,19 @@ pub enum MirInstrKind {
         value_type: TypeId,
     },
 
+    /// Construct interface fat pointer: { data_ptr, vtable_ptr }
+    /// Converts a concrete struct ptr to an interface fat pointer.
+    /// The vtable is generated later during codegen from interface metadata.
+    InterfaceConstruct {
+        dest: Sym,
+        /// The concrete struct value (pointer)
+        value: MirOperand,
+        /// The concrete struct's TypeId
+        concrete_type: TypeId,
+        /// The target interface's TypeId
+        interface_type: TypeId,
+    },
+
     // ========================================================================
     // Control Flow / Panic
     // ========================================================================
@@ -816,6 +842,8 @@ pub enum BinaryOp {
     Or,
     // String
     Concat,
+    // Nil coalescing
+    NullCoalesce,
 }
 
 /// Unary operators
@@ -912,6 +940,7 @@ impl MirInstr {
                 separator: _,
             } => values.iter().collect(),
             MirInstrKind::TypeOf { value, .. } => vec![value],
+            MirInstrKind::InterfaceConstruct { value, .. } => vec![value],
             MirInstrKind::Panic { message } => vec![message],
             MirInstrKind::Sleep { ms } => vec![ms],
             MirInstrKind::Await { handle, .. } => vec![handle],
@@ -960,7 +989,8 @@ impl MirInstr {
             | MirInstrKind::UnwrapOk { dest, .. }
             | MirInstrKind::UnwrapErr { dest, .. }
             | MirInstrKind::Cast { dest, .. }
-            | MirInstrKind::TypeOf { dest, .. } => Some(dest),
+            | MirInstrKind::TypeOf { dest, .. }
+            | MirInstrKind::InterfaceConstruct { dest, .. } => Some(dest),
             MirInstrKind::Call { dest, .. }
             | MirInstrKind::MethodCall { dest, .. }
             | MirInstrKind::FfiCall { dest, .. }

@@ -194,8 +194,31 @@ pub fn get_array_length_from_data<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     data_ptr: PointerValue<'ctx>,
 ) -> Option<IntValue<'ctx>> {
+    let is_null = ctx.builder.build_is_null(data_ptr, "is_null").ok()?;
+    let current_fn = ctx.builder.get_insert_block()?.get_parent()?;
+    let null_block = ctx.context.append_basic_block(current_fn, "arr_len_null");
+    let ok_block = ctx.context.append_basic_block(current_fn, "arr_len_ok");
+    let done_block = ctx.context.append_basic_block(current_fn, "arr_len_done");
+    
+    ctx.builder.build_conditional_branch(is_null, null_block, ok_block).ok()?;
+    
+    // Null block: return 0
+    ctx.builder.position_at_end(null_block);
+    let zero = ctx.context.i64_type().const_zero();
+    ctx.builder.build_unconditional_branch(done_block).ok()?;
+    
+    // Ok block: load from header
+    ctx.builder.position_at_end(ok_block);
     let header_ptr = header_ptr_from_data(ctx, data_ptr)?;
-    get_array_length(ctx, header_ptr)
+    let len = get_array_length(ctx, header_ptr)?;
+    ctx.builder.build_unconditional_branch(done_block).ok()?;
+    
+    // Done block: phi
+    ctx.builder.position_at_end(done_block);
+    let phi = ctx.builder.build_phi(ctx.context.i64_type(), "arr_len_res").ok()?;
+    phi.add_incoming(&[(&zero, null_block), (&len, ok_block)]);
+    
+    Some(phi.as_basic_value().into_int_value())
 }
 
 /// Get array capacity from a DATA pointer

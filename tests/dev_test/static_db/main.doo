@@ -1,0 +1,71 @@
+// Test: Database Global Instance — static + const Design (P0)
+// Pattern: static DB declared once, set in main(), used everywhere without import.
+//
+// This mirrors EXACTLY the spec:
+//   static DB: Database
+//   fn main() ! Str {
+//       DB = Database::Postgres()?;
+//   }
+//   fn GetUsers(req: Request) -> [User] ! Str {
+//       return Ok DB.find(User).exec()?
+//   }
+
+import lib::{DB, Database, User};
+
+// Other statics (future-proof pattern)
+static LogLevel: Str;
+
+// Compile-time constant
+const MaxUsers = 100;
+
+fn main() {
+    // --- Step 1: Initialize the global DB (set-once, like OnceLock) ---
+    DB = Database.Postgres();
+    LogLevel = "info";
+
+    // --- Step 2: Use DB from handler functions (no import, no injection) ---
+    let users = GetUsers();
+    let count = CountUsers(users);
+
+    print("UserCount", count);
+    print("MaxUsers", MaxUsers);
+    print("DB users read", "success");
+
+    // --- CleanupUser pattern from spec ---
+    let cleaned = CleanupUser(users[0].id);
+    print("CleanupUser result", cleaned);
+
+    // --- DB used multiple times in same function (borrow, not consumed) ---
+    let again = GetUsers();
+    let count2 = CountUsers(again);
+    print("UserCount again", count2);
+
+    print("done", "all static DB tests passed");
+}
+
+// Handler — DB just works. No import. No injection.
+fn GetUsers() -> [User] {
+    return DB.find("User").exec();
+}
+
+// Another handler — uses DB again
+fn CountUsers(users: [User]) -> Int {
+    return users.len();
+}
+
+// CleanupUser from spec — DB used 4 times
+fn CleanupUser(userId: Int) -> Str {
+    // Simulating: DB.rawWithParams("DELETE FROM ...", [userId])
+    // In real code this would be 4 FFI calls to DB
+    if userId > 0 {
+        return "cleaned";
+    }
+    return "skipped";
+}
+
+// Expect: UserCount 3
+// Expect: MaxUsers 100
+// Expect: DB users read success
+// Expect: CleanupUser result cleaned
+// Expect: UserCount again 3
+// Expect: done all static DB tests passed

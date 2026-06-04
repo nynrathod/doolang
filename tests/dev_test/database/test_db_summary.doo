@@ -1,66 +1,67 @@
 import std::Database;
+static DB:MDatabase;
 
 fn main() {
-    let db = Database::Postgres()?;
+    DB = Database::Postgres()?;
 
-    db.raw("DROP TABLE IF EXISTS demo_users")?;
-    db.raw("CREATE TABLE demo_users (id SERIAL PRIMARY KEY, name TEXT, email TEXT, age INT)")?;
+    DB.raw("DROP TABLE IF EXISTS demo_users")?;
+    DB.raw("CREATE TABLE demo_users (id SERIAL PRIMARY KEY, name TEXT, email TEXT, age INT)")?;
     print("✅ Table created successfully");
 
-    db.raw("INSERT INTO demo_users (name, email, age) VALUES ('Alice', 'alice@test.com', 30)")?;
-    db.raw("INSERT INTO demo_users (name, email, age) VALUES ('Bob', 'bob@test.com', 25)")?;
-    db.raw("INSERT INTO demo_users (name, email, age) VALUES ('Charlie', 'charlie@test.com', 35)")?;
+    DB.raw("INSERT INTO demo_users (name, email, age) VALUES ('Alice', 'alice@test.com', 30)")?;
+    DB.raw("INSERT INTO demo_users (name, email, age) VALUES ('Bob', 'bob@test.com', 25)")?;
+    DB.raw("INSERT INTO demo_users (name, email, age) VALUES ('Charlie', 'charlie@test.com', 35)")?;
     print("   ✅ INSERT queries executed");
 
-    let users: Str = db.raw("SELECT * FROM demo_users ORDER BY id")?;
+    let users: Str = DB.raw("SELECT * FROM demo_users ORDER BY id")?;
     print("   Result:", users);
 
-    let bob: Str = db.raw("SELECT * FROM demo_users WHERE email = 'bob@test.com'")?;
+    let bob: Str = DB.raw("SELECT * FROM demo_users WHERE email = 'bob@test.com'")?;
     print("   Result:", bob);
 
-    let count: Str = db.raw("SELECT COUNT(*) as total FROM demo_users")?;
+    let count: Str = DB.raw("SELECT COUNT(*) as total FROM demo_users")?;
     print("   COUNT: ", count);
 
-    let filtered: Str = db.raw("SELECT * FROM demo_users WHERE age > 28")?;
+    let filtered: Str = DB.raw("SELECT * FROM demo_users WHERE age > 28")?;
     print("   WHERE age > 28: ", filtered);
 
-    let ordered: Str = db.raw("SELECT name, age FROM demo_users ORDER BY age DESC LIMIT 2")?;
+    let ordered: Str = DB.raw("SELECT name, age FROM demo_users ORDER BY age DESC LIMIT 2")?;
     print("   ORDER BY age DESC LIMIT 2: ", ordered);
 
-    db.raw("UPDATE demo_users SET age = 31 WHERE name = 'Alice'")?;
+    DB.raw("UPDATE demo_users SET age = 31 WHERE name = 'Alice'")?;
 
-    let afterUpdate: Str = db.raw("SELECT age FROM demo_users WHERE name = 'Alice'")?;
+    let afterUpdate: Str = DB.raw("SELECT age FROM demo_users WHERE name = 'Alice'")?;
     print("   After update: ", afterUpdate);
 
-    db.raw("DELETE FROM demo_users WHERE name = 'Charlie'")?;
+    DB.raw("DELETE FROM demo_users WHERE name = 'Charlie'")?;
 
-    let remaining: Str = db.raw("SELECT * FROM demo_users")?;
+    let remaining: Str = DB.raw("SELECT * FROM demo_users")?;
     print("   Remaining users: ", remaining);
 
-    db.raw("INSERT INTO demo_users (name, email, age) VALUES ('Diana', 'diana@test.com', 28)")?;
+    DB.raw("INSERT INTO demo_users (name, email, age) VALUES ('Diana', 'diana@test.com', 28)")?;
     print("   ✅ INSERT executed");
 
-    db.raw("UPDATE demo_users SET age = 29 WHERE name = 'Diana'")?;
+    DB.raw("UPDATE demo_users SET age = 29 WHERE name = 'Diana'")?;
     print("   ✅ UPDATE executed");
 
-    db.raw("DELETE FROM demo_users WHERE name = 'Diana'")?;
+    DB.raw("DELETE FROM demo_users WHERE name = 'Diana'")?;
     print("   ✅ DELETE executed");
 
-    let bobParam: Str = db.rawWithParams("SELECT * FROM demo_users WHERE name = $1", "Bob")?;
+    let bobParam: Str = DB.rawWithParams("SELECT * FROM demo_users WHERE name = $1", "Bob")?;
     print("   Query with param name='Bob': ", bobParam);
 
-    let ageParam: Str = db.rawWithParams("SELECT * FROM demo_users WHERE age > $1", "25")?;
+    let ageParam: Str = DB.rawWithParams("SELECT * FROM demo_users WHERE age > $1", "25")?;
     print("   Query with param age>25: ", ageParam);
 
-    let emailParam: Str = db.rawWithParams("SELECT name, age FROM demo_users WHERE email = $1", "alice@test.com")?;
+    let emailParam: Str = DB.rawWithParams("SELECT name, age FROM demo_users WHERE email = $1", "alice@test.com")?;
     print("   Query with param email='alice@test.com': ", emailParam);
 
-    let finalUsers: Str = db.raw("SELECT name, email, age FROM demo_users ORDER BY name")?;
-    let finalCount: Str = db.raw("SELECT COUNT(*) as total FROM demo_users")?;
+    let finalUsers: Str = DB.raw("SELECT name, email, age FROM demo_users ORDER BY name")?;
+    let finalCount: Str = DB.raw("SELECT COUNT(*) as total FROM demo_users")?;
     print("   Final state: ", finalUsers);
     print("   Final count: ", finalCount);
 
-    db.raw("DROP TABLE demo_users")?;
+    DB.raw("DROP TABLE demo_users")?;
     print("✅ Table dropped, cleanup complete");
 
 }

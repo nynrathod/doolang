@@ -21,8 +21,18 @@ use doo_hir::{
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::sym::{sym, Sym};
+use crate::sym::{resolve, sym, Sym};
 use crate::types::*;
+
+/// Check if a TypeId is a Copy type (primitives that are safe to bitwise copy).
+/// Non-Copy types (Struct, Array, Str, Map, Optional, etc.) hold pointers to
+/// heap data and require deep-cloning when extracted from owning containers.
+pub(crate) fn is_copy_type(type_id: CoreTypeId) -> bool {
+    matches!(
+        type_id,
+        builtin::INT | builtin::FLOAT | builtin::BOOL | builtin::VOID
+    )
+}
 
 // ============================================================================
 // Struct Metadata — for Query Builder Field Validation
@@ -47,7 +57,6 @@ pub struct StructMeta {
     /// Optional table name override from `@table("name")` decorator.
     pub table_name: Option<String>,
 }
-
 
 /// FFI function information extracted from @extern decorator.
 ///
@@ -139,6 +148,15 @@ pub struct MirBuilder<'a> {
     /// Query builder errors collected during MIR lowering.
     /// Surfaced to the driver after `build()` completes.
     pub query_errors: Vec<CompilerError>,
+
+    /// Static global names (declared with `static Name: Type`).
+    /// Used in build_expr to emit MirOperand::Global instead of Local.
+    pub(crate) static_names: FxHashSet<String>,
+
+    /// Static global types — maps static variable name to its declared type.
+    /// CRITICAL for method calls on static globals (e.g., `DB.raw(...)`):
+    /// resolves `DB` → Database type_id → `_method_Database_raw` → FFI.
+    pub(crate) static_types: FxHashMap<String, CoreTypeId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,6 +191,8 @@ impl<'a> MirBuilder<'a> {
             imported_modules: FxHashSet::default(),
             struct_metas: FxHashMap::default(),
             query_errors: Vec::new(),
+            static_names: FxHashSet::default(),
+            static_types: FxHashMap::default(),
         }
     }
 
@@ -204,6 +224,8 @@ impl<'a> MirBuilder<'a> {
             imported_modules: FxHashSet::default(),
             struct_metas: FxHashMap::default(),
             query_errors: Vec::new(),
+            static_names: FxHashSet::default(),
+            static_types: FxHashMap::default(),
         }
     }
 
@@ -256,17 +278,26 @@ impl<'a> MirBuilder<'a> {
                         None
                     }
                 });
-                let fields = s.fields.iter().map(|f| FieldMeta {
-                    name: f.name.clone(),
-                    is_auto: f.decorators.iter().any(|d| d.name == "auto"),
-                    is_primary: f.decorators.iter().any(|d| d.name == "primary"),
-                }).collect();
-                self.struct_metas.insert(s.name.clone(), StructMeta { fields, table_name });
+                let fields = s
+                    .fields
+                    .iter()
+                    .map(|f| FieldMeta {
+                        name: f.name.clone(),
+                        is_auto: f.decorators.iter().any(|d| d.name == "auto"),
+                        is_primary: f.decorators.iter().any(|d| d.name == "primary"),
+                    })
+                    .collect();
+                self.struct_metas
+                    .insert(s.name.clone(), StructMeta { fields, table_name });
             }
         }
 
         for item in &hir.items {
             if let HirItem::Function(f) = item {
+                // Skip generic function templates — their types contain TypeParam placeholders
+                if !f.type_params.is_empty() {
+                    continue;
+                }
                 // For functions with error types, track them separately
                 // This includes both `-> T ! E` (return_type + error_type)
                 // and `-> ! E` (error_type only, meaning void return with possible error)
@@ -276,15 +307,7 @@ impl<'a> MirBuilder<'a> {
                     // Store the Result type components
                     self.function_result_types
                         .insert(f.name.clone(), (return_type, error_type));
-                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        doo_debug!(
-                            "MIR",
-                            "Registered Result function: {} (ok={:?}, err={:?})",
-                            f.name,
-                            return_type,
-                            error_type
-                        );
-                    }
+                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                     // Also store the return type for the temp type (will be the ok value for unwrapping)
                     self.function_return_types
                         .insert(f.name.clone(), return_type);
@@ -308,15 +331,6 @@ impl<'a> MirBuilder<'a> {
 
                 // Extract FFI info from @extern decorator (SINGLE SOURCE OF TRUTH)
                 if let Some(ffi_info) = self.extract_ffi_info(&f.decorators, &f.name) {
-                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        doo_debug!(
-                            "MIR",
-                            "Registered FFI function: {} -> lib={} sym={}",
-                            f.name,
-                            ffi_info.library,
-                            ffi_info.symbol
-                        );
-                    }
                     self.ffi_functions.insert(f.name.clone(), ffi_info);
                 }
 
@@ -329,25 +343,46 @@ impl<'a> MirBuilder<'a> {
                         if !simple_name.is_empty() {
                             self.function_aliases
                                 .insert(simple_name.to_string(), f.name.clone());
-                            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                                doo_debug!(
-                                    "MIR",
-                                    "Registered function alias: {} -> {}",
-                                    simple_name,
-                                    f.name
-                                );
-                            }
                         }
                     }
                 }
             }
         }
 
+        // FIRST PASS: register all declarations (statics, structs, enums, etc.)
+        // so that function body building sees the complete type/static namespace.
+        // This fixes ordering issues where a function references a static
+        // declared in a file processed later in the HIR item list.
         for item in &hir.items {
             match item {
-                HirItem::Function(f) => {
-                    let mir_func = self.build_function(f);
-                    program.functions.push(mir_func);
+                HirItem::Const(c) => {
+                    // Only emit MirGlobal for primitive const types.
+                    // Complex types (arrays/maps) are inlined at every use site by HIR lowering.
+                    if let Some(ref prim) = c.value {
+                        program.globals.push(MirGlobal {
+                            name: sym(&c.name),
+                            type_id: c.type_id,
+                            kind: GlobalKind::Const,
+                            value: Some(self.const_to_mir(prim)),
+                        });
+                    }
+                }
+                HirItem::Static(s) => {
+                    // Runtime static global with OnceLock semantics.
+                    // No initial value — set once in main() at runtime.
+                    // Generates { i1, ptr } global + __static_set_X / __static_get_X helpers.
+                    program.globals.push(MirGlobal {
+                        name: sym(&s.name),
+                        type_id: s.type_id.unwrap_or(builtin::ANY),
+                        kind: GlobalKind::Static,
+                        value: None, // No compile-time value; set at runtime
+                    });
+                    // Track static name so build_expr emits MirOperand::Global
+                    self.static_names.insert(s.name.clone());
+                    // Store the type so method calls can resolve receiver type
+                    if let Some(tid) = s.type_id {
+                        self.static_types.insert(s.name.clone(), tid);
+                    }
                 }
                 HirItem::Struct(s) => {
                     let mir_struct = StructDef {
@@ -442,8 +477,21 @@ impl<'a> MirBuilder<'a> {
                     };
                     program.enums.insert(sym(&e.name), mir_enum);
                 }
-                HirItem::Import(_) => {
-                    // Imports handled elsewhere
+                HirItem::Interface(i) => {
+                    let mir_interface = InterfaceDef {
+                        name: sym(&i.name),
+                        methods: i
+                            .methods
+                            .iter()
+                            .map(|m| InterfaceMethodDef {
+                                name: sym(&m.name),
+                                param_types: m.params.iter().filter_map(|p| p.type_id).collect(),
+                                return_type: m.return_type,
+                                error_type: m.error_type,
+                            })
+                            .collect(),
+                    };
+                    program.interfaces.insert(sym(&i.name), mir_interface);
                 }
                 HirItem::Policy(p) => {
                     // Serialise policy rules to a JSON string for the FFI runtime.
@@ -456,6 +504,24 @@ impl<'a> MirBuilder<'a> {
                         .unwrap_or_else(|_| "{}".to_string());
                     program.policies.insert(sym(&p.for_struct), json);
                 }
+                HirItem::Function(_) | HirItem::Import(_) => {
+                    // Functions built in second pass; imports are handled elsewhere
+                }
+            }
+        }
+
+        // SECOND PASS: build all function bodies now that the global namespace
+        // (statics, structs, enums, interfaces) is fully populated.
+        for item in &hir.items {
+            if let HirItem::Function(f) = item {
+                // Skip generic functions — they're templates, not concrete code.
+                // Monomorphization will create concrete instantiations later.
+                if !f.type_params.is_empty() {
+                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
+                    continue;
+                }
+                let mir_func = self.build_function(f);
+                program.functions.push(mir_func);
             }
         }
 
@@ -903,6 +969,7 @@ impl<'a> MirBuilder<'a> {
             // TODO: Add dedicated MIR BitAnd/BitOr variants when integer bitwise ops are needed.
             HirBinOp::BitAnd => BinaryOp::And,
             HirBinOp::BitOr => BinaryOp::Or,
+            HirBinOp::NullCoalesce => BinaryOp::NullCoalesce,
         }
     }
 
@@ -1273,9 +1340,24 @@ impl<'a> MirBuilder<'a> {
                     })
                     .unwrap_or(builtin::ANY)
             }
-            MirOperand::Global(_) => builtin::ANY,
+            MirOperand::Global(name) => {
+                let n = resolve(*name);
+                self.static_types.get(&n).copied().unwrap_or(builtin::ANY)
+            }
             MirOperand::FuncRef(_) => builtin::ANY, // Function pointers are opaque
         }
+    }
+
+    /// Unwrap Optional/Result types to get the inner value type.
+    pub(crate) fn unwrap_optional_type(&self, type_id: CoreTypeId) -> CoreTypeId {
+        if let Some(info) = self.type_registry.get(type_id) {
+            match &info.kind {
+                TypeKind::Optional { inner } => return *inner,
+                TypeKind::Result { ok, .. } => return *ok,
+                _ => {}
+            }
+        }
+        type_id
     }
 
     pub(crate) fn unaryop_to_mir(&self, op: HirUnaryOp) -> UnaryOp {
