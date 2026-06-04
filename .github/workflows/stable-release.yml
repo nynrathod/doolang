@@ -149,10 +149,18 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $llvmPath = "${{ steps.install-llvm-win.outputs.llvm-path }}"
-          Add-Content -Path $env:GITHUB_ENV -Value "LLVM_SYS_181_PREFIX=$llvmPath"
+          $llvmPath = $env:LLVM_PATH
+          if (-not $llvmPath) {
+            $llvmPath = "${{ runner.temp }}/llvm18"
+          }
+          $llvmPath = $llvmPath -replace '/', '\'
+          Add-Content -Path $env:GITHUB_ENV -Value "${{ env.LLVM_SYS_ENV }}=$llvmPath"
           Add-Content -Path $env:GITHUB_ENV -Value "LIBCLANG_PATH=$llvmPath\bin"
           Add-Content -Path $env:GITHUB_PATH -Value "$llvmPath\bin"
+
+          # Copy lld-link.exe from the LLVM installation to the gitignored linkers folder so it can be embedded at compile time
+          New-Item -ItemType Directory -Path "linkers" -Force | Out-Null
+          Copy-Item "$llvmPath\bin\lld-link.exe" "linkers\lld-link.exe" -Force
 
       # ── Build ───────────────────────────────────────────────────────────────
       - name: Build release binary
