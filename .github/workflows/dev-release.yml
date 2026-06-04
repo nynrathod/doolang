@@ -18,7 +18,13 @@
 name: Dev Release
 
 on:
+  # Manual trigger — run from any branch any time via GitHub Actions UI
   workflow_dispatch:
+
+  # Auto trigger — every push to a non-main branch creates/updates the dev pre-release
+  push:
+    branches-ignore:
+      - main
 
 env:
   REGISTRY: ghcr.io
