@@ -1259,7 +1259,7 @@ pub fn run_upgrade() -> i32 {
 
     // Download and extract new version
     if let Err(e) =
-        download_and_upgrade(&install_dir, platform, &latest_version, latest_version_num)
+        download_and_upgrade(&install_dir, &platform, &latest_version, latest_version_num)
     {
         eprintln!("{} Upgrade failed: {}", ERROR, e);
         return 1;
