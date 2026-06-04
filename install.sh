@@ -52,6 +52,8 @@ error() {
 }
 
 # Detect OS and architecture
+# Sets PLATFORM to one of: linux | darwin-x86_64 | darwin-arm64
+# This must match the zip naming in the release workflow exactly.
 detect_platform() {
     OS="$(uname -s)"
     ARCH="$(uname -m)"
@@ -61,7 +63,18 @@ detect_platform() {
             PLATFORM="linux"
             ;;
         Darwin*)
-            PLATFORM="mac"
+            # Distinguish Intel (x86_64) vs Apple Silicon (arm64)
+            case "$ARCH" in
+                arm64 | aarch64)
+                    PLATFORM="darwin-arm64"
+                    ;;
+                x86_64)
+                    PLATFORM="darwin-x86_64"
+                    ;;
+                *)
+                    error "Unsupported macOS architecture: $ARCH"
+                    ;;
+            esac
             ;;
         *)
             error "Unsupported operating system: $OS. Use install.ps1 for Windows."
@@ -238,12 +251,15 @@ check_dependencies() {
     if ! command -v clang &> /dev/null; then
         warn "clang is not installed. Doo requires clang for linking."
         echo ""
-        if [ "$PLATFORM" = "linux" ]; then
-            echo -e "  Install with: ${CYAN}sudo apt install clang${NC}"
-            echo -e "  Or: ${CYAN}sudo yum install clang${NC}"
-        else
-            echo -e "  Install with: ${CYAN}xcode-select --install${NC}"
-        fi
+        case "$PLATFORM" in
+            linux)
+                echo -e "  Install with: ${CYAN}sudo apt install clang${NC}"
+                echo -e "  Or: ${CYAN}sudo yum install clang${NC}"
+                ;;
+            darwin-*)
+                echo -e "  Install with: ${CYAN}xcode-select --install${NC}"
+                ;;
+        esac
         echo ""
     else
         success "clang is installed"
@@ -291,11 +307,14 @@ send_analytics() {
     fi
 
     # Generate anonymous ID from hostname hash (use md5 on macOS, md5sum on Linux)
-    if [ "$PLATFORM" = "mac" ]; then
-        ANON_ID="doo_$(echo -n "$(hostname)_$PLATFORM" | md5 | cut -c1-16)"
-    else
-        ANON_ID="doo_$(echo -n "$(hostname)_$PLATFORM" | md5sum | cut -c1-16)"
-    fi
+    case "$PLATFORM" in
+        darwin-*)
+            ANON_ID="doo_$(echo -n "$(hostname)_$PLATFORM" | md5 | cut -c1-16)"
+            ;;
+        *)
+            ANON_ID="doo_$(echo -n "$(hostname)_$PLATFORM" | md5sum | cut -c1-16)"
+            ;;
+    esac
 
     (curl -s -X POST "$POSTHOG_HOST/capture/" \
         -H "Content-Type: application/json" \
