@@ -4,7 +4,7 @@
 # Triggered: every push to main.
 #
 # What happens automatically (you just merge/push to main):
-#   1. Matrix build: compile native binaries on ubuntu / macos-13 (Intel) /
+#   1. Matrix build: compile native binaries on ubuntu / macos-15-intel (Intel) /
 #      macos-14 (Apple Silicon) / windows-latest — all using LLVM 18.
 #   2. Each platform zips its own bundle with a consistent name:
 #        doo-linux-{version}.zip
@@ -22,6 +22,13 @@
 # Zip naming convention (single source of truth):
 #   doo-<platform>-<version>.zip
 #   platform values: linux | darwin-x86_64 | darwin-arm64 | windows
+#
+# Cache strategy:
+#   - Rust/Cargo deps  → Swatinem/rust-cache (all platforms, auto key from Cargo.lock)
+#   - LLVM 18          → actions/cache (all platforms, key includes LLVM version)
+#   - vcpkg libxml2    → actions/cache (Windows only, key is static)
+#   Cache keys include a version string (e.g. llvm-18.1.8) so bumping
+#   LLVM automatically busts the cache — no manual cleanup needed.
 # ──────────────────────────────────────────────────────────────────────────────
 
 name: Stable Release
@@ -37,6 +44,8 @@ env:
   LLVM_VERSION: "18"
   # llvm-sys crate env var name encodes major+minor: 18.1 → 181
   LLVM_SYS_ENV: "LLVM_SYS_181_PREFIX"
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
 
 # ── Matrix build jobs ─────────────────────────────────────────────────────────
 jobs:
@@ -98,19 +107,30 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.rust_target }}
 
-      # ── Rust + Cargo cache (Swatinem — best-practice for all 3 OSes) ────────
+      # ── Rust + Cargo cache ──────────────────────────────────────────────────
+      # Key is per-platform + LLVM version. Swatinem appends a hash of
+      # Cargo.lock internally, so changing dependencies auto-busts this cache.
+      # "Only showing restore" in logs = cache hit, nothing changed = correct.
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          # Separate cache per OS + LLVM version so a macOS cache never
-          # bleeds into a Linux build or vice-versa.
           key: ${{ matrix.platform }}-llvm18
 
       # ════════════════════════════════════════════════════════════════════════
-      # LINUX — install LLVM 18 via official apt.llvm.org
+      # LINUX — LLVM 18 via apt.llvm.org
+      # Cache: /usr/lib/llvm-18  (headers + libs + llvm-config all live here)
+      # Key never changes unless you bump the version string → auto-invalidates.
       # ════════════════════════════════════════════════════════════════════════
-      - name: "[Linux] Install LLVM 18 + system deps"
+      - name: Cache LLVM 18 (Linux)
         if: matrix.os == 'ubuntu-latest'
+        id: cache-llvm-linux
+        uses: actions/cache@v4
+        with:
+          path: /usr/lib/llvm-18
+          key: llvm-18-linux-apt-v1
+
+      - name: "[Linux] Install LLVM 18"
+        if: matrix.os == 'ubuntu-latest' && steps.cache-llvm-linux.outputs.cache-hit != 'true'
         run: |
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
             | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
@@ -118,66 +138,113 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/llvm18.list
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            llvm-18-dev libpolly-18-dev libclang-18-dev clang-18 lld-18 \
+            llvm-18-dev libpolly-18-dev libclang-18-dev clang-18 lld-18
+
+      # System deps (fast, from default Ubuntu repo — always run) + set env
+      - name: "[Linux] Install system deps + set env"
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get install -y --no-install-recommends \
             libssl-dev libpq-dev zlib1g-dev pkg-config
           echo "${{ env.LLVM_SYS_ENV }}=/usr/lib/llvm-18" >> $GITHUB_ENV
 
       # ════════════════════════════════════════════════════════════════════════
-      # macOS — Install LLVM 18 via Homebrew (Intel and Apple Silicon)
+      # macOS — LLVM 18 via Homebrew
+      # Cache: /tmp/llvm18  (brew prefix copied here with symlinks resolved)
+      # Separate keys for Intel vs ARM so caches never cross-contaminate.
       # ════════════════════════════════════════════════════════════════════════
-      - name: "[macOS] Install LLVM 18 via Homebrew"
+      - name: Cache LLVM 18 (macOS)
         if: runner.os == 'macOS'
+        id: cache-llvm-mac
+        uses: actions/cache@v4
+        with:
+          path: /tmp/llvm18
+          key: llvm-18-${{ runner.os }}-${{ runner.arch }}-v1
+
+      - name: "[macOS] Install LLVM 18 via Homebrew"
+        if: runner.os == 'macOS' && steps.cache-llvm-mac.outputs.cache-hit != 'true'
         run: |
           brew install llvm@18
-          BREW_PREFIX=$(brew --prefix llvm@18)
-          echo "LLVM_SYS_181_PREFIX=${BREW_PREFIX}" >> $GITHUB_ENV
-          echo "LIBCLANG_PATH=${BREW_PREFIX}/lib" >> $GITHUB_ENV
-          echo "${BREW_PREFIX}/bin" >> $GITHUB_PATH
+          # Copy to a stable fixed path (resolves brew symlinks with -L)
+          cp -rL "$(brew --prefix llvm@18)" /tmp/llvm18
+
+      # Always set env — whether we just installed or restored from cache
+      - name: "[macOS] Set LLVM env"
+        if: runner.os == 'macOS'
+        run: |
+          echo "LLVM_SYS_181_PREFIX=/tmp/llvm18"  >> $GITHUB_ENV
+          echo "LIBCLANG_PATH=/tmp/llvm18/lib"     >> $GITHUB_ENV
+          echo "/tmp/llvm18/bin"                   >> $GITHUB_PATH
 
       # ════════════════════════════════════════════════════════════════════════
-      # Windows — Install LLVM 18 via KyleMayes/install-llvm-action
+      # Windows — LLVM 18 from official clang+llvm tarball
+      # Cache: C:\llvm18  (extracted tarball, includes llvm-config.exe)
+      # Key includes exact version so bumping 18.1.8 → 18.1.9 auto-busts.
       # ════════════════════════════════════════════════════════════════════════
-      - name: "[Windows] Install LLVM 18"
+      - name: Cache LLVM 18 (Windows)
         if: runner.os == 'Windows'
+        id: cache-llvm-win
+        uses: actions/cache@v4
+        with:
+          path: C:\llvm18
+          key: llvm-18.1.8-windows-x64-v1
+
+      - name: "[Windows] Download and extract LLVM 18"
+        if: runner.os == 'Windows' && steps.cache-llvm-win.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           $url   = "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-pc-windows-msvc.tar.xz"
           $tarXz = "$env:TEMP\llvm18.tar.xz"
           $tar   = "$env:TEMP\llvm18.tar"
-          $dest  = "C:\llvm18"
 
           Write-Host "Downloading LLVM 18.1.8 dev tarball..."
           Invoke-WebRequest -Uri $url -OutFile $tarXz -UseBasicParsing
 
           Write-Host "Extracting..."
           7z e $tarXz -o"$env:TEMP" -y | Out-Null
-          7z x $tar   -o"$dest"     -y | Out-Null
+          7z x $tar   -o"C:\llvm18" -y | Out-Null
+          Write-Host "LLVM extracted to C:\llvm18"
 
-          # Tarball extracts into a subdirectory — find it
-          $llvmDir = (Get-ChildItem $dest -Directory | Select-Object -First 1).FullName
-          Write-Host "LLVM dir: $llvmDir"
-
-          echo "LLVM_SYS_181_PREFIX=$llvmDir" >> $env:GITHUB_ENV
-          echo "LIBCLANG_PATH=$llvmDir\bin"   >> $env:GITHUB_ENV
-          echo "$llvmDir\bin"                 >> $env:GITHUB_PATH
-
-          # lld-link.exe for your linker embed
-          New-Item -ItemType Directory -Path "linkers" -Force | Out-Null
-          Copy-Item "$llvmDir\bin\lld-link.exe" "linkers\lld-link.exe" -Force
-
-      - name: "[Windows] Install libxml2 (LLVM 18 dependency)"
+      # Always set env + copy lld-link — whether from cache or fresh install
+      - name: "[Windows] Set LLVM env"
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # vcpkg is pre-installed on windows-latest runners
-          vcpkg install libxml2:x64-windows-static
+          $llvmDir = (Get-ChildItem "C:\llvm18" -Directory | Select-Object -First 1).FullName
+          Write-Host "LLVM dir: $llvmDir"
+          echo "LLVM_SYS_181_PREFIX=$llvmDir" >> $env:GITHUB_ENV
+          echo "LIBCLANG_PATH=$llvmDir\bin"   >> $env:GITHUB_ENV
+          echo "$llvmDir\bin"                 >> $env:GITHUB_PATH
+          # lld-link.exe embedded at compile time
+          New-Item -ItemType Directory -Path "linkers" -Force | Out-Null
+          Copy-Item "$llvmDir\bin\lld-link.exe" "linkers\lld-link.exe" -Force
+
+      # ════════════════════════════════════════════════════════════════════════
+      # Windows — libxml2 (required by LLVM 18, not bundled in tarball)
+      # Cache: C:\vcpkg\installed  (vcpkg build output)
+      # ════════════════════════════════════════════════════════════════════════
+      - name: Cache vcpkg libxml2 (Windows)
+        if: runner.os == 'Windows'
+        id: cache-vcpkg-win
+        uses: actions/cache@v4
+        with:
+          path: C:\vcpkg\installed
+          key: vcpkg-libxml2-x64-windows-static-v1
+
+      - name: "[Windows] Install libxml2 via vcpkg"
+        if: runner.os == 'Windows' && steps.cache-vcpkg-win.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: vcpkg install libxml2:x64-windows-static
+
+      # Always set LIB + create libxml2s.lib alias — whether from cache or fresh
+      - name: "[Windows] Set libxml2 env"
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
           $vcpkgLib = "C:\vcpkg\installed\x64-windows-static\lib"
-
-          # LLVM 18 linker looks for libxml2s.lib (s = static naming convention)
-          # vcpkg builds it as libxml2.lib — create the alias
+          # LLVM 18 linker asks for libxml2s.lib (static naming convention)
+          # vcpkg produces libxml2.lib — create the alias
           Copy-Item "$vcpkgLib\libxml2.lib" "$vcpkgLib\libxml2s.lib" -Force
-
-          # Tell MSVC linker where to find it
           echo "LIB=$env:LIB;$vcpkgLib" >> $env:GITHUB_ENV
 
       # ── Build ───────────────────────────────────────────────────────────────
@@ -211,7 +278,7 @@ jobs:
           mkdir -p "${BUNDLE}/lib" "${BUNDLE}/std" "${BUNDLE}/packages"
           cp target/release/doo "${BUNDLE}/doo"
           chmod +x "${BUNDLE}/doo"
-          find target/release -maxdepth 1 -name '*.a' -exec cp {} "${BUNDLE}/lib/" \; 2>/dev/null || true
+          find target/release -maxdepth 1 -name '*.a'    -exec cp {} "${BUNDLE}/lib/" \; 2>/dev/null || true
           find target/release -maxdepth 1 -name '*.dylib' -exec cp {} "${BUNDLE}/lib/" \; 2>/dev/null || true
           [ -d std ]      && cp -r std/.      "${BUNDLE}/std/"
           [ -d packages ] && cp -r packages/. "${BUNDLE}/packages/"
@@ -279,22 +346,21 @@ jobs:
         run: |
           VERSION=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/' | tr -d '\r')
           TAG="v${VERSION}"
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "tag=${TAG}"         >> $GITHUB_OUTPUT
-          echo "linux_zip=doo-linux-${VERSION}.zip"           >> $GITHUB_OUTPUT
-          echo "darwin_x86_zip=doo-darwin-x86_64-${VERSION}.zip" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}"                                >> $GITHUB_OUTPUT
+          echo "tag=${TAG}"                                        >> $GITHUB_OUTPUT
+          echo "linux_zip=doo-linux-${VERSION}.zip"               >> $GITHUB_OUTPUT
+          echo "darwin_x86_zip=doo-darwin-x86_64-${VERSION}.zip"  >> $GITHUB_OUTPUT
           echo "darwin_arm_zip=doo-darwin-arm64-${VERSION}.zip"   >> $GITHUB_OUTPUT
-          echo "windows_zip=doo-windows-${VERSION}.zip"       >> $GITHUB_OUTPUT
+          echo "windows_zip=doo-windows-${VERSION}.zip"           >> $GITHUB_OUTPUT
           echo "Version: ${VERSION}  Tag: ${TAG}"
 
       # ── Download all four platform zips ─────────────────────────────────────
       - name: Download all platform zips
         uses: actions/download-artifact@v4
         with:
-          # Downloads into subdirectories named after each artifact; merge into cwd
           merge-multiple: true
 
-      # ── List what we have (sanity check) ───────────────────────────────────
+      # ── List what we have (sanity check) ────────────────────────────────────
       - name: List downloaded assets
         run: ls -lh *.zip
 
