@@ -46,6 +46,7 @@ function Write-Error-Custom {
     param([string]$Message)
     Write-Host "[ERROR] " -ForegroundColor Red -NoNewline
     Write-Host $Message
+    Write-Host "  Need help? Open an issue -> https://github.com/nynrathod/doolang/issues" -ForegroundColor Yellow
     exit 1
 }
 

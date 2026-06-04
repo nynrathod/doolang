@@ -48,6 +48,7 @@ warn() {
 
 error() {
     echo -e "${RED}[ERROR]${NC} $1"
+    echo -e "${YELLOW}  Need help? Open an issue → https://github.com/nynrathod/doolang/issues${NC}"
     exit 1
 }
 
