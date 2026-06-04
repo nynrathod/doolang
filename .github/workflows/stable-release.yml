@@ -139,11 +139,31 @@ jobs:
       # ════════════════════════════════════════════════════════════════════════
       - name: "[Windows] Install LLVM 18"
         if: runner.os == 'Windows'
-        id: install-llvm-win
-        uses: KyleMayes/install-llvm-action@v2
-        with:
-          version: "18.1.8"
-          directory: ${{ runner.temp }}/llvm18
+        shell: pwsh
+        run: |
+          $url   = "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-pc-windows-msvc.tar.xz"
+          $tarXz = "$env:TEMP\llvm18.tar.xz"
+          $tar   = "$env:TEMP\llvm18.tar"
+          $dest  = "C:\llvm18"
+
+          Write-Host "Downloading LLVM 18.1.8 dev tarball..."
+          Invoke-WebRequest -Uri $url -OutFile $tarXz -UseBasicParsing
+
+          Write-Host "Extracting..."
+          7z e $tarXz -o"$env:TEMP" -y | Out-Null
+          7z x $tar   -o"$dest"     -y | Out-Null
+
+          # Tarball extracts into a subdirectory — find it
+          $llvmDir = (Get-ChildItem $dest -Directory | Select-Object -First 1).FullName
+          Write-Host "LLVM dir: $llvmDir"
+
+          echo "LLVM_SYS_181_PREFIX=$llvmDir" >> $env:GITHUB_ENV
+          echo "LIBCLANG_PATH=$llvmDir\bin"   >> $env:GITHUB_ENV
+          echo "$llvmDir\bin"                 >> $env:GITHUB_PATH
+
+          # lld-link.exe for your linker embed
+          New-Item -ItemType Directory -Path "linkers" -Force | Out-Null
+          Copy-Item "$llvmDir\bin\lld-link.exe" "linkers\lld-link.exe" -Force
 
       - name: "[Windows] Set LLVM Environment"
         if: runner.os == 'Windows'
