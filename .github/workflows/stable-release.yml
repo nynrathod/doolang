@@ -381,14 +381,23 @@ jobs:
           REPO="${{ github.repository }}"
           VERSION="${{ steps.version.outputs.version }}"
 
-          # Delete if same tag already exists (re-release same version)
+          # Grab existing description before deleting (empty string if no release yet)
+          EXISTING_BODY=$(gh release view "${TAG}" --json body --jq '.body' 2>/dev/null || echo "")
+
+          if [ -n "$EXISTING_BODY" ]; then
+            echo "Preserving existing release description."
+            printf '%s' "$EXISTING_BODY" > /tmp/release_notes.md
+          else
+            echo "No existing description — using generated notes."
+            printf '## Install\n\n**Linux**\n```bash\ncurl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | bash\n```\n\n**macOS (Intel)**\n```bash\ncurl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | bash\n```\n\n**macOS (Apple Silicon)**\n```bash\ncurl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | bash\n```\n\n**Windows**\n```powershell\nirm https://raw.githubusercontent.com/%s/main/install.ps1 | iex\n```\n\n## Assets\n\n| Platform | File |\n|---|---|\n| Linux x86_64 | `doo-linux-%s.zip` |\n| macOS Intel | `doo-darwin-x86_64-%s.zip` |\n| macOS Apple Silicon | `doo-darwin-arm64-%s.zip` |\n| Windows x86_64 | `doo-windows-%s.zip` |\n' \
+              "$REPO" "$REPO" "$REPO" "$REPO" \
+              "$VERSION" "$VERSION" "$VERSION" "$VERSION" \
+              > /tmp/release_notes.md
+          fi
+
+          # Delete if tag already exists, then recreate with preserved notes
           gh release delete "${TAG}" --yes --cleanup-tag 2>/dev/null || true
           sleep 2
-
-          printf '## Install\n\n**Linux**\n```bash\ncurl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | bash\n```\n\n**macOS (Intel)**\n```bash\ncurl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | bash\n```\n\n**macOS (Apple Silicon)**\n```bash\ncurl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | bash\n```\n\n**Windows**\n```powershell\nirm https://raw.githubusercontent.com/%s/main/install.ps1 | iex\n```\n\n## Assets\n\n| Platform | File |\n|---|---|\n| Linux x86_64 | `doo-linux-%s.zip` |\n| macOS Intel | `doo-darwin-x86_64-%s.zip` |\n| macOS Apple Silicon | `doo-darwin-arm64-%s.zip` |\n| Windows x86_64 | `doo-windows-%s.zip` |\n' \
-            "$REPO" "$REPO" "$REPO" "$REPO" \
-            "$VERSION" "$VERSION" "$VERSION" "$VERSION" \
-            > /tmp/release_notes.md
 
           gh release create "${TAG}" \
             --latest \
@@ -399,7 +408,7 @@ jobs:
             "${{ steps.version.outputs.darwin_x86_zip }}" \
             "${{ steps.version.outputs.darwin_arm_zip }}" \
             "${{ steps.version.outputs.windows_zip }}"
-
+            
       # ── Log in to GHCR ──────────────────────────────────────────────────────
       - name: Log in to GHCR
         uses: docker/login-action@v3
