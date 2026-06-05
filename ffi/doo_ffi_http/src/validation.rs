@@ -79,7 +79,9 @@ pub(crate) fn validate_item_against_schema(
             }
 
             // Validate JSON value type matches Doo field type
-            if let Err(e) = validate_field_type(&field_meta.field_type, &field_meta.name, value, path) {
+            if let Err(e) =
+                validate_field_type(&field_meta.field_type, &field_meta.name, value, path)
+            {
                 return Err(e);
             }
 

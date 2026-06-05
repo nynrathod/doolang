@@ -103,7 +103,11 @@ fn fetch_item_by_id(resource: &str, id: i64) -> Option<serde_json::Value> {
 /// Check if a struct has at least one field decorated with @primary.
 fn struct_has_primary(struct_name: &str) -> bool {
     crate::metadata::get_struct_metadata(struct_name)
-        .map(|meta| meta.fields.iter().any(|f| f.decorators.iter().any(|d| d == "primary")))
+        .map(|meta| {
+            meta.fields
+                .iter()
+                .any(|f| f.decorators.iter().any(|d| d == "primary"))
+        })
         .unwrap_or(false)
 }
 
