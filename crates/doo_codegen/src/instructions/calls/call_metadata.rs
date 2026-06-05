@@ -20,8 +20,7 @@ pub(crate) fn emit_handler_metadata_registration<'ctx>(
     // Build metadata JSON from function parameter types
     let metadata_json = build_handler_metadata_json(ctx, handler_name);
 
-    if debug {
-    }
+    if debug {}
 
     // Get or declare doo_http_register_handler_with_metadata
     let void_type = ctx.context.void_type();
@@ -103,8 +102,7 @@ pub(crate) fn emit_struct_metadata_registration_for_auth_crud<'ctx>(
         None => return, // No struct name found in arguments
     };
 
-    if debug {
-    }
+    if debug {}
 
     // Look up the struct in the type registry
     let struct_type_id = match ctx.type_registry.lookup(&struct_name) {
@@ -171,8 +169,7 @@ pub(crate) fn emit_enum_metadata_if_needed<'ctx>(
     if let TypeKind::Enum { name, variants, .. } = &type_info.kind {
         let debug = std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok();
 
-        if debug {
-        }
+        if debug {}
 
         // Build variants JSON array
         let variant_names: Vec<&str> = variants.iter().map(|(name, _)| name.as_str()).collect();
@@ -618,39 +615,35 @@ pub(crate) fn emit_policy_metadata_if_present<'ctx>(
     };
 
     // Look up the policy JSON for this struct
-    let policy_json = match ctx.rbac_policies.get(&struct_name).cloned() {
-        Some(j) => j,
-        None => return, // No policy registered — no-op
-    };
+    if let Some(policy_json) = ctx.rbac_policies.get(&struct_name).cloned() {
+        let debug = std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok();
+        if debug {}
 
-    let debug = std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok();
-    if debug {
+        // Get or declare doo_http_register_policy(name: *const c_char, policy_json: *const c_char)
+        let void_type = ctx.context.void_type();
+        let ptr_type = ctx.ptr_type();
+        let fn_type = void_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
+
+        let register_fn = ctx
+            .module
+            .get_function(http_pkg::DOO_HTTP_REGISTER_POLICY)
+            .unwrap_or_else(|| {
+                ctx.module
+                    .add_function(http_pkg::DOO_HTTP_REGISTER_POLICY, fn_type, None)
+            });
+
+        let struct_name_ptr = ctx.const_string(&struct_name);
+        let policy_ptr = ctx.const_string(&policy_json);
+
+        let _ = ctx.builder.build_call(
+            register_fn,
+            &[struct_name_ptr.into(), policy_ptr.into()],
+            "register_policy",
+        );
     }
 
-    // Get or declare doo_http_register_policy(name: *const c_char, policy_json: *const c_char)
-    let void_type = ctx.context.void_type();
-    let ptr_type = ctx.ptr_type();
-    let fn_type = void_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
-
-    let register_fn = ctx
-        .module
-        .get_function(http_pkg::DOO_HTTP_REGISTER_POLICY)
-        .unwrap_or_else(|| {
-            ctx.module
-                .add_function(http_pkg::DOO_HTTP_REGISTER_POLICY, fn_type, None)
-        });
-
-    let struct_name_ptr = ctx.const_string(&struct_name);
-    let policy_ptr = ctx.const_string(&policy_json);
-
-    let _ = ctx.builder.build_call(
-        register_fn,
-        &[struct_name_ptr.into(), policy_ptr.into()],
-        "register_policy",
-    );
-
-    // Also emit role hierarchy for any enum types referenced by this struct
-    // (i.e., fields with @role decorator whose type is an enum with @inherits variants)
+    // Always emit role hierarchy for enum types referenced by this struct
+    // (e.g., User struct has Role field with @role/@inherits — needed for RBAC)
     emit_role_hierarchy_for_struct(ctx, &struct_name);
 }
 
@@ -713,8 +706,7 @@ fn emit_role_hierarchy_for_enum<'ctx>(
         serde_json::to_string(&serde_json::Value::Object(map)).unwrap_or_else(|_| "{}".to_string());
 
     let debug = std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok();
-    if debug {
-    }
+    if debug {}
 
     let void_type = ctx.context.void_type();
     let ptr_type = ctx.ptr_type();

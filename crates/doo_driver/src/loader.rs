@@ -463,8 +463,14 @@ pub fn resolve_imports(
 
             if module_path.exists() {
                 // Full path exists as a file (e.g., defs/types.doo)
-                if debug {}
-                local_import_requests.push((import, module_path, path_symbols));
+                // import ModuleName with no explicit items → import all
+                if import.items.is_empty() && !import.wildcard {
+                    let mut symbols_with_all: Vec<String> = path_symbols.clone();
+                    symbols_with_all.push("*".to_string());
+                    local_import_requests.push((import, module_path, symbols_with_all));
+                } else {
+                    local_import_requests.push((import, module_path, path_symbols));
+                }
             } else if import.path.len() >= 2 {
                 // Full path not found. Try treating last segment(s) as symbol names.
                 // e.g., `import Models::Task;` → Models.doo + symbol "Task"
@@ -723,12 +729,21 @@ pub fn resolve_imports(
                         result.items.push(item.clone());
                     }
                 }
-                Item::Import(_)
-                | Item::Statement(_)
-                | Item::Policy(_)
-                | Item::Interface(_)
-                | Item::Impl(_) => {
+                Item::Import(_) | Item::Statement(_) | Item::Impl(_) => {
                     // Don't re-export
+                }
+                Item::Policy(p) => {
+                    if !imported_names.contains(&p.name) {
+                        imported_names.insert(p.name.clone());
+                        result.items.push(item.clone());
+                    }
+                }
+                Item::Interface(i) => {
+                    let is_wanted = import_all || requested.contains_key(&i.name);
+                    if is_wanted && !imported_names.contains(&i.name) {
+                        imported_names.insert(i.name.clone());
+                        result.items.push(item.clone());
+                    }
                 }
             }
         }
@@ -1001,7 +1016,7 @@ pub fn resolve_imports(
         //
         // The `{...}` syntax in imports documents usage intent but doesn't restrict
         // what gets loaded — all public items from the local module are included.
-        let _import_all = true;
+        let import_all = true;
 
         // First pass: collect struct/enum names that will be imported
         // so we can also import their associated functions
@@ -1124,12 +1139,21 @@ pub fn resolve_imports(
                         result.items.push(item.clone());
                     }
                 }
-                Item::Import(_)
-                | Item::Statement(_)
-                | Item::Policy(_)
-                | Item::Interface(_)
-                | Item::Impl(_) => {
+                Item::Import(_) | Item::Statement(_) | Item::Impl(_) => {
                     // Don't re-export
+                }
+                Item::Policy(p) => {
+                    if !imported_names.contains(&p.name) {
+                        imported_names.insert(p.name.clone());
+                        result.items.push(item.clone());
+                    }
+                }
+                Item::Interface(i) => {
+                    let is_wanted = import_all;
+                    if is_wanted && !imported_names.contains(&i.name) {
+                        imported_names.insert(i.name.clone());
+                        result.items.push(item.clone());
+                    }
                 }
             }
         }
@@ -1289,11 +1313,20 @@ pub fn resolve_imports(
                             result.items.push(item.clone());
                         }
                     }
-                    Item::Import(_)
-                    | Item::Statement(_)
-                    | Item::Policy(_)
-                    | Item::Interface(_)
-                    | Item::Impl(_) => {}
+                    Item::Import(_) | Item::Statement(_) | Item::Impl(_) => {}
+                    Item::Policy(p) => {
+                        if !imported_names.contains(&p.name) {
+                            imported_names.insert(p.name.clone());
+                            result.items.push(item.clone());
+                        }
+                    }
+                    Item::Interface(i) => {
+                        let is_wanted = import_all || requested.contains_key(&i.name);
+                        if is_wanted && !imported_names.contains(&i.name) {
+                            imported_names.insert(i.name.clone());
+                            result.items.push(item.clone());
+                        }
+                    }
                 }
             }
         }

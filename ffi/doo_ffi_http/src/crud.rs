@@ -100,6 +100,13 @@ fn fetch_item_by_id(resource: &str, id: i64) -> Option<serde_json::Value> {
     }
 }
 
+/// Check if a struct has at least one field decorated with @primary.
+fn struct_has_primary(struct_name: &str) -> bool {
+    crate::metadata::get_struct_metadata(struct_name)
+        .map(|meta| meta.fields.iter().any(|f| f.decorators.iter().any(|d| d == "primary")))
+        .unwrap_or(false)
+}
+
 /// Create CRUD handler that returns all items
 #[allow(unused_variables)]
 fn make_crud_list_handler(resource: String) -> DooHandlerFn {
@@ -331,6 +338,11 @@ extern "C" fn crud_get_handler(req: *const DooRequest) -> *mut DooResult {
         }
         return make_err_http(403, "Access denied");
     }
+
+    // Check if struct has a @primary field — individual resource ops require it
+    if !struct_has_primary(&struct_name_for_rbac) {
+        return make_err_http(400, "Resource has no primary key — cannot fetch by ID");
+    }
     let jwt_role = get_jwt_role(&jwt_claims, &struct_name_for_rbac);
 
     // Try database-backed CRUD first
@@ -411,6 +423,9 @@ extern "C" fn crud_update_handler(req: *const DooRequest) -> *mut DooResult {
 
     // --- RBAC: check update policy with real owner ID ---
     // Fetch the item first so we can compare the @owner field against the JWT user_id.
+    if !struct_has_primary(&struct_name_for_rbac) {
+        return make_err_http(400, "Resource has no primary key — cannot update by ID");
+    }
     if is_db_backed_crud(&resource) {
         let existing = match fetch_item_by_id(&resource, id) {
             Some(item) => item,
@@ -525,6 +540,10 @@ extern "C" fn crud_delete_handler(req: *const DooRequest) -> *mut DooResult {
     // --- RBAC: check delete policy with real owner ID ---
     let jwt_claims = extract_jwt_claims_from_request(req);
     let struct_name_for_rbac = get_crud_struct_name(&resource).unwrap_or_else(|| resource.clone());
+
+    if !struct_has_primary(&struct_name_for_rbac) {
+        return make_err_http(400, "Resource has no primary key — cannot delete by ID");
+    }
 
     if is_db_backed_crud(&resource) {
         let existing = match fetch_item_by_id(&resource, id) {

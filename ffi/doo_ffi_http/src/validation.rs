@@ -78,6 +78,11 @@ pub(crate) fn validate_item_against_schema(
                 }
             }
 
+            // Validate JSON value type matches Doo field type
+            if let Err(e) = validate_field_type(&field_meta.field_type, &field_meta.name, value, path) {
+                return Err(e);
+            }
+
             // Validate decorators (e.g., @email, @min, @max)
             for decorator in &field_meta.decorators {
                 if let Err(e) = validate_decorator(decorator, &field_meta.name, value, path) {
@@ -87,6 +92,37 @@ pub(crate) fn validate_item_against_schema(
         }
     }
 
+    Ok(())
+}
+
+/// Validate that a JSON value's type matches the Doo field type.
+/// Returns Err with RFC 7807 validation error on mismatch.
+fn validate_field_type(
+    doo_type: &str,
+    field_name: &str,
+    value: &serde_json::Value,
+    path: &str,
+) -> Result<(), String> {
+    let type_ok = match doo_type {
+        "Str" => value.is_string(),
+        "Int" => value.is_number() && value.as_f64().map_or(false, |n| n == n as i64 as f64),
+        "Float" => value.is_number(),
+        "Bool" => value.is_boolean(),
+        // Complex types (structs, arrays, enums, maps, optionals) — accept objects/arrays/strings
+        _ => true,
+    };
+    if !type_ok {
+        let mut fields = HashMap::new();
+        fields.insert(
+            field_name.to_string(),
+            FieldError::new(field_name, format!("Expected type '{}'", doo_type))
+                .with_rule(format!("type:{}", doo_type.to_lowercase()))
+                .with_value(&value.to_string()),
+        );
+        return Err(Rfc7807Error::validation_error(fields)
+            .with_instance(path)
+            .to_json());
+    }
     Ok(())
 }
 
