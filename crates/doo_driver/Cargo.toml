@@ -13,6 +13,7 @@ doo_analysis = { path = "../doo_analysis" }
 doo_mir = { path = "../doo_mir" }
 doo_codegen = { path = "../doo_codegen" }
 doo_diagnostics = { path = "../doo_diagnostics" }
+doo_migrate = { path = "../doo_migrate" }
 
 # LLVM bindings (must match doo_codegen)
 inkwell = { version = "0.8.0", features = ["llvm18-1"] }

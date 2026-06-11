@@ -123,6 +123,26 @@ pub enum Commands {
         /// Show migration SQL without executing
         #[arg(long)]
         dry_run: bool,
+
+        /// Show migration status and history
+        #[arg(long)]
+        status: bool,
+
+        /// Rollback the last N migrations
+        #[arg(long)]
+        rollback: Option<u32>,
+
+        /// Auto-approve destructive changes (dangerous)
+        #[arg(long)]
+        force: bool,
+
+        /// Show detailed diff without executing
+        #[arg(long)]
+        diff: bool,
+
+        /// Database URL override (otherwise reads DATABASE_URL from .env)
+        #[arg(long)]
+        database_url: Option<String>,
     },
 
     /// Upgrade doo to the latest version
