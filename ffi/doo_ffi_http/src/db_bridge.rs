@@ -232,41 +232,8 @@ pub(crate) fn call_db_query_with_params(sql: *const c_char, params: *const c_cha
 // SQL GENERATION HELPERS
 // ============================================================================
 
-/// Convert PascalCase or camelCase to snake_case
-/// Examples: "AuthorId" -> "author_id", "firstName" -> "first_name"
-pub(crate) fn to_snake_case(name: &str) -> String {
-    let mut result = String::new();
-    for (i, ch) in name.chars().enumerate() {
-        if ch.is_uppercase() {
-            if i > 0 {
-                result.push('_');
-            }
-            result.push(ch.to_lowercase().next().unwrap_or(ch));
-        } else {
-            result.push(ch);
-        }
-    }
-    result
-}
-
-/// Convert snake_case to PascalCase for JSON field names
-/// Special case: "id" stays "id" (Doo convention)
-pub(crate) fn to_pascal_case(s: &str) -> String {
-    // Special case: "id" should stay lowercase
-    if s == "id" {
-        return "id".to_string();
-    }
-
-    s.split('_')
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
-                None => String::new(),
-            }
-        })
-        .collect()
-}
+// Re-export from doo_core — single source of truth for string case conversion.
+pub(crate) use doo_core::string::{to_pascal_case, to_snake_case};
 
 /// Generate CREATE TABLE SQL from struct metadata
 /// Uses snake_case for column names (PostgreSQL convention)

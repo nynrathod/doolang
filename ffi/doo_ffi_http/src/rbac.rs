@@ -254,7 +254,7 @@ pub(crate) fn get_jwt_role(claims: &serde_json::Value, struct_name: &str) -> Opt
     if let Some(meta) = get_struct_metadata(struct_name) {
         for field in &meta.fields {
             if field.decorators.iter().any(|d| d == "role") {
-                let claim_key = camel_to_snake(&field.name);
+                let claim_key = to_snake_case(&field.name);
                 if let Some(v) = claims.get(&claim_key).or_else(|| claims.get(&field.name)) {
                     if let Some(s) = v.as_str() {
                         return Some(s.to_string());
@@ -477,37 +477,10 @@ fn should_accept_from_request_rbac(
 }
 
 // ============================================================================
-// UTILITY
+// UTILITY — single source of truth: doo_core::string
 // ============================================================================
 
-/// Convert PascalCase or camelCase to snake_case for JWT claim lookup.
-fn camel_to_snake(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 4);
-    for (i, c) in s.chars().enumerate() {
-        if c.is_uppercase() && i > 0 {
-            out.push('_');
-        }
-        out.push(c.to_ascii_lowercase());
-    }
-    out
-}
-
-/// Convert snake_case to PascalCase — mirrors json_utils::to_pascal_case.
-/// Special case: "id" stays as "id".
-fn snake_to_pascal(s: &str) -> String {
-    if s == "id" {
-        return "id".to_string();
-    }
-    s.split('_')
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
-                None => String::new(),
-            }
-        })
-        .collect()
-}
+use doo_core::string::{to_pascal_case, to_snake_case};
 
 /// Extract the resource owner's user ID from a DB row.
 ///
@@ -522,9 +495,9 @@ pub(crate) fn get_resource_owner_from_row(
     if let Some(meta) = get_struct_metadata(struct_name) {
         for field in &meta.fields {
             if field.decorators.iter().any(|d| d == "owner") {
-                let col_snake = camel_to_snake(&field.name);
+                let col_snake = to_snake_case(&field.name);
                 // DB rows come back with PascalCase keys from json_utils (snake_case → PascalCase)
-                let col_pascal = snake_to_pascal(&col_snake);
+                let col_pascal = to_pascal_case(&col_snake);
                 let v = item
                     .get(&field.name)
                     .or_else(|| item.get(&col_snake))
@@ -536,7 +509,14 @@ pub(crate) fn get_resource_owner_from_row(
         }
     }
     // Fallback: well-known owner columns — try both snake_case and PascalCase variants
-    for key in &["user_id", "UserId", "owner_id", "OwnerId", "created_by", "CreatedBy"] {
+    for key in &[
+        "user_id",
+        "UserId",
+        "owner_id",
+        "OwnerId",
+        "created_by",
+        "CreatedBy",
+    ] {
         if let Some(v) = item.get(*key) {
             if let Some(n) = v.as_i64() {
                 return Some(n);
