@@ -27,13 +27,13 @@
 //! - File I/O is isolated here (not in analysis crate)
 //! - Symbol resolution types from `doo_analysis::resolve` are reused
 //! - Returns AST items ready for merging into the main program
+//! - Shared types (`ImportResolution`, `merge_imports`) from `doo_analysis::loader`
 
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use doo_core::doo_debug;
 use doo_core::errors::codes::{CompilerError, ErrorCode};
 use doo_core::Span;
 use doo_frontend::ast::{ImportDecl, ImportItem, Item, Program};
@@ -45,6 +45,9 @@ pub use doo_analysis::{
 };
 // SymbolKindDef is in semantic submodule
 pub use doo_analysis::semantic::SymbolKindDef;
+
+// Shared loader types — single source of truth
+pub use doo_analysis::loader::{merge_imports, resolve_module_path, ImportResolution};
 
 /// Module loader for the Doo compiler.
 ///
@@ -311,17 +314,6 @@ impl ModuleLoader {
     pub fn imported_sources(&self) -> &[(u32, String, String)] {
         &self.imported_sources
     }
-}
-
-/// Import resolution result.
-///
-/// Contains the items to be merged into the main program.
-#[derive(Debug, Default)]
-pub struct ImportResolution {
-    /// Items to prepend to the program (imported functions, structs, enums).
-    pub items: Vec<Item>,
-    /// Errors encountered during resolution.
-    pub errors: Vec<CompilerError>,
 }
 
 /// Resolve all imports in a program.
@@ -1335,20 +1327,6 @@ pub fn resolve_imports(
     if debug {}
 
     Ok(result)
-}
-
-/// Merge imported items into a program.
-///
-/// Prepends imported items before the original items so that
-/// imported functions are declared before they're called.
-pub fn merge_imports(program: &mut Program, resolution: ImportResolution) {
-    if resolution.items.is_empty() {
-        return;
-    }
-
-    let original_items = std::mem::take(&mut program.items);
-    program.items = resolution.items;
-    program.items.extend(original_items);
 }
 
 /// Capitalize the first character of a string (for suggestions)
