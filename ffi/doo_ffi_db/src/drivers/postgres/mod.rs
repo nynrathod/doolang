@@ -10,9 +10,9 @@
 //! - PascalCase column name conversion
 //! - PostgreSQL-dialect DDL generation for migrations
 
-pub(crate) mod json_utils;
+pub mod json_utils;
 pub(crate) mod params;
-pub(crate) mod pool;
+pub mod pool;
 
 use doo_ffi_core::ffi_debug;
 

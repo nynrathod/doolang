@@ -11,23 +11,8 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use std::fmt::Write;
 use tokio_postgres::Row;
 
-/// Convert snake_case to PascalCase — SINGLE SOURCE OF TRUTH.
-/// Special case: "id" stays as "id" (Doo convention).
-pub fn to_pascal_case(s: &str) -> String {
-    if s == "id" {
-        return "id".to_string();
-    }
-
-    s.split('_')
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
-                None => String::new(),
-            }
-        })
-        .collect()
-}
+// Re-export from doo_core — single source of truth for string case conversion.
+pub use doo_core::string::to_pascal_case;
 
 /// Write PascalCase directly into buffer without allocating a String.
 fn write_pascal_case(buf: &mut String, s: &str) {
