@@ -56,7 +56,23 @@ fn main() {
             args,
         }) => run_command(path, keep_ll, debug, verbose, args),
         Some(Commands::Check { path }) => check_command(path),
-        Some(Commands::Migrate { path, dry_run }) => migrate_command(path, dry_run),
+        Some(Commands::Migrate {
+            path,
+            dry_run,
+            status,
+            rollback,
+            force,
+            diff,
+            database_url,
+        }) => doo_driver::migrate_command(
+            path,
+            dry_run,
+            status,
+            rollback,
+            force,
+            diff,
+            database_url,
+        ),
         Some(Commands::Init { name, template }) => doo_driver::run_init(name, template),
         Some(Commands::Deploy { verbose }) => doo_driver::run_deploy(verbose),
         Some(Commands::Upgrade) => doo_driver::run_upgrade(),
@@ -160,10 +176,4 @@ fn check_command(path: std::path::PathBuf) -> i32 {
     }
 }
 
-fn migrate_command(_path: std::path::PathBuf, dry_run: bool) -> i32 {
-    eprintln!("Migrate command not yet implemented");
-    if dry_run {
-        eprintln!("  Dry-run mode");
-    }
-    1
-}
+

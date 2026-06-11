@@ -706,6 +706,7 @@ dependencies = [
  "doo_diagnostics",
  "doo_frontend",
  "doo_hir",
+ "doo_migrate",
  "doo_mir",
  "inkwell",
  "serde",
@@ -749,6 +750,7 @@ dependencies = [
  "chrono",
  "deadpool",
  "deadpool-postgres",
+ "doo_core",
  "doo_ffi_core",
  "doo_ffi_runtime",
  "itoa",
@@ -789,6 +791,7 @@ dependencies = [
  "bcrypt",
  "chrono",
  "dashmap",
+ "doo_core",
  "doo_ffi_core",
  "doo_ffi_json",
  "doo_ffi_runtime",
@@ -888,6 +891,26 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "doo_migrate"
+version = "0.4.2"
+dependencies = [
+ "chrono",
+ "console",
+ "deadpool-postgres",
+ "dialoguer",
+ "doo_analysis",
+ "doo_core",
+ "doo_ffi_db",
+ "doo_frontend",
+ "doo_hir",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tokio-postgres",
 ]
 
 [[package]]
