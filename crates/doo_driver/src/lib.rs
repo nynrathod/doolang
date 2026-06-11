@@ -361,7 +361,6 @@ pub fn run_command_with_compiler(
                 let _ = std::io::stdout().flush();
 
                 // Cache the compiled executable for incremental reuse
-                let _ = fs::create_dir_all(&cache_dir);
                 let _ = fs::copy(&exe_full_path, &cached_exe_path);
                 let _ = cache.save();
             }
@@ -578,12 +577,32 @@ pub fn check_command(path: PathBuf) -> i32 {
     }
 }
 
-pub fn migrate_command(_path: PathBuf, dry_run: bool) -> i32 {
-    eprintln!("Migrate command not yet implemented");
-    if dry_run {
-        eprintln!("  Dry-run mode");
+pub fn migrate_command(
+    path: PathBuf,
+    dry_run: bool,
+    status: bool,
+    rollback: Option<u32>,
+    force: bool,
+    diff: bool,
+    database_url: Option<String>,
+) -> i32 {
+    let opts = doo_migrate::MigrateOptions {
+        path,
+        dry_run,
+        status,
+        rollback,
+        force,
+        diff_only: diff,
+        database_url,
+    };
+
+    match doo_migrate::run_migrate(opts) {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("{} Migration failed: {}", ERROR, e);
+            1
+        }
     }
-    1
 }
 
 /// Clean all build caches and temporary files under the given path.
