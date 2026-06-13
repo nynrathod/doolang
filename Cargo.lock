@@ -633,6 +633,7 @@ dependencies = [
  "doo_driver",
  "doo_frontend",
  "doo_hir",
+ "doo_migrate",
  "doo_mir",
  "inkwell",
  "llvm-sys",

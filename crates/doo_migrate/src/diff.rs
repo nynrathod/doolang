@@ -6,13 +6,15 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::schema::*;
+use serde::Serialize;
 
 // ============================================================================
 // Schema Change Types
 // ============================================================================
 
 /// A single schema change operation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum SchemaChange {
     // --- Enum Types ---
     CreateEnum(EnumTypeDef),

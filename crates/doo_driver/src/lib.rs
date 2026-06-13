@@ -584,6 +584,7 @@ pub fn migrate_command(
     rollback: Option<u32>,
     force: bool,
     diff: bool,
+    json: bool,
     database_url: Option<String>,
 ) -> i32 {
     let opts = doo_migrate::MigrateOptions {
@@ -593,6 +594,7 @@ pub fn migrate_command(
         rollback,
         force,
         diff_only: diff,
+        json_output: json,
         database_url,
     };
 

@@ -10,7 +10,9 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "doo")]
 #[command(about = "doo language CLI")]
-#[command(long_about = "doo language CLI\n\nIssues / support: https://github.com/nynrathod/doolang/issues")]
+#[command(
+    long_about = "doo language CLI\n\nIssues / support: https://github.com/nynrathod/doolang/issues"
+)]
 #[command(version)]
 pub struct Cli {
     #[command(subcommand)]
@@ -139,6 +141,10 @@ pub enum Commands {
         /// Show detailed diff without executing
         #[arg(long)]
         diff: bool,
+
+        /// Output JSON instead of human-readable text
+        #[arg(long)]
+        json: bool,
 
         /// Database URL override (otherwise reads DATABASE_URL from .env)
         #[arg(long)]

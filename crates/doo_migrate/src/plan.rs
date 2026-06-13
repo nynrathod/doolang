@@ -7,13 +7,14 @@
 use sha2::{Digest, Sha256};
 
 use crate::diff::SchemaChange;
+use serde::Serialize;
 
 // ============================================================================
 // Risk Classification
 // ============================================================================
 
 /// Risk level for a migration change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Risk {
     /// No data loss possible.
     Safe,
@@ -28,7 +29,7 @@ pub enum Risk {
 // ============================================================================
 
 /// Complete migration plan — ordered list of changes with risk assessment.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct MigrationPlan {
     /// Unique migration ID (timestamp-based).
     pub id: String,
@@ -39,7 +40,7 @@ pub struct MigrationPlan {
 }
 
 /// A single planned change with metadata.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PlannedChange {
     /// The schema change to apply.
     pub change: SchemaChange,
@@ -51,121 +52,207 @@ pub struct PlannedChange {
     pub down_sql: Option<String>,
     /// Whether this change requires user approval.
     pub requires_approval: bool,
+    // e.g., "change_1"
+    pub change_id: String,
+    // "schema", "enum", "constraint", "index", "foreign_key"
+    pub category: String,
+    // "safe", "risky", "destructive"
+    pub severity: String,
+    // human explanation
+    pub reason: String,
+    // e.g., ["users", "users.email"]
+    pub affected_objects: Vec<String>,
+    pub requires_backup: bool,
+    pub can_auto_rollback: bool,
 }
 
 impl PlannedChange {
     /// Human-readable description of this change.
     pub fn description(&self) -> String {
-        match &self.change {
-            SchemaChange::CreateEnum(e) => {
-                format!("Create enum type '{}'", e.name)
-            }
-            SchemaChange::AddEnumValue { enum_name, value } => {
-                format!("Add value '{}' to enum '{}'", value, enum_name)
-            }
-            SchemaChange::DropEnum { name } => {
-                format!("Drop enum type '{}'", name)
-            }
-            SchemaChange::CreateTable(t) => {
-                format!("Create table '{}' ({} columns)", t.name, t.columns.len())
-            }
-            SchemaChange::DropTable { name } => {
-                format!("Drop table '{}'", name)
-            }
-            SchemaChange::RenameTable { from, to } => {
-                format!("Rename table '{}' → '{}'", from, to)
-            }
-            SchemaChange::AddColumn { table, column } => {
-                format!(
-                    "Add column '{}.{}' ({})",
-                    table,
-                    column.name,
-                    column.sql_type.to_ddl()
-                )
-            }
-            SchemaChange::DropColumn { table, column } => {
-                format!("Drop column '{}.{}'", table, column)
-            }
-            SchemaChange::RenameColumn { table, from, to } => {
-                format!("Rename column '{}.{}' → '{}'", table, from, to)
-            }
-            SchemaChange::AlterColumnType {
+        self.reason.clone()
+    }
+    pub fn from_change(change: SchemaChange, index: usize, migration_id: &str) -> Self {
+        let risk = classify_risk(&change);
+        let requires_approval = matches!(risk, Risk::Destructive);
+        let up_sql = crate::sql::change_to_up_sql(&change);
+        let down_sql = crate::sql::change_to_down_sql(&change);
+
+        let change_id = format!("{}_{}", migration_id, index);
+        let (category, reason, affected_objects) = Self::metadata(&change);
+        let severity = match risk {
+            Risk::Safe => "safe",
+            Risk::Risky => "risky",
+            Risk::Destructive => "destructive",
+        }
+        .to_string();
+        let requires_backup = matches!(risk, Risk::Destructive);
+        let can_auto_rollback = down_sql.is_some();
+
+        PlannedChange {
+            change,
+            risk,
+            up_sql,
+            down_sql,
+            requires_approval,
+            change_id,
+            category,
+            severity,
+            reason,
+            affected_objects,
+            requires_backup,
+            can_auto_rollback,
+        }
+    }
+
+    fn metadata(change: &SchemaChange) -> (String, String, Vec<String>) {
+        use SchemaChange::*;
+        match change {
+            CreateEnum(e) => (
+                "enum".to_string(),
+                format!("Create new enum type '{}'", e.name),
+                vec![e.name.clone()],
+            ),
+            AddEnumValue { enum_name, value } => (
+                "enum".to_string(),
+                format!("Add value '{}' to enum '{}'", value, enum_name),
+                vec![enum_name.clone()],
+            ),
+            DropEnum { name } => (
+                "enum".to_string(),
+                format!("Drop enum type '{}' – irreversible data loss", name),
+                vec![name.clone()],
+            ),
+            CreateTable(t) => (
+                "schema".to_string(),
+                format!("Create new table '{}'", t.name),
+                vec![t.name.clone()],
+            ),
+            DropTable { name } => (
+                "schema".to_string(),
+                format!("Drop table '{}' – all data lost", name),
+                vec![name.clone()],
+            ),
+            RenameTable { from, to } => (
+                "schema".to_string(),
+                format!("Rename table '{}' to '{}'", from, to),
+                vec![from.clone(), to.clone()],
+            ),
+            AddColumn { table, column } => (
+                "schema".to_string(),
+                format!("Add column '{}.{}'", table, column.name),
+                vec![table.clone(), format!("{}.{}", table, column.name)],
+            ),
+            DropColumn { table, column } => (
+                "schema".to_string(),
+                format!("Drop column '{}.{}' – data lost", table, column),
+                vec![table.clone(), format!("{}.{}", table, column)],
+            ),
+            RenameColumn { table, from, to } => (
+                "schema".to_string(),
+                format!("Rename column '{}.{}' to '{}'", table, from, to),
+                vec![
+                    table.clone(),
+                    format!("{}.{}", table, from),
+                    format!("{}.{}", table, to),
+                ],
+            ),
+            AlterColumnType {
                 table,
                 column,
                 from,
                 to,
-            } => {
+            } => (
+                "schema".to_string(),
                 format!(
-                    "Change type '{}.{}' {} → {}",
-                    table,
-                    column,
-                    from.to_ddl(),
-                    to.to_ddl()
-                )
-            }
-            SchemaChange::SetNotNull { table, column, .. } => {
-                format!("Set NOT NULL on '{}.{}'", table, column)
-            }
-            SchemaChange::DropNotNull { table, column } => {
-                format!("Drop NOT NULL on '{}.{}'", table, column)
-            }
-            SchemaChange::SetDefault {
+                    "Change type of '{}.{}' from {} to {} – possible data loss",
+                    table, column, from, to
+                ),
+                vec![table.clone(), format!("{}.{}", table, column)],
+            ),
+            SetNotNull { table, column, .. } => (
+                "constraint".to_string(),
+                format!("Make '{}.{}' required (NOT NULL)", table, column),
+                vec![table.clone(), format!("{}.{}", table, column)],
+            ),
+            DropNotNull { table, column } => (
+                "constraint".to_string(),
+                format!("Allow NULL in '{}.{}'", table, column),
+                vec![table.clone(), format!("{}.{}", table, column)],
+            ),
+            SetDefault {
                 table,
                 column,
                 default,
-            } => {
+            } => (
+                "constraint".to_string(),
                 format!(
-                    "Set default on '{}.{}' = {}",
+                    "Set default value for '{}.{}' to {}",
                     table,
                     column,
                     default.to_sql()
-                )
-            }
-            SchemaChange::DropDefault { table, column } => {
-                format!("Drop default on '{}.{}'", table, column)
-            }
-            SchemaChange::AddPrimaryKey { table, columns, .. } => {
-                format!("Add primary key on '{}' ({})", table, columns.join(", "))
-            }
-            SchemaChange::DropPrimaryKey { table, .. } => {
-                format!("Drop primary key on '{}'", table)
-            }
-            SchemaChange::AddUnique { table, columns, .. } => {
-                format!(
-                    "Add unique constraint on '{}' ({})",
-                    table,
-                    columns.join(", ")
-                )
-            }
-            SchemaChange::DropUnique { table, name } => {
-                format!("Drop unique constraint '{}' on '{}'", name, table)
-            }
-            SchemaChange::AddCheck {
+                ),
+                vec![table.clone(), format!("{}.{}", table, column)],
+            ),
+            DropDefault { table, column } => (
+                "constraint".to_string(),
+                format!("Remove default value from '{}.{}'", table, column),
+                vec![table.clone(), format!("{}.{}", table, column)],
+            ),
+            AddPrimaryKey { table, columns, .. } => (
+                "constraint".to_string(),
+                format!("Add primary key on {}({})", table, columns.join(", ")),
+                vec![table.clone()],
+            ),
+            DropPrimaryKey { table, .. } => (
+                "constraint".to_string(),
+                format!("Drop primary key on {}", table),
+                vec![table.clone()],
+            ),
+            AddUnique { table, columns, .. } => (
+                "constraint".to_string(),
+                format!("Add unique constraint on {}({})", table, columns.join(", ")),
+                vec![table.clone()],
+            ),
+            DropUnique { table, name } => (
+                "constraint".to_string(),
+                format!("Drop unique constraint {} on {}", name, table),
+                vec![table.clone()],
+            ),
+            AddCheck {
                 table, expression, ..
-            } => {
-                format!("Add check constraint on '{}': {}", table, expression)
-            }
-            SchemaChange::DropCheck { table, name } => {
-                format!("Drop check constraint '{}' on '{}'", name, table)
-            }
-            SchemaChange::CreateIndex { table, index } => {
-                format!("Create index on '{}' ({})", table, index.columns.join(", "))
-            }
-            SchemaChange::DropIndex { name } => {
-                format!("Drop index '{}'", name)
-            }
-            SchemaChange::AddForeignKey { table, fk } => {
+            } => (
+                "constraint".to_string(),
+                format!("Add check constraint on {}: {}", table, expression),
+                vec![table.clone()],
+            ),
+            DropCheck { table, name } => (
+                "constraint".to_string(),
+                format!("Drop check constraint {} on {}", name, table),
+                vec![table.clone()],
+            ),
+            CreateIndex { table, index } => (
+                "index".to_string(),
+                format!("Create index on {}({})", table, index.columns.join(", ")),
+                vec![table.clone()],
+            ),
+            DropIndex { name } => (
+                "index".to_string(),
+                format!("Drop index {}", name),
+                vec![name.clone()],
+            ),
+            AddForeignKey { table, fk } => (
+                "foreign_key".to_string(),
                 format!(
-                    "Add foreign key '{}.{}' → '{}.{}'",
-                    table,
-                    fk.columns.join(", "),
-                    fk.ref_table,
-                    fk.ref_columns.join(", ")
-                )
-            }
-            SchemaChange::DropForeignKey { table, name } => {
-                format!("Drop foreign key '{}' on '{}'", name, table)
-            }
+                    "Add foreign key {} on {} referencing {}",
+                    fk.name, table, fk.ref_table
+                ),
+                vec![table.clone(), fk.ref_table.clone()],
+            ),
+            DropForeignKey { table, name } => (
+                "foreign_key".to_string(),
+                format!("Drop foreign key {} on {}", name, table),
+                vec![table.clone()],
+            ),
         }
     }
 
@@ -188,29 +275,13 @@ impl PlannedChange {
 /// Orders changes by dependency (enums before tables, tables before FKs, etc.)
 /// and classifies risk levels.
 pub fn build_plan(changes: Vec<SchemaChange>) -> MigrationPlan {
-    // Include sub-second precision so that sequential migrations within the
-    // same second receive unique IDs.  Without this, idempotency incorrectly
-    // skips later migrations because they collide with an earlier migration's
-    // ID marked as "applied" in `doo_migrations`.
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S_%3f").to_string();
 
-    // Classify and generate SQL for each change
+    // Build planned changes with all metadata
     let mut planned: Vec<PlannedChange> = changes
         .into_iter()
-        .map(|change| {
-            let risk = classify_risk(&change);
-            let requires_approval = matches!(risk, Risk::Destructive);
-            let up_sql = crate::sql::change_to_up_sql(&change);
-            let down_sql = crate::sql::change_to_down_sql(&change);
-
-            PlannedChange {
-                change,
-                risk,
-                up_sql,
-                down_sql,
-                requires_approval,
-            }
-        })
+        .enumerate()
+        .map(|(idx, change)| PlannedChange::from_change(change, idx, &timestamp))
         .collect();
 
     // Sort by dependency order
@@ -241,8 +312,6 @@ fn classify_risk(change: &SchemaChange) -> Risk {
         | SchemaChange::AddEnumValue { .. }
         | SchemaChange::CreateTable(_)
         | SchemaChange::AddColumn { .. }
-        | SchemaChange::RenameTable { .. }
-        | SchemaChange::RenameColumn { .. }
         | SchemaChange::DropNotNull { .. }
         | SchemaChange::SetDefault { .. }
         | SchemaChange::AddPrimaryKey { .. }
@@ -258,7 +327,9 @@ fn classify_risk(change: &SchemaChange) -> Risk {
         | SchemaChange::DropUnique { .. }
         | SchemaChange::DropCheck { .. }
         | SchemaChange::DropIndex { .. }
-        | SchemaChange::DropForeignKey { .. } => Risk::Risky,
+        | SchemaChange::DropForeignKey { .. }
+        | SchemaChange::RenameTable { .. }
+        | SchemaChange::RenameColumn { .. } => Risk::Risky,
 
         // Type changes — depends on whether the cast is safe
         SchemaChange::AlterColumnType { from, to, .. } => {

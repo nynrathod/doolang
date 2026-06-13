@@ -49,6 +49,7 @@ default-run = "doo"
 [dependencies]
 # New compiler driver (Phase 10)
 doo_driver = { path = "crates/doo_driver" }
+doo_migrate = { path = "crates/doo_migrate" }
 
 # Core types and debug infrastructure
 doo_core = { path = "crates/doo_core" }

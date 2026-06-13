@@ -63,6 +63,7 @@ fn main() {
             rollback,
             force,
             diff,
+            json,
             database_url,
         }) => doo_driver::migrate_command(
             path,
@@ -71,6 +72,7 @@ fn main() {
             rollback,
             force,
             diff,
+            json,
             database_url,
         ),
         Some(Commands::Init { name, template }) => doo_driver::run_init(name, template),
@@ -175,5 +177,3 @@ fn check_command(path: std::path::PathBuf) -> i32 {
         }
     }
 }
-
-
