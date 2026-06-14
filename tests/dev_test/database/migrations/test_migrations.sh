@@ -215,7 +215,7 @@ parse_db_url() {
     local hostport="${hostport_db%%/*}"
     local db="${hostport_db#*/}"
     db="${db%%\?*}"
-    
+
     export DB_USER="${userpass%%:*}"
     export DB_PASS="${userpass#*:}"
     export DB_HOST="${hostport%%:*}"
@@ -354,7 +354,7 @@ pass "2.4b Rename Column — confirmed via dry-run SQL output"
 step "2.5 Set NOT NULL — change Age from @optional to required, with NULL backfill"
 # First insert NULL data into Age column to test backfill
 do_psql_test "UPDATE users SET age = NULL WHERE age IS NOT NULL;" 2>/dev/null || true
-do_psql_test "INSERT INTO users (email, username, password_hash, role, status, age) 
+do_psql_test "INSERT INTO users (email, username, password_hash, role, status, age)
               VALUES ('backfill@test.com', 'backfill_test', 'hash', 'User', 'Active', NULL)
               ON CONFLICT DO NOTHING;" 2>/dev/null || true
 pass "2.5a Seeded NULL data for backfill test"
@@ -571,9 +571,9 @@ doo_migrate "phase4-base" --force --database-url "$TEST_DB_URL" "$BASE_DOO" > /d
 # 4.2 — Insert rows with NULL values in Age column
 step "4.2 Seed rows with NULL Age for backfill test"
 do_psql_test "DELETE FROM posts CASCADE; DELETE FROM comments CASCADE; DELETE FROM post_tags CASCADE; DELETE FROM tags CASCADE; DELETE FROM users CASCADE;" 2>/dev/null || true
-do_psql_test "INSERT INTO users (email, username, password_hash, role, status, age, is_verified) 
+do_psql_test "INSERT INTO users (email, username, password_hash, role, status, age, is_verified)
               VALUES ('test1@t.com', 'test1', 'hash1', 'User', 'Active', NULL, false);" 2>/dev/null || true
-do_psql_test "INSERT INTO users (email, username, password_hash, role, status, age, is_verified) 
+do_psql_test "INSERT INTO users (email, username, password_hash, role, status, age, is_verified)
               VALUES ('test2@t.com', 'test2', 'hash2', 'User', 'Active', NULL, false);" 2>/dev/null || true
 pass "4.2 Seeded 2 rows with NULL age"
 
@@ -621,7 +621,7 @@ fi
 # 4.4 — Verify the NOT NULL constraint is actually enforced
 step "4.4 Verify NOT NULL constraint works on Age"
 # Use psql -tA (tuples-only, unaligned) for machine-parseable output
-NULL_INSERT_OUTPUT=$(do_psql_test "INSERT INTO users (email, username, password_hash, role, status, age, is_verified) 
+NULL_INSERT_OUTPUT=$(do_psql_test "INSERT INTO users (email, username, password_hash, role, status, age, is_verified)
                             VALUES ('nulltest@t.com', 'nulltest', 'hash', 'User', 'Active', NULL, false);" 2>&1) || true
 # Check stderr for constraint violation (psql prints errors to stderr)
 if echo "$NULL_INSERT_OUTPUT" | grep -qiE "violates|null value in column|not null"; then
@@ -1096,9 +1096,9 @@ doo_migrate "phase15-base" --force --database-url "$TEST_DB_URL" "$BASE_DOO" > /
 # 15.2 — Seed NULL values in a column that has a non-zero default
 step "15.2 Seed NULL values for backfill test"
 do_psql_test "DELETE FROM app_config;" 2>/dev/null || true
-do_psql_test "INSERT INTO app_config (config_key, string_val, bool_val, int_val) 
+do_psql_test "INSERT INTO app_config (config_key, string_val, bool_val, int_val)
               VALUES ('key1', NULL, true, 10);" 2>/dev/null || true
-do_psql_test "INSERT INTO app_config (config_key, string_val, bool_val, int_val) 
+do_psql_test "INSERT INTO app_config (config_key, string_val, bool_val, int_val)
               VALUES ('key2', NULL, false, 20);" 2>/dev/null || true
 pass "15.2 Seeded 2 rows with NULL string_val"
 
