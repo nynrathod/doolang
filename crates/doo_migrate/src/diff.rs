@@ -8,6 +8,88 @@ use std::collections::{HashMap, HashSet};
 use crate::schema::*;
 use serde::Serialize;
 
+/// Returns the list of affected object keys for a SchemaChange.
+/// This is the SINGLE SOURCE OF TRUTH for dependency graph computation.
+/// Every SchemaChange variant MUST be covered here.
+pub fn affected_objects_for(change: &SchemaChange) -> Vec<String> {
+    use SchemaChange::*;
+    match change {
+        CreateEnum(e) => vec![e.name.clone()],
+        AddEnumValue { enum_name, .. } => vec![enum_name.clone()],
+        DropEnum { name } => vec![name.clone()],
+
+        CreateTable(t) => {
+            let mut objects = vec![t.name.clone()];
+            // Include FK referenced tables so the dependency graph
+            // knows this table depends on those tables existing first.
+            for fk in &t.foreign_keys {
+                if !objects.contains(&fk.ref_table) {
+                    objects.push(fk.ref_table.clone());
+                }
+            }
+            // Include enum types used by columns so the dependency graph
+            // knows this table depends on those enums existing first.
+            for col in &t.columns {
+                if let SqlType::Enum(enum_name) = &col.sql_type {
+                    if !objects.contains(enum_name) {
+                        objects.push(enum_name.clone());
+                    }
+                }
+            }
+            objects
+        }
+        DropTable { name } => vec![name.clone()],
+        RenameTable { from, to } => vec![from.clone(), to.clone()],
+
+        AddColumn { table, column } => {
+            let mut objects = vec![table.clone(), format!("{}.{}", table, column.name)];
+            // If column type is an enum, include the enum name so deps chain correctly
+            if let SqlType::Enum(enum_name) = &column.sql_type {
+                objects.push(enum_name.clone());
+            }
+            objects
+        }
+        DropColumn { table, column } => vec![table.clone(), format!("{}.{}", table, column)],
+        RenameColumn { table, from, to } => vec![
+            table.clone(),
+            format!("{}.{}", table, from),
+            format!("{}.{}", table, to),
+        ],
+        AlterColumnType {
+            table, column, to, ..
+        } => {
+            let mut objects = vec![table.clone(), format!("{}.{}", table, column)];
+            // If the target type is an enum, include the enum type name
+            // so the dependency graph connects type changes to enum creation/dropping.
+            if let SqlType::Enum(enum_name) = to {
+                objects.push(enum_name.clone());
+            }
+            objects
+        }
+        SetNotNull { table, column, .. } => vec![table.clone(), format!("{}.{}", table, column)],
+        DropNotNull { table, column } => vec![table.clone(), format!("{}.{}", table, column)],
+        SetDefault { table, column, .. } => vec![table.clone(), format!("{}.{}", table, column)],
+        DropDefault { table, column } => vec![table.clone(), format!("{}.{}", table, column)],
+
+        AddPrimaryKey { table, .. } => vec![table.clone()],
+        DropPrimaryKey { table, .. } => vec![table.clone()],
+        AddUnique { table, .. } => vec![table.clone()],
+        DropUnique { table, .. } => vec![table.clone()],
+        AddCheck { table, .. } => vec![table.clone()],
+        DropCheck { table, .. } => vec![table.clone()],
+
+        CreateIndex { table, .. } => vec![table.clone()],
+        DropIndex { table, name } => vec![table.clone(), name.clone()],
+
+        AddForeignKey { table, fk } => vec![
+            table.clone(),
+            fk.ref_table.clone(),
+            format!("{}.fk.{}", table, fk.name),
+        ],
+        DropForeignKey { table, name } => vec![table.clone(), format!("{}.fk.{}", table, name)],
+    }
+}
+
 // ============================================================================
 // Schema Change Types
 // ============================================================================
@@ -115,6 +197,7 @@ pub enum SchemaChange {
         index: IndexDef,
     },
     DropIndex {
+        table: String,
         name: String,
     },
 
@@ -633,6 +716,7 @@ fn diff_indexes(
     for (cols, idx) in &current_by_cols {
         if !desired_by_cols.contains_key(cols) {
             changes.push(SchemaChange::DropIndex {
+                table: table.to_string(),
                 name: idx.name.clone(),
             });
         }
