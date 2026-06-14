@@ -17,27 +17,54 @@ use doo_hir::{ConstValue, HirExprKind, HirItem, Lower};
 use crate::schema::*;
 
 /// Extract a DatabaseSchema from all .doo files under the given path.
+///
+/// Uses a two-strategy approach (like TypeORM's entity discovery):
+///
+/// **Strategy 1 — Entry-point resolution**: Finds `main.doo` (or `src/main.doo`)
+/// and follows the full import chain via the compiler's import resolution.
+/// This handles well-structured projects with proper dependency chains.
+///
+/// **Strategy 2 — Universal scan** (fallback): Recursively discovers ALL `.doo`
+/// files in the project, parses each one, collects every `@table` struct and
+/// enum from everywhere, and builds a combined schema. No hardcoded filenames.
+/// Works for any project layout — temp dirs, partial projects, scattered structs.
 pub fn extract_schema(path: &Path) -> Result<DatabaseSchema, String> {
-    let input_path = resolve_input(path)?;
-    let source = fs::read_to_string(&input_path)
-        .map_err(|e| format!("Failed to read {}: {}", input_path.display(), e))?;
+    let project_root = if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+    };
 
-    let project_root = input_path
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    // Strategy 1: Try proper entry point with full import resolution
+    if let Ok(schema) = try_extract_from_entry(path, &project_root) {
+        if !schema.tables.is_empty() {
+            return Ok(schema);
+        }
+    }
+
+    // Strategy 2: Scan ALL .doo files — find @table structs everywhere
+    extract_from_all_files(&project_root)
+}
+
+/// Strategy 1: Resolve a proper entry point (main.doo or src/main.doo),
+/// parse it, resolve its full import chain, lower to HIR, extract schema.
+fn try_extract_from_entry(path: &Path, project_root: &Path) -> Result<DatabaseSchema, String> {
+    let entry = resolve_entry_point(path)?;
+    let source = fs::read_to_string(&entry)
+        .map_err(|e| format!("Failed to read {}: {}", entry.display(), e))?;
 
     // Parse
     let mut parser = Parser::new(&source, 0);
-    let program = parser
+    let mut program = parser
         .parse_program()
         .map_err(|e| format!("Parse error: {:?}", e))?;
 
     // Resolve imports
-    let mut program = program;
     let mut loader = doo_driver_loader::ModuleLoader::new();
     let import_resolution =
-        doo_driver_loader::resolve_imports(&program, &mut loader, &project_root)?;
+        doo_driver_loader::resolve_imports(&program, &mut loader, project_root)?;
     doo_analysis::loader::merge_imports(&mut program, import_resolution);
 
     // AST transforms
@@ -49,11 +76,126 @@ pub fn extract_schema(path: &Path) -> Result<DatabaseSchema, String> {
     let mut lowerer = Lower::new();
     let hir = lowerer.lower_program_typed(&program, &mut type_registry);
 
-    // Walk HIR and extract schema
     extract_from_hir(&hir, &type_registry)
 }
 
-/// Walk HIR items and extract table/enum definitions.
+/// Strategy 2: Recursively discover ALL .doo files, parse each one,
+/// collect every @table struct and enum, build a combined schema.
+/// This is the universal fallback — no hardcoded filenames, no assumptions
+/// about project structure. Works for any directory with .doo files.
+fn extract_from_all_files(project_root: &Path) -> Result<DatabaseSchema, String> {
+    let doo_files = discover_doo_files(project_root)?;
+
+    if doo_files.is_empty() {
+        return Err(format!("No .doo files found in {}", project_root.display()));
+    }
+
+    let mut all_items: Vec<doo_frontend::ast::Item> = Vec::new();
+
+    for (file_id, file_path) in doo_files.iter().enumerate() {
+        let source = fs::read_to_string(file_path)
+            .map_err(|e| format!("Failed to read {}: {}", file_path.display(), e))?;
+
+        let mut parser = Parser::new(&source, file_id as u32);
+        let program = match parser.parse_program() {
+            Ok(p) => p,
+            Err(_) => continue, // Skip unparseable files — not all .doo files need @table
+        };
+
+        all_items.extend(program.items);
+    }
+
+    if all_items.is_empty() {
+        return Ok(DatabaseSchema::default());
+    }
+
+    // Build a combined program from ALL collected items (structs, enums, imports, etc.)
+    let combined_program = doo_frontend::ast::Program::new(all_items, doo_core::Span::empty());
+
+    // Attempt import resolution on the combined program (best-effort).
+    // In the fallback path, not all imports may be resolvable — that's OK.
+    // We just need the @table struct and enum definitions, which are self-contained.
+    let mut program = combined_program;
+    let mut loader = doo_driver_loader::ModuleLoader::new();
+    if let Ok(import_resolution) =
+        doo_driver_loader::resolve_imports(&program, &mut loader, project_root)
+    {
+        doo_analysis::loader::merge_imports(&mut program, import_resolution);
+    }
+
+    // AST transforms
+    doo_analysis::transform::transform_route_groups(&mut program);
+    doo_analysis::transform::transform_inline_closures(&mut program);
+
+    // Lower to HIR
+    let mut type_registry = TypeRegistry::new();
+    let mut lowerer = Lower::new();
+    let hir = lowerer.lower_program_typed(&program, &mut type_registry);
+
+    extract_from_hir(&hir, &type_registry)
+}
+
+/// Recursively discover all .doo files under a directory.
+/// Skips hidden dirs, target/, and node_modules/.
+fn discover_doo_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut files = Vec::new();
+    discover_recursive(dir, &mut files)
+        .map_err(|e| format!("Failed to scan {}: {}", dir.display(), e))?;
+    files.sort(); // Deterministic ordering
+    Ok(files)
+}
+
+fn discover_recursive(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            // Skip hidden dirs, build artifacts, and dependency dirs
+            if dir_name.starts_with('.') || dir_name == "target" || dir_name == "node_modules" {
+                continue;
+            }
+            discover_recursive(&path, files)?;
+        } else if path.extension().and_then(|e| e.to_str()) == Some("doo") {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// Resolve a path to a canonical entry point (.doo file or directory → main.doo).
+/// No hardcoded filenames beyond the standard project convention (main.doo).
+fn resolve_entry_point(path: &Path) -> Result<PathBuf, String> {
+    // Check DOO_ENTRY override
+    if let Ok(entry) = std::env::var(doo_core::constants::env_vars::DOO_ENTRY) {
+        let entry_path = PathBuf::from(&entry);
+        if entry_path.exists() {
+            return Ok(entry_path);
+        }
+    }
+
+    if path.is_file() {
+        return Ok(path.to_path_buf());
+    }
+
+    // Try main.doo, then src/main.doo (standard project conventions)
+    let main = path.join("main.doo");
+    if main.exists() {
+        return Ok(main);
+    }
+    let src_main = path.join("src").join("main.doo");
+    if src_main.exists() {
+        return Ok(src_main);
+    }
+
+    Err(format!(
+        "No main.doo or src/main.doo found in {}",
+        path.display()
+    ))
+}
 fn extract_from_hir(
     hir: &doo_hir::HirProgram,
     type_registry: &TypeRegistry,
@@ -98,8 +240,8 @@ fn extract_from_hir(
             let auto_timestamp = s.decorators.iter().any(|d| d.name == "autoTimestamp");
 
             // Resolve table name: @table("custom") or lowercase(name) + "s"
-            let table_name = custom_table_name
-                .unwrap_or_else(|| format!("{}s", s.name.to_lowercase()));
+            let table_name =
+                custom_table_name.unwrap_or_else(|| format!("{}s", s.name.to_lowercase()));
 
             let mut columns = Vec::new();
             let mut primary_key_cols = Vec::new();
@@ -110,14 +252,15 @@ fn extract_from_hir(
             for field in &s.fields {
                 let col_name = to_snake_case(&field.name);
                 let is_primary = field.decorators.iter().any(|d| d.name == "primary");
-                let is_auto = field.decorators.iter().any(|d| {
-                    d.name == "auto" || d.name == "autoIncrement"
-                });
+                let is_auto = field
+                    .decorators
+                    .iter()
+                    .any(|d| d.name == "auto" || d.name == "autoIncrement");
                 let is_unique = field.decorators.iter().any(|d| d.name == "unique");
                 let is_index = field.decorators.iter().any(|d| d.name == "index");
                 let is_hashed = field.decorators.iter().any(|d| d.name == "hash");
-                let is_optional = field.is_optional
-                    || field.decorators.iter().any(|d| d.name == "optional");
+                let is_optional =
+                    field.is_optional || field.decorators.iter().any(|d| d.name == "optional");
 
                 // Resolve SQL type from Doo type
                 let sql_type = resolve_sql_type(
@@ -294,7 +437,11 @@ fn resolve_sql_type(
     use doo_core::types::{builtin, TypeKind};
 
     if tid == builtin::INT {
-        return if is_auto { SqlType::Serial } else { SqlType::Integer };
+        return if is_auto {
+            SqlType::Serial
+        } else {
+            SqlType::Integer
+        };
     }
     if tid == builtin::FLOAT {
         return SqlType::DoublePrecision;
@@ -329,55 +476,19 @@ fn resolve_sql_type(
             TypeKind::Map { .. } => SqlType::Jsonb,
             TypeKind::Optional { inner } => {
                 // Recurse for optional inner type
-                resolve_sql_type(Some(*inner), type_registry, enum_map, referenced_enums, is_auto)
+                resolve_sql_type(
+                    Some(*inner),
+                    type_registry,
+                    enum_map,
+                    referenced_enums,
+                    is_auto,
+                )
             }
             _ => SqlType::Text,
         }
     } else {
         SqlType::Text
     }
-}
-
-/// Resolve input path to a main.doo file.
-///
-/// TODO: This duplicates `doo_driver::compile::resolve_input_path()` which has
-/// BFS scan, multi-project detection, and DOO_ENTRY support. Cannot reuse due
-/// to circular dependency (doo_driver depends on doo_migrate).
-/// Consider extracting to `doo_core` or a shared crate.
-fn resolve_input(path: &Path) -> Result<PathBuf, String> {
-    // Check DOO_ENTRY override
-    if let Ok(entry) = std::env::var(doo_core::constants::env_vars::DOO_ENTRY) {
-        let entry_path = PathBuf::from(&entry);
-        if entry_path.exists() {
-            return Ok(entry_path);
-        }
-    }
-
-    if path.is_file() {
-        return Ok(path.to_path_buf());
-    }
-    // Try path/main.doo, then path/src/main.doo
-    let main = path.join("main.doo");
-    if main.exists() {
-        return Ok(main);
-    }
-    let src_main = path.join("src").join("main.doo");
-    if src_main.exists() {
-        return Ok(src_main);
-    }
-    // Try to find any .doo file
-    if let Ok(entries) = fs::read_dir(path) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.extension().and_then(|e| e.to_str()) == Some("doo") {
-                return Ok(p);
-            }
-        }
-    }
-    Err(format!(
-        "No .doo files found in {}",
-        path.display()
-    ))
 }
 
 /// Module-local import resolution shim.
@@ -505,9 +616,6 @@ mod doo_driver_loader {
             }
         }
 
-        Ok(ImportResolution {
-            items,
-            errors,
-        })
+        Ok(ImportResolution { items, errors })
     }
 }
