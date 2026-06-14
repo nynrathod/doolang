@@ -40,7 +40,10 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
             format!("CREATE TYPE {} AS ENUM ({});", e.name, variants)
         }
         SchemaChange::AddEnumValue { enum_name, value } => {
-            format!("ALTER TYPE {} ADD VALUE IF NOT EXISTS '{}';", enum_name, value)
+            format!(
+                "ALTER TYPE {} ADD VALUE IF NOT EXISTS '{}';",
+                enum_name, value
+            )
         }
         SchemaChange::DropEnum { name } => {
             format!("DROP TYPE IF EXISTS {};", name)
@@ -57,38 +60,52 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
 
         // --- Columns ---
         SchemaChange::AddColumn { table, column } => {
+            let col_type = column.sql_type.to_ddl();
             let mut sql = format!(
                 "ALTER TABLE {} ADD COLUMN {} {}",
-                table,
-                column.name,
-                column.sql_type.to_ddl()
+                table, column.name, col_type
             );
+
+            // If column should be NOT NULL:
+            // - With a default: add NOT NULL inline (safe, existing rows get the default)
+            // - Without a default: add as nullable first, then backfill with zero value
+            //   and set NOT NULL in a single self-contained statement pair.
+            //   This avoids silently creating a nullable column when the schema says NOT NULL.
             if !column.nullable {
-                // Only add NOT NULL if there's a default (otherwise existing rows would fail)
                 if column.default.is_some() {
                     sql.push_str(" NOT NULL");
                 }
+                // No default → will add NOT NULL via backfill below
             }
             if let Some(default) = &column.default {
                 sql.push_str(&format!(" DEFAULT {}", default.to_sql()));
             }
             sql.push(';');
+
+            // If NOT NULL without a default, add the backfill + SET NOT NULL now.
+            // This guarantees the column ends up NOT NULL even for empty tables,
+            // and does NOT rely on a separate SetNotNull change (which may be
+            // ordered incorrectly or silently skipped by the planner).
+            if !column.nullable && column.default.is_none() {
+                let zero = column.sql_type.zero_default().to_sql();
+                sql.push_str(&format!(
+                    "\nUPDATE {} SET {} = {} WHERE {} IS NULL;\nALTER TABLE {} ALTER COLUMN {} SET NOT NULL;",
+                    table, column.name, zero, column.name, table, column.name
+                ));
+            }
             sql
         }
         SchemaChange::DropColumn { table, column } => {
-            format!("ALTER TABLE {} DROP COLUMN IF EXISTS {} CASCADE;", table, column)
-        }
-        SchemaChange::RenameColumn { table, from, to } => {
             format!(
-                "ALTER TABLE {} RENAME COLUMN {} TO {};",
-                table, from, to
+                "ALTER TABLE {} DROP COLUMN IF EXISTS {} CASCADE;",
+                table, column
             )
         }
+        SchemaChange::RenameColumn { table, from, to } => {
+            format!("ALTER TABLE {} RENAME COLUMN {} TO {};", table, from, to)
+        }
         SchemaChange::AlterColumnType {
-            table,
-            column,
-            to,
-            ..
+            table, column, to, ..
         } => {
             format!(
                 "ALTER TABLE {} ALTER COLUMN {} TYPE {} USING {}::{};",
@@ -99,7 +116,12 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
                 to.to_ddl()
             )
         }
-        SchemaChange::SetNotNull { table, column, default_value, sql_type } => {
+        SchemaChange::SetNotNull {
+            table,
+            column,
+            default_value,
+            sql_type,
+        } => {
             // Determine the value to backfill NULL rows with.
             // If the desired schema specifies a default, use that.
             // Otherwise, derive a type-appropriate "zero" value.
@@ -151,10 +173,7 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
             )
         }
         SchemaChange::DropPrimaryKey { table, name } => {
-            format!(
-                "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
-                table, name
-            )
+            format!("ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};", table, name)
         }
         SchemaChange::AddUnique {
             table,
@@ -169,10 +188,7 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
             )
         }
         SchemaChange::DropUnique { table, name } => {
-            format!(
-                "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
-                table, name
-            )
+            format!("ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};", table, name)
         }
         SchemaChange::AddCheck {
             table,
@@ -185,10 +201,7 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
             )
         }
         SchemaChange::DropCheck { table, name } => {
-            format!(
-                "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
-                table, name
-            )
+            format!("ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};", table, name)
         }
 
         // --- Indexes ---
@@ -202,7 +215,7 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
                 index.columns.join(", ")
             )
         }
-        SchemaChange::DropIndex { name } => {
+        SchemaChange::DropIndex { name, .. } => {
             format!("DROP INDEX IF EXISTS {};", name)
         }
 
@@ -220,10 +233,7 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
             )
         }
         SchemaChange::DropForeignKey { table, name } => {
-            format!(
-                "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
-                table, name
-            )
+            format!("ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};", table, name)
         }
     }
 }
@@ -232,9 +242,7 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
 /// Returns None for irreversible changes.
 pub fn change_to_down_sql(change: &SchemaChange) -> Option<String> {
     match change {
-        SchemaChange::CreateEnum(e) => {
-            Some(format!("DROP TYPE IF EXISTS {};", e.name))
-        }
+        SchemaChange::CreateEnum(e) => Some(format!("DROP TYPE IF EXISTS {};", e.name)),
         SchemaChange::AddEnumValue { .. } => {
             // PostgreSQL cannot remove enum values — irreversible
             None
@@ -244,9 +252,7 @@ pub fn change_to_down_sql(change: &SchemaChange) -> Option<String> {
             None
         }
 
-        SchemaChange::CreateTable(t) => {
-            Some(format!("DROP TABLE IF EXISTS {} CASCADE;", t.name))
-        }
+        SchemaChange::CreateTable(t) => Some(format!("DROP TABLE IF EXISTS {} CASCADE;", t.name)),
         SchemaChange::DropTable { .. } => {
             // Can't recreate without knowing columns
             None
@@ -255,90 +261,70 @@ pub fn change_to_down_sql(change: &SchemaChange) -> Option<String> {
             Some(format!("ALTER TABLE {} RENAME TO {};", to, from))
         }
 
-        SchemaChange::AddColumn { table, column } => {
-            Some(format!(
-                "ALTER TABLE {} DROP COLUMN IF EXISTS {};",
-                table, column.name
-            ))
-        }
+        SchemaChange::AddColumn { table, column } => Some(format!(
+            "ALTER TABLE {} DROP COLUMN IF EXISTS {};",
+            table, column.name
+        )),
         SchemaChange::DropColumn { .. } => {
             // Can't recreate dropped column with data
             None
         }
-        SchemaChange::RenameColumn { table, from, to } => {
-            Some(format!(
-                "ALTER TABLE {} RENAME COLUMN {} TO {};",
-                table, to, from
-            ))
-        }
+        SchemaChange::RenameColumn { table, from, to } => Some(format!(
+            "ALTER TABLE {} RENAME COLUMN {} TO {};",
+            table, to, from
+        )),
         SchemaChange::AlterColumnType {
             table,
             column,
             from,
             ..
-        } => {
-            Some(format!(
-                "ALTER TABLE {} ALTER COLUMN {} TYPE {} USING {}::{};",
-                table,
-                column,
-                from.to_ddl(),
-                column,
-                from.to_ddl()
-            ))
-        }
-        SchemaChange::SetNotNull { table, column, .. } => {
-            Some(format!(
-                "ALTER TABLE {} ALTER COLUMN {} DROP NOT NULL;",
-                table, column
-            ))
-        }
-        SchemaChange::DropNotNull { table, column } => {
-            Some(format!(
-                "ALTER TABLE {} ALTER COLUMN {} SET NOT NULL;",
-                table, column
-            ))
-        }
-        SchemaChange::SetDefault { table, column, .. } => {
-            Some(format!(
-                "ALTER TABLE {} ALTER COLUMN {} DROP DEFAULT;",
-                table, column
-            ))
-        }
+        } => Some(format!(
+            "ALTER TABLE {} ALTER COLUMN {} TYPE {} USING {}::{};",
+            table,
+            column,
+            from.to_ddl(),
+            column,
+            from.to_ddl()
+        )),
+        SchemaChange::SetNotNull { table, column, .. } => Some(format!(
+            "ALTER TABLE {} ALTER COLUMN {} DROP NOT NULL;",
+            table, column
+        )),
+        SchemaChange::DropNotNull { table, column } => Some(format!(
+            "ALTER TABLE {} ALTER COLUMN {} SET NOT NULL;",
+            table, column
+        )),
+        SchemaChange::SetDefault { table, column, .. } => Some(format!(
+            "ALTER TABLE {} ALTER COLUMN {} DROP DEFAULT;",
+            table, column
+        )),
         SchemaChange::DropDefault { .. } => {
             // Can't restore unknown default
             None
         }
-        SchemaChange::AddPrimaryKey { table, name, .. } => {
-            Some(format!(
-                "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
-                table, name
-            ))
-        }
+        SchemaChange::AddPrimaryKey { table, name, .. } => Some(format!(
+            "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
+            table, name
+        )),
         SchemaChange::DropPrimaryKey { .. } => None,
-        SchemaChange::AddUnique { table, name, .. } => {
-            Some(format!(
-                "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
-                table, name
-            ))
-        }
+        SchemaChange::AddUnique { table, name, .. } => Some(format!(
+            "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
+            table, name
+        )),
         SchemaChange::DropUnique { .. } => None,
-        SchemaChange::AddCheck { table, name, .. } => {
-            Some(format!(
-                "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
-                table, name
-            ))
-        }
+        SchemaChange::AddCheck { table, name, .. } => Some(format!(
+            "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
+            table, name
+        )),
         SchemaChange::DropCheck { .. } => None,
         SchemaChange::CreateIndex { index, .. } => {
             Some(format!("DROP INDEX IF EXISTS {};", index.name))
         }
         SchemaChange::DropIndex { .. } => None,
-        SchemaChange::AddForeignKey { table, fk } => {
-            Some(format!(
-                "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
-                table, fk.name
-            ))
-        }
+        SchemaChange::AddForeignKey { table, fk } => Some(format!(
+            "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
+            table, fk.name
+        )),
         SchemaChange::DropForeignKey { .. } => None,
     }
 }
