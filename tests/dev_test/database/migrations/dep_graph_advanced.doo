@@ -1,0 +1,90 @@
+// Dependency Graph — Advanced edge case tests
+// Covers: diamond deps, self-ref FK, many-to-many, alter type to enum
+// @table names match auto-pluralized forms so @foreign(StructName) resolves correctly.
+import std::Database;
+
+// Enums
+enum Category { Tech, Health, Finance }
+enum Level { Junior, Senior, Lead }
+
+// DIAMOND: a -> b, a -> c, b -> d, c -> d
+@table("diamondas")
+struct DiamondA {
+    id: Int @primary @auto,
+    Name: Str,
+}
+
+@table("diamondbs")
+struct DiamondB {
+    id: Int @primary @auto,
+    AId: Int @foreign(DiamondA),
+    Data: Str,
+}
+
+@table("diamondcs")
+struct DiamondC {
+    id: Int @primary @auto,
+    AId: Int @foreign(DiamondA),
+    Data: Str,
+}
+
+@table("diamondds")
+struct DiamondD {
+    id: Int @primary @auto,
+    BId: Int @foreign(DiamondB),
+    CId: Int @foreign(DiamondC),
+    Value: Str,
+}
+
+// SELF-REFERENCING FK
+@table("employees")
+struct Employee {
+    id: Int @primary @auto,
+    Name: Str,
+    ManagerId: Int @foreign(Employee),
+    Level: Level @default("Junior"),
+}
+
+// MANY-TO-MANY JUNCTION
+@table("diamondtags")
+struct DiamondTag {
+    id: Int @primary @auto,
+    Name: Str @unique,
+}
+
+@table("diamondatags")
+struct DiamondATag {
+    id: Int @primary @auto,
+    AId: Int @foreign(DiamondA),
+    TagId: Int @foreign(DiamondTag),
+}
+
+// TABLE WITH ENUM
+@table("articles")
+struct Article {
+    id: Int @primary @auto,
+    Title: Str,
+    Category: Category @default("Tech"),
+    Content: Str,
+}
+
+// INDEPENDENT tables
+@table("systemlogs")
+struct SystemLog {
+    id: Int @primary @auto,
+    Event: Str,
+    Timestamp: Str,
+}
+
+@table("cacheentrys")
+struct CacheEntry {
+    id: Int @primary @auto,
+    Key: Str @unique,
+    Value: Str,
+}
+
+static DB: Database;
+fn main() {
+    DB = Database::Postgres()?;
+    print("Advanced dep graph test loaded.");
+}
