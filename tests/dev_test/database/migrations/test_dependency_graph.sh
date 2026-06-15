@@ -869,7 +869,7 @@ if [ -n "$ADV_JSON" ]; then
 
     step "18.2 Check deep transitive enum dependency via nested field"
     # Find component id of MetaType enum
-    METATYPE_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_enum" and (.change.name | test("metatype"; "i"))) | .component_id] | first')
+    METATYPE_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_enum" and (.change.name | test("meta_type"; "i"))) | .component_id] | first')
 
     if [ -n "$METATYPE_COMP" ] && [ "$METATYPE_COMP" != "null" ]; then
         if [ "$NESTED_COMP" = "$METATYPE_COMP" ]; then
@@ -940,7 +940,7 @@ if [ -n "$ADV_JSON" ]; then
     fi
 
     step "19.3 Recursion Check: Resolve Level-2 Enum dependency (Config -> Audit -> AccessLevel)"
-    ACCESS_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_enum" and (.change.name | test("accesslevel"; "i"))) | .component_id] | first')
+    ACCESS_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_enum" and (.change.name | test("access_level"; "i"))) | .component_id] | first')
     if [ -n "$ACCESS_COMP" ] && [ "$ACCESS_COMP" != "null" ]; then
         HAS_ACCESS_DEP=$(echo "$ADV_JSON" | jq -r --arg ac "$ACCESS_COMP" '[.migration_plan.changes[] | select(.change.name | test("complex_documents"; "i")) | .depends_on[] | select(. == $ac)] | length')
 
@@ -968,6 +968,1024 @@ else
     skip "19.x Advanced JSON not accessible"
 fi
 
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 20: Non-Table Struct with Enum (Transitive Enum Dependency)
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 20: Non-Table Struct w/ Enum — Transitive Dep"
+
+step "20.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "20.1 MetaTask table has non-table struct in affected_objects"
+    METATASK_HAS_META=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "meta_tasks") | .affected_objects[] | select(. == "TaskMeta")] | length')
+    if [ -n "$METATASK_HAS_META" ] && [ "$METATASK_HAS_META" -gt 0 ]; then
+        pass "20.1 MetaTask affected_objects includes 'TaskMeta' (non-table struct)"
+    else
+        fail "20.1 MetaTask missing 'TaskMeta' in affected_objects"
+    fi
+
+    step "20.2 MetaTask has transitive enum ref for TaskStatus"
+    METATASK_HAS_ENUM=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "meta_tasks") | .affected_objects[] | select(. == "task_status")] | length')
+    if [ -n "$METATASK_HAS_ENUM" ] && [ "$METATASK_HAS_ENUM" -gt 0 ]; then
+        pass "20.2 MetaTask affected_objects includes 'task_status' (transitive enum via TaskMeta)"
+    else
+        fail "20.2 MetaTask missing transitive enum 'task_status' in affected_objects"
+    fi
+
+    step "20.3 MetaTask depends_on includes TaskStatus enum"
+    METATASK_DEPS=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "meta_tasks") | .depends_on | length] | first')
+    if [ -n "$METATASK_DEPS" ] && [ "$METATASK_DEPS" -gt 0 ]; then
+        pass "20.3 MetaTask has $METATASK_DEPS depends_on entries (includes TaskStatus)"
+    else
+        fail "20.3 MetaTask has no depends_on entries"
+    fi
+
+else
+    skip "20.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 21: Array of Non-Table Struct
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 21: Array of Non-Table Struct — Type Traversal"
+
+step "21.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "21.1 ArticleGroup table has non-table struct Tag in affected_objects"
+    AGROUP_HAS_TAG=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "article_groups") | .affected_objects[] | select(. == "Tag")] | length')
+    if [ -n "$AGROUP_HAS_TAG" ] && [ "$AGROUP_HAS_TAG" -gt 0 ]; then
+        pass "21.1 ArticleGroup affected_objects includes 'Tag' (array element type)"
+    else
+        fail "21.1 ArticleGroup missing 'Tag' in affected_objects"
+    fi
+
+    step "21.2 ArticleGroup has component_id assigned"
+    AGROUP_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "article_groups") | .component_id] | first')
+    if [ -n "$AGROUP_COMP" ] && [ "$AGROUP_COMP" != "null" ]; then
+        pass "21.2 ArticleGroup has component_id $AGROUP_COMP"
+    else
+        fail "21.2 ArticleGroup missing component_id"
+    fi
+
+else
+    skip "21.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 22: Optional Non-Table Struct
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 22: Optional Non-Table Struct — Optional Traversal"
+
+step "22.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "22.1 GuestHouse table has non-table struct Address in affected_objects"
+    GUEST_HAS_ADDR=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "guest_houses") | .affected_objects[] | select(. == "Address")] | length')
+    if [ -n "$GUEST_HAS_ADDR" ] && [ "$GUEST_HAS_ADDR" -gt 0 ]; then
+        pass "22.1 GuestHouse affected_objects includes 'Address' (optional struct type)"
+    else
+        fail "22.1 GuestHouse missing 'Address' in affected_objects"
+    fi
+
+    step "22.2 GuestHouse has component_id assigned"
+    GUEST_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "guest_houses") | .component_id] | first')
+    if [ -n "$GUEST_COMP" ] && [ "$GUEST_COMP" != "null" ]; then
+        pass "22.2 GuestHouse has component_id $GUEST_COMP"
+    else
+        fail "22.2 GuestHouse missing component_id"
+    fi
+
+else
+    skip "22.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 23: Map with Non-Table Struct Value
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 23: Map with Non-Table Struct — Map Traversal"
+
+step "23.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "23.1 DocBundle table has non-table struct MetadataEntry in affected_objects"
+    DOC_HAS_META=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "doc_bundles") | .affected_objects[] | select(. == "MetadataEntry")] | length')
+    if [ -n "$DOC_HAS_META" ] && [ "$DOC_HAS_META" -gt 0 ]; then
+        pass "23.1 DocBundle affected_objects includes 'MetadataEntry' (map value type)"
+    else
+        fail "23.1 DocBundle missing 'MetadataEntry' in affected_objects"
+    fi
+
+    step "23.2 DocBundle has component_id assigned"
+    DOC_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "doc_bundles") | .component_id] | first')
+    if [ -n "$DOC_COMP" ] && [ "$DOC_COMP" != "null" ]; then
+        pass "23.2 DocBundle has component_id $DOC_COMP"
+    else
+        fail "23.2 DocBundle missing component_id"
+    fi
+
+else
+    skip "23.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 24: Shared Non-Table Struct — Component Grouping
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 24: Shared Non-Table Struct — Component Cohesion"
+
+step "24.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "24.1 SharedAuthor has non-table struct SharedProfile in affected_objects"
+    AUTHOR_HAS_PROF=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "shared_authors") | .affected_objects[] | select(. == "SharedProfile")] | length')
+    if [ -n "$AUTHOR_HAS_PROF" ] && [ "$AUTHOR_HAS_PROF" -gt 0 ]; then
+        pass "24.1 SharedAuthor affected_objects includes 'SharedProfile'"
+    else
+        fail "24.1 SharedAuthor missing 'SharedProfile' in affected_objects"
+    fi
+
+    step "24.2 SharedEditor has non-table struct SharedProfile in affected_objects"
+    EDITOR_HAS_PROF=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "shared_editors") | .affected_objects[] | select(. == "SharedProfile")] | length')
+    if [ -n "$EDITOR_HAS_PROF" ] && [ "$EDITOR_HAS_PROF" -gt 0 ]; then
+        pass "24.2 SharedEditor affected_objects includes 'SharedProfile'"
+    else
+        fail "24.2 SharedEditor missing 'SharedProfile' in affected_objects"
+    fi
+
+    step "24.3 SharedAuthor and SharedEditor share same component"
+    AUTHOR_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "shared_authors") | .component_id] | first')
+    EDITOR_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "shared_editors") | .component_id] | first')
+    if [ -n "$AUTHOR_COMP" ] && [ -n "$EDITOR_COMP" ] && [ "$AUTHOR_COMP" = "$EDITOR_COMP" ]; then
+        pass "24.3 SharedAuthor and SharedEditor share component $AUTHOR_COMP (via SharedProfile)"
+    else
+        fail "24.3 SharedAuthor comp=$AUTHOR_COMP, SharedEditor comp=$EDITOR_COMP (should match)"
+    fi
+
+else
+    skip "24.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 25: Simple Non-Table Struct + Enum (Models.doo pattern)
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 25: Simple Non-Table Struct + Enum — Models.doo Pattern"
+
+step "25.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "25.1 SimpleTask has non-table struct SimpleProject in affected_objects"
+    TASK_HAS_PROJ=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "simple_tasks") | .affected_objects[] | select(. == "SimpleProject")] | length')
+    if [ -n "$TASK_HAS_PROJ" ] && [ "$TASK_HAS_PROJ" -gt 0 ]; then
+        pass "25.1 SimpleTask affected_objects includes 'SimpleProject' (non-table struct)"
+    else
+        fail "25.1 SimpleTask missing 'SimpleProject' in affected_objects"
+    fi
+
+    step "25.2 SimpleTask has SimpleStatus enum in affected_objects"
+    TASK_HAS_STATUS=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "simple_tasks") | .affected_objects[] | select(. == "simple_status")] | length')
+    if [ -n "$TASK_HAS_STATUS" ] && [ "$TASK_HAS_STATUS" -gt 0 ]; then
+        pass "25.2 SimpleTask affected_objects includes 'simple_status' (direct enum field)"
+    else
+        fail "25.2 SimpleTask missing 'simple_status' in affected_objects"
+    fi
+
+    step "25.3 SimpleTask depends_on includes SimpleStatus enum creator"
+    TASK_DEPS=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "simple_tasks") | .depends_on | length] | first')
+    if [ -n "$TASK_DEPS" ] && [ "$TASK_DEPS" -gt 0 ]; then
+        pass "25.3 SimpleTask has $TASK_DEPS depends_on entries"
+    else
+        fail "25.3 SimpleTask has no depends_on entries"
+    fi
+
+    step "25.4 SimpleTask and SimpleStatus enum share same component"
+    STASK_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "simple_tasks") | .component_id] | first')
+    SSTATUS_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_enum" and .change.name == "simple_status") | .component_id] | first')
+    if [ -n "$STASK_COMP" ] && [ -n "$SSTATUS_COMP" ] && [ "$STASK_COMP" = "$SSTATUS_COMP" ]; then
+        pass "25.4 SimpleTask and SimpleStatus share component $STASK_COMP"
+    else
+        fail "25.4 SimpleTask comp=$STASK_COMP, SimpleStatus comp=$SSTATUS_COMP (should match)"
+    fi
+
+else
+    skip "25.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 26: Non-Table Struct with @foreign — FK Dependency Through Nested Struct
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 26: FK via Non-Table Struct — @foreign in Nested Struct"
+
+step "26.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "26.1 ContentMeta (non-table struct) FK to DiamondA creates dep edge"
+    # ContentMeta has @foreign(DiamondA) inside nested_profiles
+    # nested_profiles should depend_on diamondas
+    NESTED_FK_DEPS=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "nested_profiles") | .depends_on | length] | first')
+    if [ -n "$NESTED_FK_DEPS" ] && [ "$NESTED_FK_DEPS" -gt 0 ]; then
+        pass "26.1 nested_profiles has $NESTED_FK_DEPS deps (includes FK to DiamondA through ContentMeta)"
+    else
+        fail "26.1 nested_profiles has no deps — FK through non-table struct not resolved"
+    fi
+
+    step "26.2 nested_profiles and diamondas share component"
+    NESTED_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "nested_profiles") | .component_id] | first')
+    DIAMOND_A_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "diamondas") | .component_id] | first')
+    if [ -n "$NESTED_COMP" ] && [ -n "$DIAMOND_A_COMP" ] && [ "$NESTED_COMP" = "$DIAMOND_A_COMP" ]; then
+        pass "26.2 nested_profiles and diamondas share component $NESTED_COMP (via ContentMeta -> @foreign)"
+    else
+        fail "26.2 nested_profiles comp=$NESTED_COMP, diamondas comp=$DIAMOND_A_COMP"
+    fi
+
+else
+    skip "26.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 27: Array of Enum in @table (Array<Enum> traversal)
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 27: Array of Enum in @table — Array<Enum> Traversal"
+
+step "27.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "27.1 ArrayEnum has Visibility enum in affected_objects"
+    ARR_HAS_VIS=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "array_enums") | .affected_objects[] | select(. == "visibility")] | length')
+    if [ -n "$ARR_HAS_VIS" ] && [ "$ARR_HAS_VIS" -gt 0 ]; then
+        pass "27.1 ArrayEnum affected_objects includes 'visibility' (from Array<Visibility>)"
+    else
+        fail "27.1 ArrayEnum missing 'visibility' in affected_objects"
+    fi
+
+    step "27.2 ArrayEnum and Visibility enum share same component"
+    ARR_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "array_enums") | .component_id] | first')
+    VIS_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_enum" and .change.name == "visibility") | .component_id] | first')
+    if [ -n "$ARR_COMP" ] && [ -n "$VIS_COMP" ] && [ "$ARR_COMP" = "$VIS_COMP" ]; then
+        pass "27.2 ArrayEnum and Visibility share component $ARR_COMP"
+    else
+        fail "27.2 ArrayEnum comp=$ARR_COMP, Visibility comp=$VIS_COMP"
+    fi
+
+    step "27.3 ArrayEnum depends_on includes Visibility"
+    ARR_DEPS=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "array_enums") | .depends_on | length] | first')
+    if [ -n "$ARR_DEPS" ] && [ "$ARR_DEPS" -gt 0 ]; then
+        pass "27.3 ArrayEnum has $ARR_DEPS depends_on entries (includes Visibility)"
+    else
+        fail "27.3 ArrayEnum has no depends_on entries"
+    fi
+
+else
+    skip "27.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 28: Optional Enum in @table (Optional<Enum> traversal)
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 28: Optional Enum in @table — Optional<Enum> Traversal"
+
+step "28.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "28.1 OptionalEnum has Tier enum in affected_objects"
+    OPT_HAS_TIER=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "optional_enums") | .affected_objects[] | select(. == "tier")] | length')
+    if [ -n "$OPT_HAS_TIER" ] && [ "$OPT_HAS_TIER" -gt 0 ]; then
+        pass "28.1 OptionalEnum affected_objects includes 'tier' (from Optional<Tier>)"
+    else
+        fail "28.1 OptionalEnum missing 'tier' in affected_objects"
+    fi
+
+    step "28.2 OptionalEnum and Tier enum share same component"
+    OPT_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "optional_enums") | .component_id] | first')
+    TIER_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_enum" and .change.name == "tier") | .component_id] | first')
+    if [ -n "$OPT_COMP" ] && [ -n "$TIER_COMP" ] && [ "$OPT_COMP" = "$TIER_COMP" ]; then
+        pass "28.2 OptionalEnum and Tier share component $OPT_COMP"
+    else
+        fail "28.2 OptionalEnum comp=$OPT_COMP, Tier comp=$TIER_COMP"
+    fi
+
+else
+    skip "28.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 29: Map with Enum Key (Map<Enum, X> traversal)
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 29: Map with Enum Key — Map<Enum, X> Traversal"
+
+step "29.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "29.1 MapEnumKey has FeatureFlag enum in affected_objects"
+    MAP_HAS_FLAG=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "map_enum_keys") | .affected_objects[] | select(. == "feature_flag")] | length')
+    if [ -n "$MAP_HAS_FLAG" ] && [ "$MAP_HAS_FLAG" -gt 0 ]; then
+        pass "29.1 MapEnumKey affected_objects includes 'feature_flag' (from Map<FeatureFlag, Bool>)"
+    else
+        fail "29.1 MapEnumKey missing 'feature_flag' in affected_objects"
+    fi
+
+    step "29.2 MapEnumKey and FeatureFlag enum share same component"
+    MKEY_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "map_enum_keys") | .component_id] | first')
+    FLAG_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_enum" and .change.name == "feature_flag") | .component_id] | first')
+    if [ -n "$MKEY_COMP" ] && [ -n "$FLAG_COMP" ] && [ "$MKEY_COMP" = "$FLAG_COMP" ]; then
+        pass "29.2 MapEnumKey and FeatureFlag share component $MKEY_COMP"
+    else
+        fail "29.2 MapEnumKey comp=$MKEY_COMP, FeatureFlag comp=$FLAG_COMP"
+    fi
+
+else
+    skip "29.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 30: Non-Table Struct with Array of Enum (transitive Array<Enum>)
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 30: Array of Enum in Non-Table Struct — Transitive Array<Enum>"
+
+step "30.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "30.1 DisplayConfig has DisplayPrefs in affected_objects"
+    DC_HAS_PREFS=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "display_configs") | .affected_objects[] | select(. == "DisplayPrefs")] | length')
+    if [ -n "$DC_HAS_PREFS" ] && [ "$DC_HAS_PREFS" -gt 0 ]; then
+        pass "30.1 DisplayConfig affected_objects includes 'DisplayPrefs'"
+    else
+        fail "30.1 DisplayConfig missing 'DisplayPrefs'"
+    fi
+
+    step "30.2 DisplayConfig has ColorMode enum (transitive through DisplayPrefs)"
+    DC_HAS_MODE=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "display_configs") | .affected_objects[] | select(. == "color_mode")] | length')
+    if [ -n "$DC_HAS_MODE" ] && [ "$DC_HAS_MODE" -gt 0 ]; then
+        pass "30.2 DisplayConfig affected_objects includes 'color_mode' (transitive Array<ColorMode>)"
+    else
+        fail "30.2 DisplayConfig missing 'color_mode' in affected_objects"
+    fi
+
+    step "30.3 DisplayConfig depends_on includes ColorMode"
+    DC_DEPS=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "display_configs") | .depends_on | length] | first')
+    if [ -n "$DC_DEPS" ] && [ "$DC_DEPS" -gt 0 ]; then
+        pass "30.3 DisplayConfig has $DC_DEPS depends_on (includes ColorMode)"
+    else
+        fail "30.3 DisplayConfig has no depends_on"
+    fi
+
+else
+    skip "30.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 31: Non-Table Struct with Optional Enum (transitive Optional<Enum>)
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 31: Optional Enum in Non-Table Struct — Transitive Optional<Enum>"
+
+step "31.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "31.1 ThemeConfig has ThemePrefs in affected_objects"
+    TC_HAS_PREFS=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "theme_configs") | .affected_objects[] | select(. == "ThemePrefs")] | length')
+    if [ -n "$TC_HAS_PREFS" ] && [ "$TC_HAS_PREFS" -gt 0 ]; then
+        pass "31.1 ThemeConfig affected_objects includes 'ThemePrefs'"
+    else
+        fail "31.1 ThemeConfig missing 'ThemePrefs'"
+    fi
+
+    step "31.2 ThemeConfig has ThemeKind enum (transitive through ThemePrefs)"
+    TC_HAS_KIND=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "theme_configs") | .affected_objects[] | select(. == "theme_kind")] | length')
+    if [ -n "$TC_HAS_KIND" ] && [ "$TC_HAS_KIND" -gt 0 ]; then
+        pass "31.2 ThemeConfig affected_objects includes 'theme_kind' (transitive Optional<ThemeKind>)"
+    else
+        fail "31.2 ThemeConfig missing 'theme_kind'"
+    fi
+
+else
+    skip "31.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 32: Non-Table Struct with Map of Enum Key (transitive Map<Enum, X>)
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 32: Map of Enum Key in Non-Table Struct — Transitive Map<Enum, X>"
+
+step "32.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "32.1 WidgetConfig has WidgetLayout in affected_objects"
+    WC_HAS_LAYOUT=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "widget_configs") | .affected_objects[] | select(. == "WidgetLayout")] | length')
+    if [ -n "$WC_HAS_LAYOUT" ] && [ "$WC_HAS_LAYOUT" -gt 0 ]; then
+        pass "32.1 WidgetConfig affected_objects includes 'WidgetLayout'"
+    else
+        fail "32.1 WidgetConfig missing 'WidgetLayout'"
+    fi
+
+    step "32.2 WidgetConfig has WidgetSize enum (transitive through WidgetLayout)"
+    WC_HAS_SIZE=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "widget_configs") | .affected_objects[] | select(. == "widget_size")] | length')
+    if [ -n "$WC_HAS_SIZE" ] && [ "$WC_HAS_SIZE" -gt 0 ]; then
+        pass "32.2 WidgetConfig affected_objects includes 'widget_size' (transitive Map<WidgetSize, Int>)"
+    else
+        fail "32.2 WidgetConfig missing 'widget_size'"
+    fi
+
+else
+    skip "32.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 33: 3-Level Deep Nesting — enums & FKs at every level
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 33: 3-Level Deep Nesting — Recursive Traversal"
+
+step "33.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "33.1 DeployConfig has HostingPlan (level 1) in affected_objects"
+    DEP_HAS_HOST=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "deploy_configs") | .affected_objects[] | select(. == "HostingPlan")] | length')
+    if [ -n "$DEP_HAS_HOST" ] && [ "$DEP_HAS_HOST" -gt 0 ]; then
+        pass "33.1 DeployConfig affected_objects includes 'HostingPlan' (level 1)"
+    else
+        fail "33.1 DeployConfig missing 'HostingPlan'"
+    fi
+
+    step "33.2 DeployConfig has DataCenter (level 2) in affected_objects"
+    DEP_HAS_DC=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "deploy_configs") | .affected_objects[] | select(. == "DataCenter")] | length')
+    if [ -n "$DEP_HAS_DC" ] && [ "$DEP_HAS_DC" -gt 0 ]; then
+        pass "33.2 DeployConfig affected_objects includes 'DataCenter' (level 2)"
+    else
+        fail "33.2 DeployConfig missing 'DataCenter'"
+    fi
+
+    step "33.3 DeployConfig has Region enum (level 3) in affected_objects"
+    DEP_HAS_REGION=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "deploy_configs") | .affected_objects[] | select(. == "region")] | length')
+    if [ -n "$DEP_HAS_REGION" ] && [ "$DEP_HAS_REGION" -gt 0 ]; then
+        pass "33.3 DeployConfig affected_objects includes 'region' (level 3 enum)"
+    else
+        fail "33.3 DeployConfig missing 'region' enum"
+    fi
+
+    step "33.4 DeployConfig has Employee FK (level 3) via affected_objects"
+    DEP_HAS_EMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "deploy_configs") | .affected_objects[] | select(. == "employees")] | length')
+    if [ -n "$DEP_HAS_EMP" ] && [ "$DEP_HAS_EMP" -gt 0 ]; then
+        pass "33.4 DeployConfig affected_objects includes 'employees' (level 3 FK)"
+    else
+        fail "33.4 DeployConfig missing 'employees' FK ref"
+    fi
+
+    step "33.5 DeployConfig has component_id assigned"
+    DEP_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "deploy_configs") | .component_id] | first')
+    if [ -n "$DEP_COMP" ] && [ "$DEP_COMP" != "null" ]; then
+        pass "33.5 DeployConfig has component_id $DEP_COMP"
+    else
+        fail "33.5 DeployConfig missing component_id"
+    fi
+
+else
+    skip "33.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 34: Circular Non-Table Struct Reference (A→B→A cycle)
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 34: Circular Non-Table Struct — Infinite Recursion Guard"
+
+step "34.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "34.1 CircularRef has CircularA in affected_objects"
+    CR_HAS_A=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "circular_refs") | .affected_objects[] | select(. == "CircularA")] | length')
+    if [ -n "$CR_HAS_A" ] && [ "$CR_HAS_A" -gt 0 ]; then
+        pass "34.1 CircularRef affected_objects includes 'CircularA'"
+    else
+        fail "34.1 CircularRef missing 'CircularA'"
+    fi
+
+    step "34.2 CircularRef has CircularB in affected_objects (through circular ref)"
+    CR_HAS_B=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "circular_refs") | .affected_objects[] | select(. == "CircularB")] | length')
+    if [ -n "$CR_HAS_B" ] && [ "$CR_HAS_B" -gt 0 ]; then
+        pass "34.2 CircularRef affected_objects includes 'CircularB' (circular ref resolved)"
+    else
+        fail "34.2 CircularRef missing 'CircularB'"
+    fi
+
+    step "34.3 CircularRef has PointerType enum in affected_objects"
+    CR_HAS_PTR=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "circular_refs") | .affected_objects[] | select(. == "pointer_type")] | length')
+    if [ -n "$CR_HAS_PTR" ] && [ "$CR_HAS_PTR" -gt 0 ]; then
+        pass "34.3 CircularRef affected_objects includes 'pointer_type' (enum through circular struct)"
+    else
+        fail "34.3 CircularRef missing 'pointer_type' enum"
+    fi
+
+    step "34.4 CircularRef has component_id (no crash from circular refs)"
+    CR_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "circular_refs") | .component_id] | first')
+    if [ -n "$CR_COMP" ] && [ "$CR_COMP" != "null" ]; then
+        pass "34.4 CircularRef has component_id $CR_COMP (no infinite loop)"
+    else
+        fail "34.4 CircularRef missing component_id (possible crash)"
+    fi
+
+else
+    skip "34.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 35: Multiple Enums in One Non-Table Struct
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 35: Multiple Enums in One Non-Table Struct"
+
+step "35.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "35.1 ExportConfig has ExportPrefs in affected_objects"
+    EC_HAS_PREFS=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "export_configs") | .affected_objects[] | select(. == "ExportPrefs")] | length')
+    if [ -n "$EC_HAS_PREFS" ] && [ "$EC_HAS_PREFS" -gt 0 ]; then
+        pass "35.1 ExportConfig affected_objects includes 'ExportPrefs'"
+    else
+        fail "35.1 ExportConfig missing 'ExportPrefs'"
+    fi
+
+    step "35.2 ExportConfig has Format enum in affected_objects"
+    EC_HAS_FMT=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "export_configs") | .affected_objects[] | select(. == "format")] | length')
+    if [ -n "$EC_HAS_FMT" ] && [ "$EC_HAS_FMT" -gt 0 ]; then
+        pass "35.2 ExportConfig affected_objects includes 'format' (enum 1 of 2)"
+    else
+        fail "35.2 ExportConfig missing 'format' enum"
+    fi
+
+    step "35.3 ExportConfig has Compression enum in affected_objects"
+    EC_HAS_CMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "export_configs") | .affected_objects[] | select(. == "compression")] | length')
+    if [ -n "$EC_HAS_CMP" ] && [ "$EC_HAS_CMP" -gt 0 ]; then
+        pass "35.3 ExportConfig affected_objects includes 'compression' (enum 2 of 2)"
+    else
+        fail "35.3 ExportConfig missing 'compression' enum"
+    fi
+
+    step "35.4 ExportConfig depends_on includes both Format and Compression"
+    EC_DEPS=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "export_configs") | .depends_on | length] | first')
+    if [ -n "$EC_DEPS" ] && [ "$EC_DEPS" -gt 0 ]; then
+        pass "35.4 ExportConfig has $EC_DEPS depends_on entries (covers both enums)"
+    else
+        fail "35.4 ExportConfig has no depends_on"
+    fi
+
+else
+    skip "35.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 36: Kitchen Sink — All Type Kinds in One Non-Table Struct
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 36: Kitchen Sink — All Type Kinds in One Struct"
+
+step "36.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "36.1 SinkConfig has KitchenSink in affected_objects"
+    SK_HAS_SINK=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "sink_configs") | .affected_objects[] | select(. == "KitchenSink")] | length')
+    if [ -n "$SK_HAS_SINK" ] && [ "$SK_HAS_SINK" -gt 0 ]; then
+        pass "36.1 SinkConfig affected_objects includes 'KitchenSink'"
+    else
+        fail "36.1 SinkConfig missing 'KitchenSink'"
+    fi
+
+    step "36.2 SinkConfig has SinkLevel enum in affected_objects"
+    SK_HAS_LEVEL=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "sink_configs") | .affected_objects[] | select(. == "sink_level")] | length')
+    if [ -n "$SK_HAS_LEVEL" ] && [ "$SK_HAS_LEVEL" -gt 0 ]; then
+        pass "36.2 SinkConfig affected_objects includes 'sink_level' (direct enum + optional + array + map)"
+    else
+        fail "36.2 SinkConfig missing 'sink_level' enum"
+    fi
+
+    step "36.3 SinkConfig has Employee FK in affected_objects (via KitchenSink)"
+    SK_HAS_EMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "sink_configs") | .affected_objects[] | select(. == "employees")] | length')
+    if [ -n "$SK_HAS_EMP" ] && [ "$SK_HAS_EMP" -gt 0 ]; then
+        pass "36.3 SinkConfig affected_objects includes 'employees' (FK + optional FK)"
+    else
+        fail "36.3 SinkConfig missing 'employees' FK ref"
+    fi
+
+    step "36.4 SinkConfig and SinkLevel share same component"
+    SK_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "sink_configs") | .component_id] | first')
+    SL_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_enum" and .change.name == "sink_level") | .component_id] | first')
+    if [ -n "$SK_COMP" ] && [ -n "$SL_COMP" ] && [ "$SK_COMP" = "$SL_COMP" ]; then
+        pass "36.4 SinkConfig and SinkLevel share component $SK_COMP (all deps in one batch)"
+    else
+        fail "36.4 SinkConfig comp=$SK_COMP, SinkLevel comp=$SL_COMP"
+    fi
+
+    step "36.5 SinkConfig has depends_on entries"
+    SK_DEPS=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "sink_configs") | .depends_on | length] | first')
+    if [ -n "$SK_DEPS" ] && [ "$SK_DEPS" -gt 0 ]; then
+        pass "36.5 SinkConfig has $SK_DEPS depends_on entries (enum + FK deps)"
+    else
+        fail "36.5 SinkConfig has no depends_on entries"
+    fi
+
+else
+    skip "36.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 37: Optional Array of Enum — [Visibility]?
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 37: Optional Array of Enum — Optional<Array<Enum>>"
+
+step "37.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "37.1 OptArrayEnum has Visibility enum in affected_objects"
+    OAE_HAS_VIS=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "opt_array_enums") | .affected_objects[] | select(. == "visibility")] | length')
+    if [ -n "$OAE_HAS_VIS" ] && [ "$OAE_HAS_VIS" -gt 0 ]; then
+        pass "37.1 OptArrayEnum affected_objects includes 'visibility' (from [Visibility]?)"
+    else
+        fail "37.1 OptArrayEnum missing 'visibility' in affected_objects"
+    fi
+
+    step "37.2 OptArrayEnum has component_id assigned"
+    OAE_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "opt_array_enums") | .component_id] | first')
+    if [ -n "$OAE_COMP" ] && [ "$OAE_COMP" != "null" ]; then
+        pass "37.2 OptArrayEnum has component_id $OAE_COMP"
+    else
+        fail "37.2 OptArrayEnum missing component_id"
+    fi
+
+else
+    skip "37.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 38: Map<Enum, Non-Table Struct> — {Tier: DisplayPrefs}
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 38: Map<Enum, Struct> — Map with Enum Key and Struct Value"
+
+step "38.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "38.1 MapEnumStruct has Tier enum in affected_objects"
+    MES_HAS_TIER=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "map_enum_structs") | .affected_objects[] | select(. == "tier")] | length')
+    if [ -n "$MES_HAS_TIER" ] && [ "$MES_HAS_TIER" -gt 0 ]; then
+        pass "38.1 MapEnumStruct affected_objects includes 'tier' (map key enum)"
+    else
+        fail "38.1 MapEnumStruct missing 'tier' (map key enum)"
+    fi
+
+    step "38.2 MapEnumStruct has DisplayPrefs in affected_objects"
+    MES_HAS_PREFS=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "map_enum_structs") | .affected_objects[] | select(. == "DisplayPrefs")] | length')
+    if [ -n "$MES_HAS_PREFS" ] && [ "$MES_HAS_PREFS" -gt 0 ]; then
+        pass "38.2 MapEnumStruct affected_objects includes 'DisplayPrefs' (map value struct)"
+    else
+        fail "38.2 MapEnumStruct missing 'DisplayPrefs'"
+    fi
+
+    step "38.3 MapEnumStruct has ColorMode (transitive through DisplayPrefs)"
+    MES_HAS_MODE=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "map_enum_structs") | .affected_objects[] | select(. == "color_mode")] | length')
+    if [ -n "$MES_HAS_MODE" ] && [ "$MES_HAS_MODE" -gt 0 ]; then
+        pass "38.3 MapEnumStruct affected_objects includes 'color_mode' (transitive via DisplayPrefs)"
+    else
+        fail "38.3 MapEnumStruct missing 'color_mode' transitive enum"
+    fi
+
+else
+    skip "38.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 39: Table with Only Non-Table Struct Field (zero primitive columns)
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 39: Pure Nested Table — No Primitive Columns"
+
+step "39.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "39.1 PureNested has TaskMeta in affected_objects"
+    PN_HAS_META=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "pure_nested") | .affected_objects[] | select(. == "TaskMeta")] | length')
+    if [ -n "$PN_HAS_META" ] && [ "$PN_HAS_META" -gt 0 ]; then
+        pass "39.1 PureNested affected_objects includes 'TaskMeta' (only data column)"
+    else
+        fail "39.1 PureNested missing 'TaskMeta'"
+    fi
+
+    step "39.2 PureNested has task_status (transitive through TaskMeta)"
+    PN_HAS_STATUS=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "pure_nested") | .affected_objects[] | select(. == "task_status")] | length')
+    if [ -n "$PN_HAS_STATUS" ] && [ "$PN_HAS_STATUS" -gt 0 ]; then
+        pass "39.2 PureNested affected_objects includes 'task_status' (transitive through TaskMeta)"
+    else
+        fail "39.2 PureNested missing 'task_status'"
+    fi
+
+    step "39.3 PureNested has component_id assigned"
+    PN_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "pure_nested") | .component_id] | first')
+    if [ -n "$PN_COMP" ] && [ "$PN_COMP" != "null" ]; then
+        pass "39.3 PureNested has component_id $PN_COMP"
+    else
+        fail "39.3 PureNested missing component_id"
+    fi
+
+else
+    skip "39.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 40: Self-Referencing Non-Table Struct (RecursiveNode)
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 40: Self-Referencing Non-Table Struct — Recursive Type Guard"
+
+step "40.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "40.1 RecursiveTree has RecursiveNode in affected_objects"
+    RT_HAS_NODE=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "recursive_trees") | .affected_objects[] | select(. == "RecursiveNode")] | length')
+    if [ -n "$RT_HAS_NODE" ] && [ "$RT_HAS_NODE" -gt 0 ]; then
+        pass "40.1 RecursiveTree affected_objects includes 'RecursiveNode' (self-ref resolved)"
+    else
+        fail "40.1 RecursiveTree missing 'RecursiveNode'"
+    fi
+
+    step "40.2 RecursiveTree has recursive_label enum in affected_objects"
+    RT_HAS_LABEL=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "recursive_trees") | .affected_objects[] | select(. == "recursive_label")] | length')
+    if [ -n "$RT_HAS_LABEL" ] && [ "$RT_HAS_LABEL" -gt 0 ]; then
+        pass "40.2 RecursiveTree affected_objects includes 'recursive_label' (enum through self-ref struct)"
+    else
+        fail "40.2 RecursiveTree missing 'recursive_label' enum"
+    fi
+
+    step "40.3 RecursiveTree has component_id (no infinite loop from self-ref)"
+    RT_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "recursive_trees") | .component_id] | first')
+    if [ -n "$RT_COMP" ] && [ "$RT_COMP" != "null" ]; then
+        pass "40.3 RecursiveTree has component_id $RT_COMP (no infinite recursion)"
+    else
+        fail "40.3 RecursiveTree missing component_id (possible crash)"
+    fi
+
+else
+    skip "40.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 41: Enum Diamond — DiamondEnum used by 3 tables with FK chain
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 41: Enum Diamond — DiamondEnum Across 3 Tables"
+
+step "41.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "41.1 DiamondEnum is created and in plan"
+    DE_CREATED=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_enum" and .change.name == "diamond_enum")] | length')
+    if [ -n "$DE_CREATED" ] && [ "$DE_CREATED" -gt 0 ]; then
+        pass "41.1 DiamondEnum is in the plan"
+    else
+        fail "41.1 DiamondEnum not in plan"
+    fi
+
+    step "41.2 DiamondLeft uses DiamondEnum"
+    DL_HAS_ENUM=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "diamond_left") | .affected_objects[] | select(. == "diamond_enum")] | length')
+    if [ -n "$DL_HAS_ENUM" ] && [ "$DL_HAS_ENUM" -gt 0 ]; then
+        pass "41.2 DiamondLeft has 'diamond_enum' in affected_objects"
+    else
+        fail "41.2 DiamondLeft missing 'diamond_enum'"
+    fi
+
+    step "41.3 DiamondRight uses DiamondEnum"
+    DR_HAS_ENUM=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "diamond_right") | .affected_objects[] | select(. == "diamond_enum")] | length')
+    if [ -n "$DR_HAS_ENUM" ] && [ "$DR_HAS_ENUM" -gt 0 ]; then
+        pass "41.3 DiamondRight has 'diamond_enum' in affected_objects"
+    else
+        fail "41.3 DiamondRight missing 'diamond_enum'"
+    fi
+
+    step "41.4 DiamondMerge uses DiamondEnum and has FK deps"
+    DM_HAS_ENUM=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "diamond_merge") | .affected_objects[] | select(. == "diamond_enum")] | length')
+    DM_DEPS=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "diamond_merge") | .depends_on | length] | first')
+    if [ -n "$DM_HAS_ENUM" ] && [ "$DM_HAS_ENUM" -gt 0 ] && [ -n "$DM_DEPS" ] && [ "$DM_DEPS" -ge 3 ]; then
+        pass "41.4 DiamondMerge has 'diamond_enum' + $DM_DEPS deps (FKs + enum)"
+    else
+        fail "41.4 DiamondMerge has enum=$DM_HAS_ENUM, deps=$DM_DEPS"
+    fi
+
+    step "41.5 All diamond tables share same component (via DiamondEnum + FK chain)"
+    DL_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "diamond_left") | .component_id] | first')
+    DR_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "diamond_right") | .component_id] | first')
+    DM_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "diamond_merge") | .component_id] | first')
+    if [ -n "$DL_COMP" ] && [ -n "$DR_COMP" ] && [ -n "$DM_COMP" ] && [ "$DL_COMP" = "$DR_COMP" ] && [ "$DL_COMP" = "$DM_COMP" ]; then
+        pass "41.5 All 3 diamond tables same component $DL_COMP"
+    else
+        fail "41.5 Diamond components: L=$DL_COMP R=$DR_COMP M=$DM_COMP (should match)"
+    fi
+
+else
+    skip "41.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 42: Heavy Non-Table Struct — 3 Enums + 3 FKs in One Struct
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 42: Heavy Non-Table Struct — 3 Enums + 3 FKs"
+
+step "42.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "42.1 HeavyPayloadTable has HeavyPayload in affected_objects"
+    HP_HAS_PAYLOAD=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "heavy_payloads") | .affected_objects[] | select(. == "HeavyPayload")] | length')
+    if [ -n "$HP_HAS_PAYLOAD" ] && [ "$HP_HAS_PAYLOAD" -gt 0 ]; then
+        pass "42.1 HeavyPayloadTable affected_objects includes 'HeavyPayload'"
+    else
+        fail "42.1 HeavyPayloadTable missing 'HeavyPayload'"
+    fi
+
+    step "42.2 HeavyPayloadTable has heavy_enum_a in affected_objects"
+    HP_HAS_A=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "heavy_payloads") | .affected_objects[] | select(. == "heavy_enum_a")] | length')
+    if [ -n "$HP_HAS_A" ] && [ "$HP_HAS_A" -gt 0 ]; then
+        pass "42.2 HeavyPayloadTable affected_objects includes 'heavy_enum_a' (enum 1/3)"
+    else
+        fail "42.2 HeavyPayloadTable missing 'heavy_enum_a'"
+    fi
+
+    step "42.3 HeavyPayloadTable has heavy_enum_b in affected_objects"
+    HP_HAS_B=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "heavy_payloads") | .affected_objects[] | select(. == "heavy_enum_b")] | length')
+    if [ -n "$HP_HAS_B" ] && [ "$HP_HAS_B" -gt 0 ]; then
+        pass "42.3 HeavyPayloadTable affected_objects includes 'heavy_enum_b' (enum 2/3)"
+    else
+        fail "42.3 HeavyPayloadTable missing 'heavy_enum_b'"
+    fi
+
+    step "42.4 HeavyPayloadTable has heavy_enum_c in affected_objects"
+    HP_HAS_C=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "heavy_payloads") | .affected_objects[] | select(. == "heavy_enum_c")] | length')
+    if [ -n "$HP_HAS_C" ] && [ "$HP_HAS_C" -gt 0 ]; then
+        pass "42.4 HeavyPayloadTable affected_objects includes 'heavy_enum_c' (enum 3/3)"
+    else
+        fail "42.4 HeavyPayloadTable missing 'heavy_enum_c'"
+    fi
+
+    step "42.5 HeavyPayloadTable has FK to employees in affected_objects"
+    HP_HAS_EMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "heavy_payloads") | .affected_objects[] | select(. == "employees")] | length')
+    if [ -n "$HP_HAS_EMP" ] && [ "$HP_HAS_EMP" -gt 0 ]; then
+        pass "42.5 HeavyPayloadTable affected_objects includes 'employees' (FK 1/3)"
+    else
+        fail "42.5 HeavyPayloadTable missing 'employees' FK"
+    fi
+
+    step "42.6 HeavyPayloadTable has FK to diamond_left in affected_objects"
+    HP_HAS_DL=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "heavy_payloads") | .affected_objects[] | select(. == "diamond_left")] | length')
+    if [ -n "$HP_HAS_DL" ] && [ "$HP_HAS_DL" -gt 0 ]; then
+        pass "42.6 HeavyPayloadTable affected_objects includes 'diamond_left' (FK 2/3)"
+    else
+        fail "42.6 HeavyPayloadTable missing 'diamond_left' FK"
+    fi
+
+    step "42.7 HeavyPayloadTable has FK to diamond_right in affected_objects"
+    HP_HAS_DR=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "heavy_payloads") | .affected_objects[] | select(. == "diamond_right")] | length')
+    if [ -n "$HP_HAS_DR" ] && [ "$HP_HAS_DR" -gt 0 ]; then
+        pass "42.7 HeavyPayloadTable affected_objects includes 'diamond_right' (FK 3/3)"
+    else
+        fail "42.7 HeavyPayloadTable missing 'diamond_right' FK"
+    fi
+
+else
+    skip "42.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 43: Optional Array of Non-Table Struct — [Address]?
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 43: Optional Array of Non-Table Struct"
+
+step "43.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "43.1 OptAddrList has Address in affected_objects"
+    OAL_HAS_ADDR=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "opt_addr_lists") | .affected_objects[] | select(. == "Address")] | length')
+    if [ -n "$OAL_HAS_ADDR" ] && [ "$OAL_HAS_ADDR" -gt 0 ]; then
+        pass "43.1 OptAddrList affected_objects includes 'Address' (from [Address]?)"
+    else
+        fail "43.1 OptAddrList missing 'Address'"
+    fi
+
+    step "43.2 OptAddrList has component_id assigned"
+    OAL_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "opt_addr_lists") | .component_id] | first')
+    if [ -n "$OAL_COMP" ] && [ "$OAL_COMP" != "null" ]; then
+        pass "43.2 OptAddrList has component_id $OAL_COMP"
+    else
+        fail "43.2 OptAddrList missing component_id"
+    fi
+
+else
+    skip "43.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 44: Multiple Tables Sharing Same Enum via Different Paths
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 44: Shared Enum — 3 Tables, 3 Paths"
+
+step "44.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "44.1 SharedByAll enum is created and in plan"
+    SBA_CREATED=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_enum" and .change.name == "shared_by_all")] | length')
+    if [ -n "$SBA_CREATED" ] && [ "$SBA_CREATED" -gt 0 ]; then
+        pass "44.1 SharedByAll enum is in the plan"
+    else
+        fail "44.1 SharedByAll enum not in plan"
+    fi
+
+    step "44.2 SharedEnumUser (direct) has shared_by_all in affected_objects"
+    SEU_HAS=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "shared_enum_users") | .affected_objects[] | select(. == "shared_by_all")] | length')
+    if [ -n "$SEU_HAS" ] && [ "$SEU_HAS" -gt 0 ]; then
+        pass "44.2 SharedEnumUser (direct field) has 'shared_by_all'"
+    else
+        fail "44.2 SharedEnumUser missing 'shared_by_all'"
+    fi
+
+    step "44.3 SharedEnumIndirect (via struct) has shared_by_all in affected_objects"
+    SEI_HAS=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "shared_enum_indirect") | .affected_objects[] | select(. == "shared_by_all")] | length')
+    if [ -n "$SEI_HAS" ] && [ "$SEI_HAS" -gt 0 ]; then
+        pass "44.3 SharedEnumIndirect (via non-table struct) has 'shared_by_all'"
+    else
+        fail "44.3 SharedEnumIndirect missing 'shared_by_all'"
+    fi
+
+    step "44.4 SharedEnumArray (via array) has shared_by_all in affected_objects"
+    SEA_HAS=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "shared_enum_array") | .affected_objects[] | select(. == "shared_by_all")] | length')
+    if [ -n "$SEA_HAS" ] && [ "$SEA_HAS" -gt 0 ]; then
+        pass "44.4 SharedEnumArray (via [SharedByAll]) has 'shared_by_all'"
+    else
+        fail "44.4 SharedEnumArray missing 'shared_by_all'"
+    fi
+
+    step "44.5 All 3 tables share same component via SharedByAll"
+    SEU_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "shared_enum_users") | .component_id] | first')
+    SEI_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "shared_enum_indirect") | .component_id] | first')
+    SEA_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "shared_enum_array") | .component_id] | first')
+    if [ -n "$SEU_COMP" ] && [ "$SEI_COMP" = "$SEU_COMP" ] && [ "$SEA_COMP" = "$SEU_COMP" ]; then
+        pass "44.5 All 3 shared-enum tables same component $SEU_COMP"
+    else
+        fail "44.5 Components: direct=$SEU_COMP indirect=$SEI_COMP array=$SEA_COMP (should match)"
+    fi
+
+else
+    skip "44.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 45: Struct with All Optional Primitives (Str?, Int?, Bool?, Float?)
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 45: All Optional Primitives — Optional<Str/Int/Bool/Float>"
+
+step "45.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "45.1 OptionalPrimitivesTable has OptionalPrimitives in affected_objects"
+    OPT_HAS=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "optional_primitives") | .affected_objects[] | select(. == "OptionalPrimitives")] | length')
+    if [ -n "$OPT_HAS" ] && [ "$OPT_HAS" -gt 0 ]; then
+        pass "45.1 OptionalPrimitivesTable affected_objects includes 'OptionalPrimitives'"
+    else
+        fail "45.1 OptionalPrimitivesTable missing 'OptionalPrimitives'"
+    fi
+
+    step "45.2 OptionalPrimitivesTable has component_id assigned"
+    OPT_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "optional_primitives") | .component_id] | first')
+    if [ -n "$OPT_COMP" ] && [ "$OPT_COMP" != "null" ]; then
+        pass "45.2 OptionalPrimitivesTable has component_id $OPT_COMP"
+    else
+        fail "45.2 OptionalPrimitivesTable missing component_id"
+    fi
+
+else
+    skip "45.x No advanced JSON available"
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 46: Map<Enum, Struct> — {WidgetSize: SharedProfile}
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 46: Map<Enum, Struct> — Enum Key + Struct Value with Deps"
+
+step "46.0 Verify advanced JSON available"
+if [ -n "$ADV_JSON" ]; then
+
+    step "46.1 MapEnumToStruct has WidgetSize enum in affected_objects"
+    METS_HAS_SIZE=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "map_enum_to_struct") | .affected_objects[] | select(. == "widget_size")] | length')
+    if [ -n "$METS_HAS_SIZE" ] && [ "$METS_HAS_SIZE" -gt 0 ]; then
+        pass "46.1 MapEnumToStruct affected_objects includes 'widget_size' (map key enum)"
+    else
+        fail "46.1 MapEnumToStruct missing 'widget_size'"
+    fi
+
+    step "46.2 MapEnumToStruct has SharedProfile in affected_objects"
+    METS_HAS_PROF=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "map_enum_to_struct") | .affected_objects[] | select(. == "SharedProfile")] | length')
+    if [ -n "$METS_HAS_PROF" ] && [ "$METS_HAS_PROF" -gt 0 ]; then
+        pass "46.2 MapEnumToStruct affected_objects includes 'SharedProfile' (map value struct)"
+    else
+        fail "46.2 MapEnumToStruct missing 'SharedProfile'"
+    fi
+
+    step "46.3 MapEnumToStruct has component_id assigned"
+    METS_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_table" and .change.name == "map_enum_to_struct") | .component_id] | first')
+    if [ -n "$METS_COMP" ] && [ "$METS_COMP" != "null" ]; then
+        pass "46.3 MapEnumToStruct has component_id $METS_COMP"
+    else
+        fail "46.3 MapEnumToStruct missing component_id"
+    fi
+
+else
+    skip "46.x No advanced JSON available"
+fi
 
 # ═════════════════════════════════════════════════════════════════════════════
 # RESULTS
