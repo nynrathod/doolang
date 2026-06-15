@@ -204,13 +204,30 @@ fn extract_from_hir(
     let mut enum_map: HashMap<String, Vec<String>> = HashMap::new();
     let mut referenced_enums: HashSet<String> = HashSet::new();
 
-    // First pass: collect all enums
+    // First pass: collect all enums AND all structs (both @table and non-table)
+    // all_structs: struct_name -> (is_table, HirStruct ref)
+    let mut all_structs: HashMap<String, (&doo_hir::HirStruct, bool)> = HashMap::new();
+
     for item in &hir.items {
-        if let HirItem::Enum(e) = item {
-            let variants: Vec<String> = e.variants.iter().map(|v| v.name.clone()).collect();
-            enum_map.insert(e.name.clone(), variants);
+        match item {
+            HirItem::Enum(e) => {
+                let variants: Vec<String> = e.variants.iter().map(|v| v.name.clone()).collect();
+                enum_map.insert(e.name.clone(), variants);
+            }
+            HirItem::Struct(s) => {
+                let has_table = s.decorators.iter().any(|d| d.name == "table");
+                all_structs.insert(s.name.clone(), (s, has_table));
+            }
+            _ => {}
         }
     }
+
+    // Pre-compute which struct names are @table (for dependency lookups)
+    let table_struct_names: HashSet<String> = all_structs
+        .iter()
+        .filter(|(_, (_, is_table))| *is_table)
+        .map(|(name, _)| name.clone())
+        .collect();
 
     // Second pass: extract @table structs
     for item in &hir.items {
@@ -248,6 +265,10 @@ fn extract_from_hir(
             let mut unique_constraints = Vec::new();
             let mut foreign_keys = Vec::new();
             let mut indexes = Vec::new();
+            // Track non-table structs referenced by this table's fields
+            let mut table_struct_refs: Vec<String> = Vec::new();
+            // Track transitive enum refs found through non-table struct fields
+            let mut transitive_enum_refs: Vec<String> = Vec::new();
 
             for field in &s.fields {
                 let col_name = to_snake_case(&field.name);
@@ -261,6 +282,26 @@ fn extract_from_hir(
                 let is_hashed = field.decorators.iter().any(|d| d.name == "hash");
                 let is_optional =
                     field.is_optional || field.decorators.iter().any(|d| d.name == "optional");
+
+                // Check if this field's type is a non-table struct reference
+                // If so, we need to recursively resolve its fields' enum/FK dependencies
+                let mut field_transitive_enums: Vec<String> = Vec::new();
+                check_non_table_struct_field(
+                    field.type_id,
+                    type_registry,
+                    &all_structs,
+                    &table_struct_names,
+                    &enum_map,
+                    &mut referenced_enums,
+                    &mut table_struct_refs,
+                    &mut field_transitive_enums,
+                );
+                // Collect transitive enum refs from this field
+                for enum_name in &field_transitive_enums {
+                    if !transitive_enum_refs.contains(enum_name) {
+                        transitive_enum_refs.push(enum_name.clone());
+                    }
+                }
 
                 // Resolve SQL type from Doo type
                 let sql_type = resolve_sql_type(
@@ -323,7 +364,7 @@ fn extract_from_hir(
                                 HirExprKind::Global { name } => name.clone(),
                                 _ => continue,
                             };
-                            let ref_table = format!("{}s", ref_struct.to_lowercase());
+                            let ref_table = resolve_table_name(&ref_struct, &all_structs);
                             foreign_keys.push(ForeignKeyDef {
                                 name: format!("{}_{}_fkey", table_name, col_name),
                                 columns: vec![col_name.clone()],
@@ -394,6 +435,12 @@ fn extract_from_hir(
                 None
             };
 
+            // Deduplicate struct refs and transitive enum refs
+            table_struct_refs.sort();
+            table_struct_refs.dedup();
+            transitive_enum_refs.sort();
+            transitive_enum_refs.dedup();
+
             schema.tables.push(TableDef {
                 name: table_name,
                 struct_name: s.name.clone(),
@@ -404,6 +451,8 @@ fn extract_from_hir(
                 foreign_keys,
                 indexes,
                 auto_timestamp,
+                struct_refs: table_struct_refs,
+                transitive_enum_refs,
             });
         }
     }
@@ -489,6 +538,291 @@ fn resolve_sql_type(
     } else {
         SqlType::Text
     }
+}
+
+/// Recursively resolve ALL transitive type dependencies (enums, non-table structs,
+/// arrays of structs/enums, maps, optionals, tuples) from any TypeId.
+///
+/// This is the single source of truth for dependency discovery across the type graph.
+/// Handles EVERY possible type shape that could appear in a @table struct field:
+///
+/// - Enum → marks as referenced enum and transitive_enum_ref
+/// - Non-table Struct → records struct_ref, then recurses into its fields
+/// - Array<X> → recurses into element type X
+/// - Map<K,V> → recurses into key K and value V
+/// - Optional<X> → recurses into inner type X
+/// - Tuple<elements> → recurses into each element
+/// - Result<ok, err> → recurses into both ok and err
+/// - @table Struct → skipped (handled by FK dependency resolution separately)
+/// - Builtins (Int, Str, Bool, Float) → skipped
+///
+/// `visited_structs` prevents infinite recursion on circular struct references.
+fn resolve_transitive_deps(
+    type_id: Option<doo_core::types::TypeId>,
+    type_registry: &TypeRegistry,
+    all_structs: &HashMap<String, (&doo_hir::HirStruct, bool)>,
+    table_struct_names: &HashSet<String>,
+    enum_map: &HashMap<String, Vec<String>>,
+    referenced_enums: &mut HashSet<String>,
+    struct_refs: &mut Vec<String>,
+    transitive_enum_refs: &mut Vec<String>,
+    visited_structs: &mut HashSet<String>,
+) {
+    use doo_core::types::TypeKind;
+
+    let Some(tid) = type_id else { return };
+    let Some(type_info) = type_registry.get(tid) else {
+        return;
+    };
+
+    match &type_info.kind {
+        // ── Enum ────────────────────────────────────────────────────────
+        TypeKind::Enum { name, .. } => {
+            if enum_map.contains_key(name.as_str()) {
+                let sql_name = to_snake_case(name);
+                if !transitive_enum_refs.contains(&sql_name) {
+                    referenced_enums.insert(name.clone());
+                    transitive_enum_refs.push(sql_name);
+                }
+            }
+        }
+
+        // ── Struct (could be @table struct, non-table struct, or enum) ──
+        // IMPORTANT: In Doo's type registry, enums may be represented as
+        // TypeKind::Struct (not TypeKind::Enum). Both arms must handle enums.
+        TypeKind::Struct { name, fields, .. } => {
+            // Check if this is actually an enum type (represented as Struct
+            // in the type registry). If so, mark it as referenced.
+            if enum_map.contains_key(name.as_str()) {
+                let sql_name = to_snake_case(name);
+                if !transitive_enum_refs.contains(&sql_name) {
+                    referenced_enums.insert(name.clone());
+                    transitive_enum_refs.push(sql_name);
+                }
+                return;
+            }
+            // Skip @table structs (they generate their own migration changes)
+            if table_struct_names.contains(name) {
+                return;
+            }
+            // Prevent infinite recursion on circular struct refs
+            if visited_structs.contains(name) {
+                return;
+            }
+            visited_structs.insert(name.clone());
+
+            // Record this non-table struct reference
+            if !struct_refs.contains(name) {
+                struct_refs.push(name.clone());
+            }
+
+            // Look up the HirStruct for decorator info (like @foreign)
+            let hir_fields: Vec<&doo_hir::HirField> = all_structs
+                .get(name)
+                .map(|(s, _)| s.fields.iter().collect())
+                .unwrap_or_default();
+
+            // Build a map of field name -> HirField for decorator lookups
+            let hir_field_map: HashMap<&str, &doo_hir::HirField> =
+                hir_fields.iter().map(|f| (f.name.as_str(), *f)).collect();
+
+            for (field_name, field_tid, _) in fields {
+                // Check if this field has a @foreign decorator → FK dependency
+                if let Some(hir_field) = hir_field_map.get(field_name.as_str()) {
+                    for dec in &hir_field.decorators {
+                        if dec.name == "foreign" {
+                            if let Some(arg) = dec.args.first() {
+                                let ref_struct = match &arg.kind {
+                                    HirExprKind::Const(ConstValue::Str(s)) => s.clone(),
+                                    HirExprKind::Local { name } => name.clone(),
+                                    HirExprKind::Global { name } => name.clone(),
+                                    _ => continue,
+                                };
+                                // If the referenced struct is a @table struct,
+                                // record its table name as a dependency
+                                if table_struct_names.contains(&ref_struct) {
+                                    let ref_table = resolve_table_name(&ref_struct, all_structs);
+                                    if !struct_refs.contains(&ref_table) {
+                                        struct_refs.push(ref_table);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Recursively resolve transitive deps from this field's type
+                resolve_transitive_deps(
+                    Some(*field_tid),
+                    type_registry,
+                    all_structs,
+                    table_struct_names,
+                    enum_map,
+                    referenced_enums,
+                    struct_refs,
+                    transitive_enum_refs,
+                    visited_structs,
+                );
+            }
+        }
+
+        // ── Array<X> → check element type ───────────────────────────────
+        TypeKind::Array { element } => {
+            resolve_transitive_deps(
+                Some(*element),
+                type_registry,
+                all_structs,
+                table_struct_names,
+                enum_map,
+                referenced_enums,
+                struct_refs,
+                transitive_enum_refs,
+                visited_structs,
+            );
+        }
+
+        // ── Map<K,V> → check both key and value types ───────────────────
+        TypeKind::Map { key, value } => {
+            resolve_transitive_deps(
+                Some(*key),
+                type_registry,
+                all_structs,
+                table_struct_names,
+                enum_map,
+                referenced_enums,
+                struct_refs,
+                transitive_enum_refs,
+                visited_structs,
+            );
+            resolve_transitive_deps(
+                Some(*value),
+                type_registry,
+                all_structs,
+                table_struct_names,
+                enum_map,
+                referenced_enums,
+                struct_refs,
+                transitive_enum_refs,
+                visited_structs,
+            );
+        }
+
+        // ── Optional<X> → check inner type ──────────────────────────────
+        TypeKind::Optional { inner } => {
+            resolve_transitive_deps(
+                Some(*inner),
+                type_registry,
+                all_structs,
+                table_struct_names,
+                enum_map,
+                referenced_enums,
+                struct_refs,
+                transitive_enum_refs,
+                visited_structs,
+            );
+        }
+
+        // ── Result<ok, err> → check both types ──────────────────────────
+        TypeKind::Result { ok, err } => {
+            resolve_transitive_deps(
+                Some(*ok),
+                type_registry,
+                all_structs,
+                table_struct_names,
+                enum_map,
+                referenced_enums,
+                struct_refs,
+                transitive_enum_refs,
+                visited_structs,
+            );
+            resolve_transitive_deps(
+                Some(*err),
+                type_registry,
+                all_structs,
+                table_struct_names,
+                enum_map,
+                referenced_enums,
+                struct_refs,
+                transitive_enum_refs,
+                visited_structs,
+            );
+        }
+
+        // ── Tuple<elements> → check each element type ───────────────────
+        TypeKind::Tuple { elements } => {
+            for elem_tid in elements {
+                resolve_transitive_deps(
+                    Some(*elem_tid),
+                    type_registry,
+                    all_structs,
+                    table_struct_names,
+                    enum_map,
+                    referenced_enums,
+                    struct_refs,
+                    transitive_enum_refs,
+                    visited_structs,
+                );
+            }
+        }
+
+        // ── Everything else (builtins, functions, interfaces, etc.) → skip ──
+        _ => {}
+    }
+}
+
+/// Resolve the actual table name for a struct, checking @table decorator first.
+///
+/// If the struct has a custom `@table("name")` decorator, returns that name.
+/// Otherwise returns the default `format!("{}s", name.to_lowercase())`.
+fn resolve_table_name(
+    struct_name: &str,
+    all_structs: &HashMap<String, (&doo_hir::HirStruct, bool)>,
+) -> String {
+    if let Some((hir_struct, _)) = all_structs.get(struct_name) {
+        if let Some(custom_name) = hir_struct.decorators.iter().find_map(|d| {
+            if d.name == "table" {
+                d.args.first().and_then(|a| {
+                    if let HirExprKind::Const(ConstValue::Str(s)) = &a.kind {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            }
+        }) {
+            return custom_name;
+        }
+    }
+    // Default: lowercase + "s"
+    format!("{}s", struct_name.to_lowercase())
+}
+
+/// Wrapper around `resolve_transitive_deps` for a single @table struct field.
+/// Creates the visited_structs set and passes all required context.
+fn check_non_table_struct_field(
+    type_id: Option<doo_core::types::TypeId>,
+    type_registry: &TypeRegistry,
+    all_structs: &HashMap<String, (&doo_hir::HirStruct, bool)>,
+    table_struct_names: &HashSet<String>,
+    enum_map: &HashMap<String, Vec<String>>,
+    referenced_enums: &mut HashSet<String>,
+    struct_refs: &mut Vec<String>,
+    transitive_enum_refs: &mut Vec<String>,
+) {
+    let mut visited_structs: HashSet<String> = HashSet::new();
+    resolve_transitive_deps(
+        type_id,
+        type_registry,
+        all_structs,
+        table_struct_names,
+        enum_map,
+        referenced_enums,
+        struct_refs,
+        transitive_enum_refs,
+        &mut visited_structs,
+    );
 }
 
 /// Module-local import resolution shim.

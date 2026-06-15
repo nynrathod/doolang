@@ -13,9 +13,7 @@ use crate::schema::*;
 /// Connect to PostgreSQL using the production-grade `doo_ffi_db` pool.
 /// Pool handles TLS config, retry logic, password encoding, timezone, etc.
 /// Returns a `deadpool_postgres::Client` which derefs to `tokio_postgres::Client`.
-pub async fn connect(
-    database_url: &str,
-) -> Result<deadpool_postgres::Client, String> {
+pub async fn connect(database_url: &str) -> Result<deadpool_postgres::Client, String> {
     // Initialize the global pool (idempotent via OnceLock)
     doo_ffi_db::drivers::postgres::pool::init_pool(database_url)
         .await
@@ -69,10 +67,7 @@ pub async fn introspect_schema(client: &Client) -> Result<DatabaseSchema, String
     for row in &enums {
         let type_name: String = row.get(0);
         let variant: String = row.get(1);
-        enum_map
-            .entry(type_name)
-            .or_default()
-            .push(variant);
+        enum_map.entry(type_name).or_default().push(variant);
     }
 
     for (name, variants) in enum_map {
@@ -87,7 +82,10 @@ pub async fn introspect_schema(client: &Client) -> Result<DatabaseSchema, String
 }
 
 /// Introspect a single table.
-async fn introspect_table(client: &deadpool_postgres::Client, table_name: &str) -> Result<TableDef, String> {
+async fn introspect_table(
+    client: &deadpool_postgres::Client,
+    table_name: &str,
+) -> Result<TableDef, String> {
     // Columns
     let col_rows = client
         .query(
@@ -197,7 +195,12 @@ async fn introspect_table(client: &deadpool_postgres::Client, table_name: &str) 
             &[&table_name],
         )
         .await
-        .map_err(|e| format!("Failed to query unique constraints for {}: {}", table_name, e))?;
+        .map_err(|e| {
+            format!(
+                "Failed to query unique constraints for {}: {}",
+                table_name, e
+            )
+        })?;
 
     let mut unique_map: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
@@ -292,7 +295,12 @@ async fn introspect_table(client: &deadpool_postgres::Client, table_name: &str) 
             &[&table_name],
         )
         .await
-        .map_err(|e| format!("Failed to query check constraints for {}: {}", table_name, e))?;
+        .map_err(|e| {
+            format!(
+                "Failed to query check constraints for {}: {}",
+                table_name, e
+            )
+        })?;
 
     let check_constraints: Vec<CheckConstraintDef> = check_rows
         .iter()
@@ -362,5 +370,7 @@ async fn introspect_table(client: &deadpool_postgres::Client, table_name: &str) 
         foreign_keys,
         indexes,
         auto_timestamp: false,
+        struct_refs: Vec::new(), // Introspected — no struct reference info
+        transitive_enum_refs: Vec::new(), // Introspected — no transitive enum info
     })
 }

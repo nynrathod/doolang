@@ -44,6 +44,13 @@ pub struct TableDef {
     pub indexes: Vec<IndexDef>,
     /// Whether `@autoTimestamp` is set on the struct.
     pub auto_timestamp: bool,
+    /// Names of non-table structs referenced by this table's fields.
+    /// These structs don't create tables but their enum/FK dependencies
+    /// must be propagated for correct migration ordering.
+    pub struct_refs: Vec<String>,
+    /// Enum type names transitively referenced through non-table struct fields.
+    /// These enums must exist before this table can be created.
+    pub transitive_enum_refs: Vec<String>,
 }
 
 // ============================================================================

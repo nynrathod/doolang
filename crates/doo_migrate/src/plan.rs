@@ -307,11 +307,27 @@ pub fn build_plan(changes: Vec<SchemaChange>) -> MigrationPlan {
 
 /// Build batch groupings from the planned changes after dependency computation.
 ///
-/// Each connected component becomes a batch. If all changes in a batch have
-/// no `depends_on`, the batch is marked `is_chained: false` (independent).
-/// Otherwise, the batch is a dependency chain.
+/// Each connected component becomes a batch. If a batch has more than one change,
+/// it's marked `is_chained: true` because all changes in a connected component
+/// must be approved/rejected together. Single-change batches are `is_chained: false`
+/// (independent).
+///
+/// `affected_tables` only includes actual database table names (from CreateTable
+/// and RenameTable changes) — not enum names, non-table struct names, or other
+/// artifacts from affected_objects.
 fn build_batches(planned: &[PlannedChange], component_count: u32) -> Vec<ChangeBatch> {
     let mut batches: Vec<ChangeBatch> = Vec::new();
+
+    // Build the set of actual database table names from the plan.
+    // Only these names will appear in affected_tables.
+    let actual_table_names: HashSet<String> = planned
+        .iter()
+        .filter_map(|p| match &p.change {
+            SchemaChange::CreateTable(t) => Some(t.name.clone()),
+            SchemaChange::RenameTable { to, .. } => Some(to.clone()),
+            _ => None,
+        })
+        .collect();
 
     for comp_id in 1..=component_count {
         let members: Vec<&PlannedChange> = planned
@@ -325,18 +341,11 @@ fn build_batches(planned: &[PlannedChange], component_count: u32) -> Vec<ChangeB
 
         let change_ids: Vec<String> = members.iter().map(|m| m.change_id.clone()).collect();
 
-        // A batch is "chained" if ANY member has dependencies on another
-        // member within the same batch OR any member has depends_on set.
-        let has_any_deps = members.iter().any(|m| !m.depends_on.is_empty());
-
-        // Check if deps are internal to this batch (depend on another member)
-        let has_internal_deps = members.iter().any(|m| {
-            m.depends_on
-                .iter()
-                .any(|dep_id| change_ids.contains(dep_id))
-        });
-
-        let is_chained = has_internal_deps || (members.len() > 1 && has_any_deps);
+        // A batch is "chained" if it has multiple interdependent changes.
+        // Single-change batches are independent (can approve/reject individually).
+        // Multi-change batches are chained (must approve/reject together)
+        // because they belong to the same connected component.
+        let is_chained = members.len() > 1;
 
         // Build summary
         let safe_count = members.iter().filter(|m| m.risk == Risk::Safe).count();
@@ -346,11 +355,13 @@ fn build_batches(planned: &[PlannedChange], component_count: u32) -> Vec<ChangeB
             .filter(|m| m.risk == Risk::Destructive)
             .count();
 
-        // Collect unique affected tables
+        // Collect unique affected tables — only real database table names.
+        // Filter out enum names, non-table struct names (PascalCase), and
+        // any other artifacts from affected_objects that aren't actual tables.
         let mut tables: Vec<String> = members
             .iter()
             .flat_map(|m| &m.affected_objects)
-            .filter(|obj| !obj.contains('.') && !obj.contains("::"))
+            .filter(|obj| actual_table_names.contains(obj.as_str()))
             .map(|s| s.clone())
             .collect::<HashSet<_>>()
             .into_iter()

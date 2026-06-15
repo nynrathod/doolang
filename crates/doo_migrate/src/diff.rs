@@ -36,6 +36,23 @@ pub fn affected_objects_for(change: &SchemaChange) -> Vec<String> {
                     }
                 }
             }
+            // Include transitive enum refs from non-table struct fields.
+            // These are enums found through struct references (e.g., a field
+            // of type Project where Project has a field of enum Category).
+            for enum_name in &t.transitive_enum_refs {
+                if !objects.contains(enum_name) {
+                    objects.push(enum_name.clone());
+                }
+            }
+            // Include struct_refs names that look like table names
+            // (from @foreign decorators on non-table struct fields).
+            // Pure non-table struct names (no matching creator) are harmless
+            // — they simply won't match any creator in the dependency graph.
+            for sr in &t.struct_refs {
+                if !objects.contains(sr) {
+                    objects.push(sr.clone());
+                }
+            }
             objects
         }
         DropTable { name } => vec![name.clone()],
