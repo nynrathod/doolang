@@ -852,6 +852,123 @@ else
     skip "17.x No advanced JSON available"
 fi
 
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 18: Nested Struct Dependency Resolution
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 18: Nested Struct Dependency Graph"
+
+step "18.1 Verify table containing nested struct maps top-level component tracking"
+if [ -n "$ADV_JSON" ]; then
+    NESTED_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.name | test("nested_profiles"; "i")) | .component_id] | first')
+    if [ -n "$NESTED_COMP" ] && [ "$NESTED_COMP" != "null" ]; then
+        pass "18.1 Nested struct table 'nested_profiles' successfully isolated in component $NESTED_COMP"
+    else
+        fail "18.1 Failed to parse or generate plan changes for 'nested_profiles'"
+    fi
+
+    step "18.2 Check deep transitive enum dependency via nested field"
+    # Find component id of MetaType enum
+    METATYPE_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_enum" and (.change.name | test("metatype"; "i"))) | .component_id] | first')
+
+    if [ -n "$METATYPE_COMP" ] && [ "$METATYPE_COMP" != "null" ]; then
+        if [ "$NESTED_COMP" = "$METATYPE_COMP" ]; then
+            pass "18.2 'MetaType' enum shares component with parent table ($NESTED_COMP)"
+        else
+            # Fallback assertion if your topological sort assigns separate components linked by an explicit dependency chain
+            HAS_DEP=$(echo "$ADV_JSON" | jq -r --arg mc "$METATYPE_COMP" '[.migration_plan.changes[] | select(.change.name | test("nested_profiles"; "i")) | .depends_on[] | select(. == $mc)] | length')
+            if [ "$HAS_DEP" -gt 0 ]; then
+                pass "18.2 'nested_profiles' explicitly lists 'MetaType' ($METATYPE_COMP) as a dependency"
+            else
+                fail "18.2 Nested enum 'MetaType' ($METATYPE_COMP) and parent table ($NESTED_COMP) are unlinked"
+            fi
+        fi
+    else
+        skip "18.2 MetaType enum change not detected (might already exist in schema)"
+    fi
+
+    step "18.3 Check deep foreign key dependency within nested structural block"
+    DIAMOND_A_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.name | test("diamondas"; "i")) | .component_id] | first')
+
+    if [ -n "$DIAMOND_A_COMP" ] && [ "$DIAMOND_A_COMP" != "null" ]; then
+        # Check if nested_profiles either groups with diamondas or explicitly lists it as a dependency
+        if [ "$NESTED_COMP" = "$DIAMOND_A_COMP" ]; then
+            pass "18.3 Nested struct foreign key shares component chain with 'diamondas'"
+        else
+            HAS_FK_DEP=$(echo "$ADV_JSON" | jq -r --arg dc "$DIAMOND_A_COMP" '[.migration_plan.changes[] | select(.change.name | test("nested_profiles"; "i")) | .depends_on[] | select(. == $dc)] | length')
+            if [ "$HAS_FK_DEP" -gt 0 ]; then
+                pass "18.3 'nested_profiles' cleanly inherits dependency from nested FK field pointing to 'diamondas'"
+            else
+                fail "18.3 Engine missed deep structural dependency constraint between nested field -> diamondas"
+            fi
+        fi
+    else
+        skip "18.3 Dependency target 'diamondas' was not found in graph logs"
+    fi
+else
+    skip "18.x Advanced JSON not accessible"
+fi
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 19: Deep Nested (Level 2+) & Optional FK Dependency Rules
+# ═════════════════════════════════════════════════════════════════════════════
+section "PHASE 19: Multi-Level Nesting & Edge Constraints"
+
+step "19.1 Verify multi-level struct component extraction"
+if [ -n "$ADV_JSON" ]; then
+    COMPLEX_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.name | test("complex_documents"; "i")) | .component_id] | first')
+
+    if [ -n "$COMPLEX_COMP" ] && [ "$COMPLEX_COMP" != "null" ]; then
+        pass "19.1 'complex_documents' successfully bound to component $COMPLEX_COMP"
+    else
+        fail "19.1 Failed to parse or generate plan for 'complex_documents'"
+    fi
+
+    step "19.2 Recursion Check: Resolve Level-2 FK dependency (Config -> Audit -> Employee)"
+    EMP_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.name | test("employees"; "i")) | .component_id] | first')
+    if [ -n "$EMP_COMP" ] && [ "$EMP_COMP" != "null" ]; then
+        HAS_EMP_DEP=$(echo "$ADV_JSON" | jq -r --arg ec "$EMP_COMP" '[.migration_plan.changes[] | select(.change.name | test("complex_documents"; "i")) | .depends_on[] | select(. == $ec)] | length')
+
+        if [ "$COMPLEX_COMP" = "$EMP_COMP" ] || [ "$HAS_EMP_DEP" -gt 0 ]; then
+            pass "19.2 Compiler successfully traversed 2 struct levels to find 'employees' FK"
+        else
+            fail "19.2 Compiler failed deep traversal; 'employees' dependency was dropped"
+        fi
+    else
+        skip "19.2 Target 'employees' component missing from JSON"
+    fi
+
+    step "19.3 Recursion Check: Resolve Level-2 Enum dependency (Config -> Audit -> AccessLevel)"
+    ACCESS_COMP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.type == "create_enum" and (.change.name | test("accesslevel"; "i"))) | .component_id] | first')
+    if [ -n "$ACCESS_COMP" ] && [ "$ACCESS_COMP" != "null" ]; then
+        HAS_ACCESS_DEP=$(echo "$ADV_JSON" | jq -r --arg ac "$ACCESS_COMP" '[.migration_plan.changes[] | select(.change.name | test("complex_documents"; "i")) | .depends_on[] | select(. == $ac)] | length')
+
+        if [ "$COMPLEX_COMP" = "$ACCESS_COMP" ] || [ "$HAS_ACCESS_DEP" -gt 0 ]; then
+            pass "19.3 Compiler successfully extracted deeply embedded 'AccessLevel' enum"
+        else
+            fail "19.3 Compiler missed deep 'AccessLevel' enum dependency"
+        fi
+    else
+        skip "19.3 'AccessLevel' enum creation not detected"
+    fi
+
+    step "19.4 Constraints: Verify optional self-referencing FK behaves safely"
+    # A self-referencing FK should NOT list its own component/table as a strict pre-requisite
+    # to avoid topological sort deadlocks.
+    SELF_DEP=$(echo "$ADV_JSON" | jq -r '[.migration_plan.changes[] | select(.change.name | test("complex_documents"; "i")) | .depends_on[] | select(contains("complex_documents"))] | length')
+
+    if [ "$SELF_DEP" = "0" ] || [ -z "$SELF_DEP" ]; then
+        pass "19.4 Optional self-reference safely bypassed in dependency DAG (no deadlock)"
+    else
+        fail "19.4 Optional self-reference caused a circular DAG dependency (found $SELF_DEP self-links)"
+    fi
+
+else
+    skip "19.x Advanced JSON not accessible"
+fi
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # RESULTS
 # ═════════════════════════════════════════════════════════════════════════════

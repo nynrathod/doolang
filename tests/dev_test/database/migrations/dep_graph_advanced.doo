@@ -83,6 +83,54 @@ struct CacheEntry {
     Value: Str,
 }
 
+// NESTED STRUCT & DEEP DEPENDENCY CHAINS
+enum MetaType { Internal, External }
+
+struct ContentMeta {
+    Type: MetaType @default("Internal"),
+    OwnerId: Int @foreign(DiamondA),
+}
+
+@table("nested_profiles")
+struct NestedProfile {
+    id: Int @primary @auto,
+    ProfileName: Str,
+    Meta: ContentMeta,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// DEEP NESTING (LEVEL 2+) & OPTIONAL FK RESOLUTION
+// ═══════════════════════════════════════════════════════════════════
+
+enum AccessLevel { Public, Private, Workspace }
+
+// Level 2 struct (Deepest)
+struct AuditMetadata {
+    // Tests if compiler finds an FK two levels deep
+    ModifiedBy: Int @foreign(Employee) @optional,
+    // Tests if compiler finds an enum two levels deep
+    Access: AccessLevel @default("Private"),
+}
+
+// Level 1 struct (Middle)
+struct DocumentConfig {
+    IsPublished: Bool @default(false),
+    Audit: AuditMetadata,
+}
+
+// Level 0 (Top-Level Table)
+@table("complex_documents")
+struct ComplexDocument {
+    id: Int @primary @auto,
+    Title: Str,
+    // Triggers recursive traversal
+    Config: DocumentConfig,
+    // Direct FK check
+    OwnerId: Int @foreign(DiamondA),
+    // Tests if an optional self-referencing FK causes an infinite loop / circular dep error
+    ParentDocId: Int @foreign(ComplexDocument) @optional,
+}
+
 static DB: Database;
 fn main() {
     DB = Database::Postgres()?;
