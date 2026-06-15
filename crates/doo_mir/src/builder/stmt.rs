@@ -1,9 +1,9 @@
 //! Statement building for MIR
 
 use super::MirBuilder;
-use crate::sym::{resolve, sym, Sym};
+use crate::sym::{sym, Sym};
+use crate::types::Span;
 use crate::{LocalDef, MirInstrKind, MirOperand, MirTerminator};
-use doo_core::doo_debug;
 use doo_core::types::{builtin, TypeId as CoreTypeId, TypeKind};
 use doo_hir::{HirExprKind, HirStmt, HirStmtKind};
 
@@ -146,12 +146,18 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                         .unwrap_or(false)
                 }
                 // Interface method call with fallible return (-> T ! E)
-                HirExprKind::MethodCall { receiver, method, .. } => {
+                HirExprKind::MethodCall {
+                    receiver, method, ..
+                } => {
                     let receiver_type = receiver.type_id.unwrap_or(builtin::ANY);
-                    builder.type_registry.get(receiver_type)
+                    builder
+                        .type_registry
+                        .get(receiver_type)
                         .map(|info| {
                             if let TypeKind::Interface { methods, .. } = &info.kind {
-                                methods.iter().any(|(mname, _, _, err)| mname == method && err.is_some())
+                                methods
+                                    .iter()
+                                    .any(|(mname, _, _, err)| mname == method && err.is_some())
                             } else {
                                 false
                             }
@@ -199,18 +205,24 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                         }
                     }
                     // Interface method call: extract ok/err types from the interface definition
-                    HirExprKind::MethodCall { receiver, method, .. } => {
+                    HirExprKind::MethodCall {
+                        receiver, method, ..
+                    } => {
                         let receiver_type = receiver.type_id.unwrap_or(builtin::ANY);
-                        builder.type_registry.get(receiver_type)
+                        builder
+                            .type_registry
+                            .get(receiver_type)
                             .and_then(|info| {
                                 if let TypeKind::Interface { methods, .. } = &info.kind {
-                                    methods.iter()
-                                        .find(|(mname, _, _, _)| mname == method)
-                                        .map(|(_, _, ret, err)| (
-                                            ret.unwrap_or(builtin::ANY),
-                                            err.unwrap_or(builtin::ANY),
-                                            false, // interface methods are never FFI
-                                        ))
+                                    methods.iter().find(|(mname, _, _, _)| mname == method).map(
+                                        |(_, _, ret, err)| {
+                                            (
+                                                ret.unwrap_or(builtin::ANY),
+                                                err.unwrap_or(builtin::ANY),
+                                                false, // interface methods are never FFI
+                                            )
+                                        },
+                                    )
                                 } else {
                                     None
                                 }
@@ -378,15 +390,23 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                 }
                 HirExprKind::Field { object, field } => {
                     // For field assignment like `obj.field = value`
+                    // CRITICAL: For nested field access like `a.b.c = value`, the MIR must
+                    // write back the modified nested struct to its parent. build_expr(object)
+                    // deep-clones the nested struct (for locals), so we must emit a write-back
+                    // FieldSet after modifying the clone.
                     let obj_operand = builder.build_expr(object);
                     builder.emit(
                         MirInstrKind::FieldSet {
-                            object: obj_operand,
+                            object: obj_operand.clone(),
                             field: sym(field),
-                            value: val_operand,
+                            value: val_operand.clone(),
                         },
                         span,
                     );
+                    // Write back: if the object is itself a field access, we need to write
+                    // the modified clone back to the original parent.
+                    // This recursively handles any depth of nesting.
+                    emit_nested_field_writeback(builder, &object.kind, &obj_operand, span);
                 }
                 HirExprKind::Index { object, index } => {
                     // For index assignment like `arr[i] = value` or `map[key] = value`
@@ -624,8 +644,7 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             body,
             increment,
         } => {
-            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-            }
+            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
             let cond_label = builder.new_block_label("while_cond");
             let body_label = builder.new_block_label("while_body");
             let exit_label = builder.new_block_label("while_exit");
@@ -641,8 +660,7 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
             // The continue target is the increment block if it exists, otherwise the cond block
             let continue_target = incr_label.unwrap_or(cond_label);
 
-            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-            }
+            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
 
             // Jump to condition
             builder.set_terminator(MirTerminator::Goto { target: cond_label });
@@ -727,18 +745,24 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                     }
                 }
                 // Interface method call: extract ok/err types from the interface definition
-                HirExprKind::MethodCall { receiver, method, .. } => {
+                HirExprKind::MethodCall {
+                    receiver, method, ..
+                } => {
                     let receiver_type = receiver.type_id.unwrap_or(builtin::ANY);
-                    builder.type_registry.get(receiver_type)
+                    builder
+                        .type_registry
+                        .get(receiver_type)
                         .and_then(|info| {
                             if let TypeKind::Interface { methods, .. } = &info.kind {
-                                methods.iter()
-                                    .find(|(mname, _, _, _)| mname == method)
-                                    .map(|(_, _, ret, err)| (
-                                        ret.unwrap_or(builtin::ANY),
-                                        err.unwrap_or(builtin::ANY),
-                                        false,
-                                    ))
+                                methods.iter().find(|(mname, _, _, _)| mname == method).map(
+                                    |(_, _, ret, err)| {
+                                        (
+                                            ret.unwrap_or(builtin::ANY),
+                                            err.unwrap_or(builtin::ANY),
+                                            false,
+                                        )
+                                    },
+                                )
                             } else {
                                 None
                             }
@@ -774,5 +798,45 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                 span,
             );
         }
+    }
+}
+
+// ─── Nested Field Write-Back ─────────────────────────────────────────────────
+
+/// Emit write-back FieldSet instructions for nested field assignments.
+///
+/// When we do `a.b.c = value`, the MIR builds `build_expr(a.b)` which deep-clones
+/// the nested struct. We then modify the clone and need to write it back to the
+/// original through each level of nesting.
+///
+/// This function recursively walks the field chain of the `object` expression
+/// and emits the necessary write-back FieldSet instructions.
+fn emit_nested_field_writeback(
+    builder: &mut MirBuilder,
+    object: &HirExprKind,
+    modified_value: &MirOperand,
+    span: Span,
+) {
+    // Check if the object is itself a field access (nested)
+    if let HirExprKind::Field {
+        object: inner_object,
+        field: inner_field,
+    } = object
+    {
+        // Build the parent object to get a handle for write-back
+        let parent_operand = builder.build_expr(inner_object);
+
+        // Emit write-back: parent.field = modified_value
+        builder.emit(
+            MirInstrKind::FieldSet {
+                object: parent_operand.clone(),
+                field: sym(inner_field),
+                value: modified_value.clone(),
+            },
+            span,
+        );
+
+        // Recursively handle deeper nesting
+        emit_nested_field_writeback(builder, &inner_object.kind, &parent_operand, span);
     }
 }
