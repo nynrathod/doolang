@@ -106,6 +106,11 @@ pub struct PlannedChange {
     pub depends_on: Vec<String>,
     // strings this change depends on
     pub component_id: u32,
+
+    /// Number of database rows affected by this change.
+    /// Populated at runtime by counting rows in the live DB.
+    /// `None` = not yet counted or not applicable (e.g. create table).
+    pub affected_rows: Option<i64>,
 }
 
 impl PlannedChange {
@@ -145,6 +150,7 @@ impl PlannedChange {
             can_auto_rollback,
             depends_on: Vec::new(),
             component_id: 0,
+            affected_rows: None,
         }
     }
 
