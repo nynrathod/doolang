@@ -393,9 +393,8 @@ pub fn run_migrate(opts: MigrateOptions) -> Result<i32, String> {
 
             // Query row counts for destructive changes so the user knows
             // exactly how much data will be lost before confirming.
-            let row_counts = runtime.block_on(async {
-                count_destructive_rows(&client, &migration_plan).await
-            });
+            let row_counts =
+                runtime.block_on(async { count_destructive_rows(&client, &migration_plan).await });
 
             for planned in &migration_plan.changes {
                 if planned.requires_approval {
@@ -517,7 +516,10 @@ async fn count_destructive_rows(
                 counts.insert(planned.change_id.clone(), count);
             }
             Err(e) => {
-                eprintln!("  {}Failed to count rows for {}: {}", ERROR, planned.change_id, e);
+                eprintln!(
+                    "  {}Failed to count rows for {}: {}",
+                    ERROR, planned.change_id, e
+                );
             }
         }
     }
