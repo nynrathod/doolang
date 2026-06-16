@@ -118,7 +118,7 @@ pub fn run_migrate(opts: MigrateOptions) -> Result<i32, String> {
         .map_err(|e| format!("Schema extraction failed: {}", e))?;
 
     if desired.tables.is_empty() && !opts.status && opts.rollback.is_none() {
-        human_println!("{}No @table structs found in project", WARN);
+        human_println!("{}No tables found in project", WARN);
         if opts.json_output {
             let summary = MigrationSummary {
                 total_changes: 0,
@@ -390,9 +390,31 @@ pub fn run_migrate(opts: MigrateOptions) -> Result<i32, String> {
         } else {
             eprintln!();
             eprintln!("\x1b[1;31m{}Destructive changes detected!\x1b[0m", WARN);
+
+            // Query row counts for destructive changes so the user knows
+            // exactly how much data will be lost before confirming.
+            let row_counts = runtime.block_on(async {
+                count_destructive_rows(&client, &migration_plan).await
+            });
+
             for planned in &migration_plan.changes {
                 if planned.requires_approval {
-                    eprintln!("  \x1b[31m{}\x1b[0m {}", ERROR, planned.description());
+                    let count_str = row_counts
+                        .get(&planned.change_id)
+                        .and_then(|&c| {
+                            if c >= 0 {
+                                Some(format!("  ({} row(s) affected)", c))
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_default();
+                    eprintln!(
+                        "  \x1b[31m{}\x1b[0m {}{}",
+                        ERROR,
+                        planned.description(),
+                        count_str
+                    );
                 }
             }
             let confirm = dialoguer::Confirm::new()
@@ -429,6 +451,78 @@ pub fn run_migrate(opts: MigrateOptions) -> Result<i32, String> {
     }
 
     Ok(0)
+}
+
+/// Count affected rows for destructive changes so the user can see
+/// exactly how much data will be lost before confirming.
+///
+/// Runs lightweight COUNT queries — uses pg_class reltuples estimate
+/// for full-table drops, and COUNT(*) for column drops.
+async fn count_destructive_rows(
+    client: &deadpool_postgres::Client,
+    plan: &plan::MigrationPlan,
+) -> std::collections::HashMap<String, i64> {
+    use crate::diff::SchemaChange;
+    let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+
+    for planned in &plan.changes {
+        if !planned.requires_approval {
+            continue;
+        }
+        let count_result = match &planned.change {
+            SchemaChange::DropTable { name } => {
+                // Fast estimate from pg_class — avoids full table scan
+                let query = format!(
+                    "SELECT COALESCE(reltuples::bigint, 0) FROM pg_class WHERE relname = '{}'",
+                    name.replace('\'', "''")
+                );
+                client
+                    .query_opt(&query, &[])
+                    .await
+                    .map(|row| row.map(|r| r.get::<_, i64>(0)).unwrap_or(0))
+            }
+            SchemaChange::DropColumn { table, column } => {
+                let query = format!(
+                    "SELECT COUNT(*) FROM \"{}\" WHERE \"{}\" IS NOT NULL",
+                    table.replace('\'', "''"),
+                    column.replace('\'', "''")
+                );
+                client
+                    .query_one(&query, &[])
+                    .await
+                    .map(|row| row.get::<_, i64>(0))
+            }
+            SchemaChange::AlterColumnType { table, column, .. } => {
+                // Type change may lose data — count rows with non-null values
+                let query = format!(
+                    "SELECT COUNT(*) FROM \"{}\" WHERE \"{}\" IS NOT NULL",
+                    table.replace('\'', "''"),
+                    column.replace('\'', "''")
+                );
+                client
+                    .query_one(&query, &[])
+                    .await
+                    .map(|row| row.get::<_, i64>(0))
+            }
+            SchemaChange::DropEnum { .. } => {
+                // Enum drops are tracked implicitly — we can't easily count
+                // which tables use the enum without an expensive scan.
+                Ok(-1)
+            }
+            _ => Ok(0),
+        };
+
+        match count_result {
+            Ok(count) => {
+                counts.insert(planned.change_id.clone(), count);
+            }
+            Err(e) => {
+                eprintln!("  {}Failed to count rows for {}: {}", ERROR, planned.change_id, e);
+            }
+        }
+    }
+
+    counts
 }
 
 /// Resolve database URL from options, .env file, or environment variable.

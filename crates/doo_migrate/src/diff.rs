@@ -290,16 +290,11 @@ pub fn compute_diff(current: &DatabaseSchema, desired: &DatabaseSchema) -> Vec<S
         }
     }
 
-    // 2. Dropped tables (in current but not in desired, excluding renames)
-    for current_table in &current.tables {
-        if !desired_tables.contains_key(current_table.name.as_str())
-            && !renamed_tables.contains(current_table.name.as_str())
-        {
-            changes.push(SchemaChange::DropTable {
-                name: current_table.name.clone(),
-            });
-        }
-    }
+    // 2. Tables in the database but NOT in our desired schema: SKIP.
+    // These are foreign tables belonging to other projects that happen to
+    // share the same database. The migration system only manages tables
+    // defined in the current project's .doo source files.
+    // We intentionally do NOT generate DropTable for them.
 
     // 3. Modified tables (in both or renamed — diff columns, constraints, indexes)
     for desired_table in &desired.tables {
@@ -379,14 +374,9 @@ fn diff_enums(
         }
     }
 
-    // Dropped enums
-    for name in current.keys() {
-        if !desired.contains_key(name) {
-            changes.push(SchemaChange::DropEnum {
-                name: name.to_string(),
-            });
-        }
-    }
+    // Enums in the database but NOT in our desired schema: SKIP.
+    // These are foreign enums from other projects sharing the database.
+    // We intentionally do NOT generate DropEnum for them.
 }
 
 /// Diff two versions of the same table.

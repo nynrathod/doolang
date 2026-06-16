@@ -1,7 +1,8 @@
 //! Schema Extractor — .doo source → DatabaseSchema
 //!
 //! Parses all .doo files in a project, lowers to HIR, and walks the HIR items
-//! to extract `@table` structs and referenced enums into a `DatabaseSchema`.
+//! to extract `@table` structs, implicit tables (from app.auth/app.crud),
+//! and referenced enums into a `DatabaseSchema`.
 //!
 //! Uses the exact same compiler frontend as `doo build` — zero duplication.
 
@@ -12,22 +13,31 @@ use std::{env, fs};
 use doo_core::string::to_snake_case;
 use doo_core::types::TypeRegistry;
 use doo_frontend::Parser;
-use doo_hir::{ConstValue, HirExprKind, HirItem, Lower};
+use doo_hir::{ConstValue, HirExpr, HirExprKind, HirItem, HirStmtKind, Lower};
 
 use crate::schema::*;
 
-/// Extract a DatabaseSchema from all .doo files under the given path.
+// ============================================================================
+// Implicit Table Constants — Single Source of Truth
+// ============================================================================
+// These are the ONLY place where Server method names and derived table names
+// are defined for migration discovery. The FFI runtime uses matching names
+// (doo_http_auth, doo_http_crud) but the migration system discovers tables
+// by scanning HIR method calls, not by calling the FFI.
+
+/// Server method name for auth endpoint registration.
+const SERVER_METHOD_AUTH: &str = "auth";
+/// Server method name for CRUD endpoint registration.
+const SERVER_METHOD_CRUD: &str = "crud";
+/// Default table name for auth-backed structs.
+/// Matches the FFI convention: app.auth() always creates a "users" table.
+const DEFAULT_AUTH_TABLE: &str = "users";
+
+/// Extract a DatabaseSchema from the project.
 ///
-/// Uses a two-strategy approach (like TypeORM's entity discovery):
-///
-/// **Strategy 1 — Entry-point resolution**: Finds `main.doo` (or `src/main.doo`)
-/// and follows the full import chain via the compiler's import resolution.
-/// This handles well-structured projects with proper dependency chains.
-///
-/// **Strategy 2 — Universal scan** (fallback): Recursively discovers ALL `.doo`
-/// files in the project, parses each one, collects every `@table` struct and
-/// enum from everywhere, and builds a combined schema. No hardcoded filenames.
-/// Works for any project layout — temp dirs, partial projects, scattered structs.
+/// Always uses entry-point resolution: starts from the specified file or
+/// main.doo and follows the full import chain. Never scans unrelated .doo
+/// files in the directory — the import graph is the single source of truth.
 pub fn extract_schema(path: &Path) -> Result<DatabaseSchema, String> {
     let project_root = if path.is_dir() {
         path.to_path_buf()
@@ -37,15 +47,9 @@ pub fn extract_schema(path: &Path) -> Result<DatabaseSchema, String> {
             .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
     };
 
-    // Strategy 1: Try proper entry point with full import resolution
-    if let Ok(schema) = try_extract_from_entry(path, &project_root) {
-        if !schema.tables.is_empty() {
-            return Ok(schema);
-        }
-    }
-
-    // Strategy 2: Scan ALL .doo files — find @table structs everywhere
-    extract_from_all_files(&project_root)
+    // Single strategy: entry-point resolution via import chain.
+    // main.doo (or specified file) is the truth — only its imports matter.
+    try_extract_from_entry(path, &project_root)
 }
 
 /// Strategy 1: Resolve a proper entry point (main.doo or src/main.doo),
@@ -80,93 +84,6 @@ fn try_extract_from_entry(path: &Path, project_root: &Path) -> Result<DatabaseSc
 }
 
 /// Strategy 2: Recursively discover ALL .doo files, parse each one,
-/// collect every @table struct and enum, build a combined schema.
-/// This is the universal fallback — no hardcoded filenames, no assumptions
-/// about project structure. Works for any directory with .doo files.
-fn extract_from_all_files(project_root: &Path) -> Result<DatabaseSchema, String> {
-    let doo_files = discover_doo_files(project_root)?;
-
-    if doo_files.is_empty() {
-        return Err(format!("No .doo files found in {}", project_root.display()));
-    }
-
-    let mut all_items: Vec<doo_frontend::ast::Item> = Vec::new();
-
-    for (file_id, file_path) in doo_files.iter().enumerate() {
-        let source = fs::read_to_string(file_path)
-            .map_err(|e| format!("Failed to read {}: {}", file_path.display(), e))?;
-
-        let mut parser = Parser::new(&source, file_id as u32);
-        let program = match parser.parse_program() {
-            Ok(p) => p,
-            Err(_) => continue, // Skip unparseable files — not all .doo files need @table
-        };
-
-        all_items.extend(program.items);
-    }
-
-    if all_items.is_empty() {
-        return Ok(DatabaseSchema::default());
-    }
-
-    // Build a combined program from ALL collected items (structs, enums, imports, etc.)
-    let combined_program = doo_frontend::ast::Program::new(all_items, doo_core::Span::empty());
-
-    // Attempt import resolution on the combined program (best-effort).
-    // In the fallback path, not all imports may be resolvable — that's OK.
-    // We just need the @table struct and enum definitions, which are self-contained.
-    let mut program = combined_program;
-    let mut loader = doo_driver_loader::ModuleLoader::new();
-    if let Ok(import_resolution) =
-        doo_driver_loader::resolve_imports(&program, &mut loader, project_root)
-    {
-        doo_analysis::loader::merge_imports(&mut program, import_resolution);
-    }
-
-    // AST transforms
-    doo_analysis::transform::transform_route_groups(&mut program);
-    doo_analysis::transform::transform_inline_closures(&mut program);
-
-    // Lower to HIR
-    let mut type_registry = TypeRegistry::new();
-    let mut lowerer = Lower::new();
-    let hir = lowerer.lower_program_typed(&program, &mut type_registry);
-
-    extract_from_hir(&hir, &type_registry)
-}
-
-/// Recursively discover all .doo files under a directory.
-/// Skips hidden dirs, target/, and node_modules/.
-fn discover_doo_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut files = Vec::new();
-    discover_recursive(dir, &mut files)
-        .map_err(|e| format!("Failed to scan {}: {}", dir.display(), e))?;
-    files.sort(); // Deterministic ordering
-    Ok(files)
-}
-
-fn discover_recursive(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    if !dir.exists() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            // Skip hidden dirs, build artifacts, and dependency dirs
-            if dir_name.starts_with('.') || dir_name == "target" || dir_name == "node_modules" {
-                continue;
-            }
-            discover_recursive(&path, files)?;
-        } else if path.extension().and_then(|e| e.to_str()) == Some("doo") {
-            files.push(path);
-        }
-    }
-    Ok(())
-}
-
-/// Resolve a path to a canonical entry point (.doo file or directory → main.doo).
 /// No hardcoded filenames beyond the standard project convention (main.doo).
 fn resolve_entry_point(path: &Path) -> Result<PathBuf, String> {
     // Check DOO_ENTRY override
@@ -196,6 +113,486 @@ fn resolve_entry_point(path: &Path) -> Result<PathBuf, String> {
         path.display()
     ))
 }
+/// Discover tables that exist implicitly through app.auth() and app.crud() calls.
+///
+/// These structs do NOT have a @table decorator, but the Server creates tables
+/// for them at runtime. The migration system must know about them to generate DDL.
+///
+/// Returns a map of struct_name → table_name for implicit tables.
+fn discover_implicit_tables(
+    hir: &doo_hir::HirProgram,
+    all_structs: &HashMap<String, (&doo_hir::HirStruct, bool)>,
+) -> HashMap<String, String> {
+    let mut implicit: HashMap<String, String> = HashMap::new();
+
+    for item in &hir.items {
+        if let HirItem::Function(f) = item {
+            for stmt in &f.body {
+                collect_method_calls(stmt, all_structs, &mut implicit);
+            }
+        }
+    }
+
+    implicit
+}
+
+/// Recursively walk HIR statements/expressions looking for app.auth() and app.crud()
+/// method calls. When found, extract the struct name arg and derive the table name.
+fn collect_method_calls(
+    stmt: &doo_hir::HirStmt,
+    all_structs: &HashMap<String, (&doo_hir::HirStruct, bool)>,
+    implicit: &mut HashMap<String, String>,
+) {
+    match &stmt.kind {
+        HirStmtKind::Expr(expr) | HirStmtKind::Let { value: expr, .. } => {
+            walk_expr_for_implicit_tables(expr, all_structs, implicit);
+        }
+        HirStmtKind::Assign { target, value } => {
+            walk_expr_for_implicit_tables(target, all_structs, implicit);
+            walk_expr_for_implicit_tables(value, all_structs, implicit);
+        }
+        HirStmtKind::Return(exprs) => {
+            for e in exprs {
+                walk_expr_for_implicit_tables(e, all_structs, implicit);
+            }
+        }
+        HirStmtKind::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            walk_expr_for_implicit_tables(condition, all_structs, implicit);
+            for s in then_block {
+                collect_method_calls(s, all_structs, implicit);
+            }
+            if let Some(block) = else_block {
+                for s in block {
+                    collect_method_calls(s, all_structs, implicit);
+                }
+            }
+        }
+        HirStmtKind::While {
+            condition, body, ..
+        } => {
+            walk_expr_for_implicit_tables(condition, all_structs, implicit);
+            for s in body {
+                collect_method_calls(s, all_structs, implicit);
+            }
+        }
+        HirStmtKind::ManualErrorExtract { expr, .. } => {
+            walk_expr_for_implicit_tables(expr, all_structs, implicit);
+        }
+        _ => {}
+    }
+}
+
+/// Recursively walk a HIR expression tree looking for MethodCall patterns
+/// that match app.auth() or app.crud(). When found, extract the struct name
+/// argument and register the implicit table.
+fn walk_expr_for_implicit_tables(
+    expr: &HirExpr,
+    all_structs: &HashMap<String, (&doo_hir::HirStruct, bool)>,
+    implicit: &mut HashMap<String, String>,
+) {
+    match &expr.kind {
+        HirExprKind::MethodCall {
+            receiver: _,
+            method,
+            args,
+        } => {
+            // Check for app.auth() or app.crud()
+            if method == SERVER_METHOD_AUTH {
+                // app.auth(signupPath, loginPath, StructName, db)
+                // Find the struct name argument — it's a Global or Local referencing a known struct
+                if let Some(struct_name) = find_struct_arg_in_method_args(args, all_structs) {
+                    // Auth always uses "users" as the table name (matches FFI convention)
+                    implicit
+                        .entry(struct_name)
+                        .or_insert_with(|| DEFAULT_AUTH_TABLE.to_string());
+                }
+            } else if method == SERVER_METHOD_CRUD {
+                // app.crud(basePath, StructName, db)
+                // Find the struct name argument and derive table name from the path
+                if let Some(struct_name) = find_struct_arg_in_method_args(args, all_structs) {
+                    let table_name = extract_crud_table_name(args);
+                    implicit.entry(struct_name).or_insert_with(|| table_name);
+                }
+            }
+
+            // Recurse into nested expressions
+            for arg in args {
+                walk_expr_for_implicit_tables(arg, all_structs, implicit);
+            }
+        }
+        HirExprKind::Call { func, args } => {
+            walk_expr_for_implicit_tables(func, all_structs, implicit);
+            for arg in args {
+                walk_expr_for_implicit_tables(arg, all_structs, implicit);
+            }
+        }
+        HirExprKind::Field { object, .. } => {
+            walk_expr_for_implicit_tables(object, all_structs, implicit);
+        }
+        HirExprKind::Index { object, index } => {
+            walk_expr_for_implicit_tables(object, all_structs, implicit);
+            walk_expr_for_implicit_tables(index, all_structs, implicit);
+        }
+        HirExprKind::BinOp { lhs, rhs, .. } => {
+            walk_expr_for_implicit_tables(lhs, all_structs, implicit);
+            walk_expr_for_implicit_tables(rhs, all_structs, implicit);
+        }
+        HirExprKind::UnaryOp { operand, .. } => {
+            walk_expr_for_implicit_tables(operand, all_structs, implicit);
+        }
+        HirExprKind::Struct { fields, .. } => {
+            for (_, field_expr) in fields {
+                walk_expr_for_implicit_tables(field_expr, all_structs, implicit);
+            }
+        }
+        HirExprKind::Block { stmts, expr } => {
+            for s in stmts {
+                collect_method_calls(s, all_structs, implicit);
+            }
+            if let Some(e) = expr {
+                walk_expr_for_implicit_tables(e, all_structs, implicit);
+            }
+        }
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            walk_expr_for_implicit_tables(condition, all_structs, implicit);
+            walk_expr_for_implicit_tables(then_expr, all_structs, implicit);
+            if let Some(e) = else_expr {
+                walk_expr_for_implicit_tables(e, all_structs, implicit);
+            }
+        }
+        HirExprKind::Match { values, arms } => {
+            for v in values {
+                walk_expr_for_implicit_tables(v, all_structs, implicit);
+            }
+            for arm in arms {
+                walk_expr_for_implicit_tables(&arm.body, all_structs, implicit);
+                if let Some(guard) = &arm.guard {
+                    walk_expr_for_implicit_tables(guard, all_structs, implicit);
+                }
+            }
+        }
+        HirExprKind::Array(elems) | HirExprKind::Tuple(elems) => {
+            for e in elems {
+                walk_expr_for_implicit_tables(e, all_structs, implicit);
+            }
+        }
+        HirExprKind::Map(entries) => {
+            for (k, v) in entries {
+                walk_expr_for_implicit_tables(k, all_structs, implicit);
+                walk_expr_for_implicit_tables(v, all_structs, implicit);
+            }
+        }
+        HirExprKind::Ok(inner) | HirExprKind::Err(inner) | HirExprKind::Try(inner) => {
+            walk_expr_for_implicit_tables(inner, all_structs, implicit);
+        }
+        HirExprKind::UnwrapOrPanic {
+            expr: inner,
+            message,
+        } => {
+            walk_expr_for_implicit_tables(inner, all_structs, implicit);
+            walk_expr_for_implicit_tables(message, all_structs, implicit);
+        }
+        HirExprKind::Range { start, end, .. } => {
+            walk_expr_for_implicit_tables(start, all_structs, implicit);
+            walk_expr_for_implicit_tables(end, all_structs, implicit);
+        }
+        // Route block — recurse into each route expression
+        HirExprKind::RouteBlock { routes } => {
+            for r in routes {
+                walk_expr_for_implicit_tables(r, all_structs, implicit);
+            }
+        }
+        // Ownership annotations — unwrap and recurse
+        HirExprKind::Move(inner) | HirExprKind::Clone(inner) | HirExprKind::Await(inner) => {
+            walk_expr_for_implicit_tables(inner, all_structs, implicit);
+        }
+        HirExprKind::Borrow { expr: inner, .. } => {
+            walk_expr_for_implicit_tables(inner, all_structs, implicit);
+        }
+        // Closure — recurse into body
+        HirExprKind::Closure { body, .. } => {
+            walk_expr_for_implicit_tables(body, all_structs, implicit);
+        }
+        // Cast — recurse into value (to_type is a TypeId, not an expression)
+        HirExprKind::Cast { value, .. } => {
+            walk_expr_for_implicit_tables(value, all_structs, implicit);
+        }
+        // Concurrency — recurse into body
+        HirExprKind::Spawn { body } => {
+            walk_expr_for_implicit_tables(body, all_structs, implicit);
+        }
+        // Scope block — recurse into statements
+        HirExprKind::ScopeBlock { stmts } => {
+            for s in stmts {
+                collect_method_calls(s, all_structs, implicit);
+            }
+        }
+        // Leaf nodes — no recursion needed
+        HirExprKind::Const(_)
+        | HirExprKind::Local { .. }
+        | HirExprKind::Global { .. }
+        | HirExprKind::EnumVariant { .. }
+        | HirExprKind::Spread(_) => {}
+    }
+}
+
+/// Find a struct name argument in a method call's argument list.
+/// Returns the struct name if any argument is a Global/Local referencing a known struct.
+fn find_struct_arg_in_method_args(
+    args: &[HirExpr],
+    all_structs: &HashMap<String, (&doo_hir::HirStruct, bool)>,
+) -> Option<String> {
+    for arg in args {
+        match &arg.kind {
+            HirExprKind::Global { name } | HirExprKind::Local { name } => {
+                if all_structs.contains_key(name.as_str()) {
+                    return Some(name.clone());
+                }
+            }
+            HirExprKind::Const(ConstValue::Str(name)) => {
+                if all_structs.contains_key(name.as_str()) {
+                    return Some(name.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Extract the table name from a CRUD path argument.
+/// app.crud("/products", ...) → "products"
+/// app.crud("/api/v1/todos", ...) → "todos"
+fn extract_crud_table_name(args: &[HirExpr]) -> String {
+    // The first argument of app.crud() is the base path
+    if let Some(first_arg) = args.first() {
+        if let HirExprKind::Const(ConstValue::Str(path)) = &first_arg.kind {
+            // Extract the last segment of the path
+            let segments: Vec<&str> = path
+                .trim_start_matches('/')
+                .split('/')
+                .filter(|s| {
+                    // Skip common API prefixes and numeric IDs
+                    !s.is_empty()
+                        && !s.eq_ignore_ascii_case("api")
+                        && !s.eq_ignore_ascii_case("v1")
+                        && !s.eq_ignore_ascii_case("v2")
+                        && s.parse::<i64>().is_err()
+                })
+                .collect();
+            if let Some(last) = segments.last() {
+                return last.to_string();
+            }
+        }
+    }
+    // Fallback: use the path as-is (minus leading slash)
+    if let Some(first_arg) = args.first() {
+        if let HirExprKind::Const(ConstValue::Str(path)) = &first_arg.kind {
+            return path.trim_start_matches('/').to_string();
+        }
+    }
+    "unknown".to_string()
+}
+
+/// Build a TableDef from a HIR struct (shared by @table and implicit table paths).
+fn build_table_def_from_struct(
+    s: &doo_hir::HirStruct,
+    table_name: &str,
+    type_registry: &TypeRegistry,
+    all_structs: &HashMap<String, (&doo_hir::HirStruct, bool)>,
+    table_struct_names: &HashSet<String>,
+    enum_map: &HashMap<String, Vec<String>>,
+    referenced_enums: &mut HashSet<String>,
+) -> TableDef {
+    let auto_timestamp = s.decorators.iter().any(|d| d.name == "autoTimestamp");
+
+    let mut columns = Vec::new();
+    let mut primary_key_cols = Vec::new();
+    let mut unique_constraints = Vec::new();
+    let mut foreign_keys = Vec::new();
+    let mut indexes = Vec::new();
+    let mut table_struct_refs: Vec<String> = Vec::new();
+    let mut transitive_enum_refs: Vec<String> = Vec::new();
+
+    for field in &s.fields {
+        let col_name = to_snake_case(&field.name);
+        let is_primary = field.decorators.iter().any(|d| d.name == "primary");
+        let is_auto = field
+            .decorators
+            .iter()
+            .any(|d| d.name == "auto" || d.name == "autoIncrement");
+        let is_unique = field.decorators.iter().any(|d| d.name == "unique");
+        let is_index = field.decorators.iter().any(|d| d.name == "index");
+        let is_hashed = field.decorators.iter().any(|d| d.name == "hash");
+        let is_optional =
+            field.is_optional || field.decorators.iter().any(|d| d.name == "optional");
+
+        let mut field_transitive_enums: Vec<String> = Vec::new();
+        check_non_table_struct_field(
+            field.type_id,
+            type_registry,
+            all_structs,
+            table_struct_names,
+            enum_map,
+            referenced_enums,
+            &mut table_struct_refs,
+            &mut field_transitive_enums,
+        );
+        for enum_name in &field_transitive_enums {
+            if !transitive_enum_refs.contains(enum_name) {
+                transitive_enum_refs.push(enum_name.clone());
+            }
+        }
+
+        let sql_type = resolve_sql_type(
+            field.type_id,
+            type_registry,
+            enum_map,
+            referenced_enums,
+            is_auto,
+        );
+
+        let default = field.decorators.iter().find_map(|d| {
+            if d.name == "default" {
+                d.args.first().and_then(|a| match &a.kind {
+                    HirExprKind::Const(ConstValue::Int(n)) => Some(DefaultValue::Integer(*n)),
+                    HirExprKind::Const(ConstValue::Float(f)) => Some(DefaultValue::Float(*f)),
+                    HirExprKind::Const(ConstValue::Bool(b)) => Some(DefaultValue::Boolean(*b)),
+                    HirExprKind::Const(ConstValue::Str(s)) => Some(DefaultValue::String(s.clone())),
+                    _ => None,
+                })
+            } else {
+                None
+            }
+        });
+
+        if is_primary {
+            primary_key_cols.push(col_name.clone());
+        }
+
+        if is_unique {
+            unique_constraints.push(UniqueConstraintDef {
+                name: format!("{}_{}_key", table_name, col_name),
+                columns: vec![col_name.clone()],
+            });
+        }
+
+        if is_index {
+            indexes.push(IndexDef {
+                name: format!("idx_{}_{}", table_name, col_name),
+                columns: vec![col_name.clone()],
+                unique: false,
+            });
+        }
+
+        for dec in &field.decorators {
+            if dec.name == "foreign" {
+                if let Some(arg) = dec.args.first() {
+                    let ref_struct = match &arg.kind {
+                        HirExprKind::Const(ConstValue::Str(s)) => s.clone(),
+                        HirExprKind::Local { name } => name.clone(),
+                        HirExprKind::Global { name } => name.clone(),
+                        _ => continue,
+                    };
+                    let ref_table = resolve_table_name(&ref_struct, all_structs);
+                    foreign_keys.push(ForeignKeyDef {
+                        name: format!("{}_{}_fkey", table_name, col_name),
+                        columns: vec![col_name.clone()],
+                        ref_table,
+                        ref_columns: vec!["id".to_string()],
+                        on_delete: ForeignKeyAction::Cascade,
+                        on_update: ForeignKeyAction::NoAction,
+                    });
+                }
+            }
+        }
+
+        columns.push(ColumnDef {
+            name: col_name,
+            field_name: field.name.clone(),
+            sql_type,
+            nullable: is_optional,
+            default,
+            is_auto,
+            is_primary,
+            is_unique,
+            is_index,
+            is_hashed,
+        });
+    }
+
+    // Add autoTimestamp columns
+    if auto_timestamp {
+        let has_created_at = columns.iter().any(|c| c.name == "created_at");
+        let has_updated_at = columns.iter().any(|c| c.name == "updated_at");
+
+        if !has_created_at {
+            columns.push(ColumnDef {
+                name: "created_at".to_string(),
+                field_name: "createdAt".to_string(),
+                sql_type: SqlType::TimestampTz,
+                nullable: false,
+                default: Some(DefaultValue::Expression("NOW()".to_string())),
+                is_auto: false,
+                is_primary: false,
+                is_unique: false,
+                is_index: false,
+                is_hashed: false,
+            });
+        }
+        if !has_updated_at {
+            columns.push(ColumnDef {
+                name: "updated_at".to_string(),
+                field_name: "updatedAt".to_string(),
+                sql_type: SqlType::TimestampTz,
+                nullable: false,
+                default: Some(DefaultValue::Expression("NOW()".to_string())),
+                is_auto: false,
+                is_primary: false,
+                is_unique: false,
+                is_index: false,
+                is_hashed: false,
+            });
+        }
+    }
+
+    let primary_key = if !primary_key_cols.is_empty() {
+        Some(PrimaryKeyDef {
+            name: format!("{}_pkey", table_name),
+            columns: primary_key_cols,
+        })
+    } else {
+        None
+    };
+
+    table_struct_refs.sort();
+    table_struct_refs.dedup();
+    transitive_enum_refs.sort();
+    transitive_enum_refs.dedup();
+
+    TableDef {
+        name: table_name.to_string(),
+        struct_name: s.name.clone(),
+        columns,
+        primary_key,
+        unique_constraints,
+        check_constraints: Vec::new(),
+        foreign_keys,
+        indexes,
+        auto_timestamp,
+        struct_refs: table_struct_refs,
+        transitive_enum_refs,
+    }
+}
+
 fn extract_from_hir(
     hir: &doo_hir::HirProgram,
     type_registry: &TypeRegistry,
@@ -205,7 +602,7 @@ fn extract_from_hir(
     let mut referenced_enums: HashSet<String> = HashSet::new();
 
     // First pass: collect all enums AND all structs (both @table and non-table)
-    // all_structs: struct_name -> (is_table, HirStruct ref)
+    // all_structs: struct_name -> (HirStruct ref, is_table)
     let mut all_structs: HashMap<String, (&doo_hir::HirStruct, bool)> = HashMap::new();
 
     for item in &hir.items {
@@ -222,17 +619,25 @@ fn extract_from_hir(
         }
     }
 
-    // Pre-compute which struct names are @table (for dependency lookups)
-    let table_struct_names: HashSet<String> = all_structs
+    // Discover implicit tables from app.auth() and app.crud() calls.
+    // These are structs without @table that still create database tables at runtime.
+    let implicit_tables = discover_implicit_tables(hir, &all_structs);
+
+    // Pre-compute which struct names are tables (either @table or implicit).
+    // This is the SINGLE SOURCE OF TRUTH for "is this struct a database table?"
+    let mut table_struct_names: HashSet<String> = all_structs
         .iter()
         .filter(|(_, (_, is_table))| *is_table)
         .map(|(name, _)| name.clone())
         .collect();
+    // Add implicit table structs
+    for struct_name in implicit_tables.keys() {
+        table_struct_names.insert(struct_name.clone());
+    }
 
     // Second pass: extract @table structs
     for item in &hir.items {
         if let HirItem::Struct(s) = item {
-            // Check if this struct has a @table decorator
             let has_table = s.decorators.iter().any(|d| d.name == "table");
             if !has_table {
                 continue;
@@ -253,207 +658,40 @@ fn extract_from_hir(
                 }
             });
 
-            // Check for @autoTimestamp
-            let auto_timestamp = s.decorators.iter().any(|d| d.name == "autoTimestamp");
-
-            // Resolve table name: @table("custom") or lowercase(name) + "s"
             let table_name =
                 custom_table_name.unwrap_or_else(|| format!("{}s", s.name.to_lowercase()));
 
-            let mut columns = Vec::new();
-            let mut primary_key_cols = Vec::new();
-            let mut unique_constraints = Vec::new();
-            let mut foreign_keys = Vec::new();
-            let mut indexes = Vec::new();
-            // Track non-table structs referenced by this table's fields
-            let mut table_struct_refs: Vec<String> = Vec::new();
-            // Track transitive enum refs found through non-table struct fields
-            let mut transitive_enum_refs: Vec<String> = Vec::new();
+            let table_def = build_table_def_from_struct(
+                s,
+                &table_name,
+                type_registry,
+                &all_structs,
+                &table_struct_names,
+                &enum_map,
+                &mut referenced_enums,
+            );
+            schema.tables.push(table_def);
+        }
+    }
 
-            for field in &s.fields {
-                let col_name = to_snake_case(&field.name);
-                let is_primary = field.decorators.iter().any(|d| d.name == "primary");
-                let is_auto = field
-                    .decorators
-                    .iter()
-                    .any(|d| d.name == "auto" || d.name == "autoIncrement");
-                let is_unique = field.decorators.iter().any(|d| d.name == "unique");
-                let is_index = field.decorators.iter().any(|d| d.name == "index");
-                let is_hashed = field.decorators.iter().any(|d| d.name == "hash");
-                let is_optional =
-                    field.is_optional || field.decorators.iter().any(|d| d.name == "optional");
+    // Third pass: process implicit table structs (app.auth/app.crud)
+    for (struct_name, table_name) in &implicit_tables {
+        // Skip if this struct was already processed as a @table struct
+        if schema.tables.iter().any(|t| t.struct_name == *struct_name) {
+            continue;
+        }
 
-                // Check if this field's type is a non-table struct reference
-                // If so, we need to recursively resolve its fields' enum/FK dependencies
-                let mut field_transitive_enums: Vec<String> = Vec::new();
-                check_non_table_struct_field(
-                    field.type_id,
-                    type_registry,
-                    &all_structs,
-                    &table_struct_names,
-                    &enum_map,
-                    &mut referenced_enums,
-                    &mut table_struct_refs,
-                    &mut field_transitive_enums,
-                );
-                // Collect transitive enum refs from this field
-                for enum_name in &field_transitive_enums {
-                    if !transitive_enum_refs.contains(enum_name) {
-                        transitive_enum_refs.push(enum_name.clone());
-                    }
-                }
-
-                // Resolve SQL type from Doo type
-                let sql_type = resolve_sql_type(
-                    field.type_id,
-                    type_registry,
-                    &enum_map,
-                    &mut referenced_enums,
-                    is_auto,
-                );
-
-                // Extract default value from @default(value)
-                let default = field.decorators.iter().find_map(|d| {
-                    if d.name == "default" {
-                        d.args.first().and_then(|a| match &a.kind {
-                            HirExprKind::Const(ConstValue::Int(n)) => {
-                                Some(DefaultValue::Integer(*n))
-                            }
-                            HirExprKind::Const(ConstValue::Float(f)) => {
-                                Some(DefaultValue::Float(*f))
-                            }
-                            HirExprKind::Const(ConstValue::Bool(b)) => {
-                                Some(DefaultValue::Boolean(*b))
-                            }
-                            HirExprKind::Const(ConstValue::Str(s)) => {
-                                Some(DefaultValue::String(s.clone()))
-                            }
-                            _ => None,
-                        })
-                    } else {
-                        None
-                    }
-                });
-
-                if is_primary {
-                    primary_key_cols.push(col_name.clone());
-                }
-
-                if is_unique {
-                    unique_constraints.push(UniqueConstraintDef {
-                        name: format!("{}_{}_key", table_name, col_name),
-                        columns: vec![col_name.clone()],
-                    });
-                }
-
-                if is_index {
-                    indexes.push(IndexDef {
-                        name: format!("idx_{}_{}", table_name, col_name),
-                        columns: vec![col_name.clone()],
-                        unique: false,
-                    });
-                }
-
-                // Extract @foreign(StructName) → foreign key
-                for dec in &field.decorators {
-                    if dec.name == "foreign" {
-                        if let Some(arg) = dec.args.first() {
-                            let ref_struct = match &arg.kind {
-                                HirExprKind::Const(ConstValue::Str(s)) => s.clone(),
-                                HirExprKind::Local { name } => name.clone(),
-                                HirExprKind::Global { name } => name.clone(),
-                                _ => continue,
-                            };
-                            let ref_table = resolve_table_name(&ref_struct, &all_structs);
-                            foreign_keys.push(ForeignKeyDef {
-                                name: format!("{}_{}_fkey", table_name, col_name),
-                                columns: vec![col_name.clone()],
-                                ref_table,
-                                ref_columns: vec!["id".to_string()],
-                                on_delete: ForeignKeyAction::Cascade,
-                                on_update: ForeignKeyAction::NoAction,
-                            });
-                        }
-                    }
-                }
-
-                columns.push(ColumnDef {
-                    name: col_name,
-                    field_name: field.name.clone(),
-                    sql_type,
-                    nullable: is_optional,
-                    default,
-                    is_auto,
-                    is_primary,
-                    is_unique,
-                    is_index,
-                    is_hashed,
-                });
-            }
-
-            // Add autoTimestamp columns
-            if auto_timestamp {
-                let has_created_at = columns.iter().any(|c| c.name == "created_at");
-                let has_updated_at = columns.iter().any(|c| c.name == "updated_at");
-
-                if !has_created_at {
-                    columns.push(ColumnDef {
-                        name: "created_at".to_string(),
-                        field_name: "createdAt".to_string(),
-                        sql_type: SqlType::TimestampTz,
-                        nullable: false,
-                        default: Some(DefaultValue::Expression("NOW()".to_string())),
-                        is_auto: false,
-                        is_primary: false,
-                        is_unique: false,
-                        is_index: false,
-                        is_hashed: false,
-                    });
-                }
-                if !has_updated_at {
-                    columns.push(ColumnDef {
-                        name: "updated_at".to_string(),
-                        field_name: "updatedAt".to_string(),
-                        sql_type: SqlType::TimestampTz,
-                        nullable: false,
-                        default: Some(DefaultValue::Expression("NOW()".to_string())),
-                        is_auto: false,
-                        is_primary: false,
-                        is_unique: false,
-                        is_index: false,
-                        is_hashed: false,
-                    });
-                }
-            }
-
-            let primary_key = if !primary_key_cols.is_empty() {
-                Some(PrimaryKeyDef {
-                    name: format!("{}_pkey", table_name),
-                    columns: primary_key_cols,
-                })
-            } else {
-                None
-            };
-
-            // Deduplicate struct refs and transitive enum refs
-            table_struct_refs.sort();
-            table_struct_refs.dedup();
-            transitive_enum_refs.sort();
-            transitive_enum_refs.dedup();
-
-            schema.tables.push(TableDef {
-                name: table_name,
-                struct_name: s.name.clone(),
-                columns,
-                primary_key,
-                unique_constraints,
-                check_constraints: Vec::new(),
-                foreign_keys,
-                indexes,
-                auto_timestamp,
-                struct_refs: table_struct_refs,
-                transitive_enum_refs,
-            });
+        if let Some((hir_struct, _)) = all_structs.get(struct_name) {
+            let table_def = build_table_def_from_struct(
+                hir_struct,
+                table_name,
+                type_registry,
+                &all_structs,
+                &table_struct_names,
+                &enum_map,
+                &mut referenced_enums,
+            );
+            schema.tables.push(table_def);
         }
     }
 
