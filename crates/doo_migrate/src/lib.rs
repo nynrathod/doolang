@@ -96,6 +96,37 @@ const ERROR: &str = "✗ ";
 const WARN: &str = "⚠ ";
 const ARROW: &str = "→ ";
 
+/// Run an async future to completion, safely handling the case where a Tokio
+/// runtime already exists on the current thread (e.g., when `doo migrate` is
+/// invoked as a subprocess from the DooCloud server).
+///
+/// Uses a persistent runtime (OnceLock) so that deadpool connections stay
+/// alive across multiple `block_on_safe` calls within the same process.
+/// If no runtime is active, creates a new multi-threaded runtime once and
+/// reuses it. If already inside a runtime, uses `block_in_place` to avoid
+/// the "Cannot start a runtime from within a runtime" panic.
+fn block_on_safe<F, T>(f: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    use std::sync::OnceLock;
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+
+    let rt = RT.get_or_init(|| {
+        tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime for migration")
+    });
+
+    match tokio::runtime::Handle::try_current() {
+        Ok(_) => {
+            // Already inside a runtime (e.g., subprocess of DooCloud server).
+            // block_in_place lets the current runtime drive this future
+            // without panicking or blocking worker threads.
+            tokio::task::block_in_place(|| rt.block_on(f))
+        }
+        Err(_) => rt.block_on(f),
+    }
+}
+
 /// Main entry point for `doo migrate`.
 ///
 /// Returns exit code (0 = success, 1 = error).
@@ -154,10 +185,8 @@ pub fn run_migrate(opts: MigrateOptions) -> Result<i32, String> {
 
     // Phase 2: Connect and introspect (async runtime)
     human_println!("{}Connecting to database...", ARROW);
-    let runtime = tokio::runtime::Runtime::new()
-        .map_err(|e| format!("Failed to create async runtime: {}", e))?;
 
-    let result = runtime.block_on(async {
+    let result = block_on_safe(async {
         let mut client = introspect::connect(&db_url).await?;
         history::ensure_history_table(&client).await?;
 
@@ -263,7 +292,7 @@ pub fn run_migrate(opts: MigrateOptions) -> Result<i32, String> {
     }
 
     // Phase 4: Plan migration
-    let migration_plan = plan::build_plan(changes);
+    let mut migration_plan = plan::build_plan(changes);
 
     // === Compute summary for JSON output ===
     let summary = {
@@ -325,6 +354,18 @@ pub fn run_migrate(opts: MigrateOptions) -> Result<i32, String> {
     }
     .to_string();
 
+    // ── Count affected rows for ALL changes (not just destructive) ────────
+    // This runs here so both --json and --diff output include row counts,
+    // not just the interactive approval prompt.
+    let row_counts = block_on_safe(async { count_affected_rows(&client, &migration_plan).await });
+    for planned in &mut migration_plan.changes {
+        if let Some(&count) = row_counts.get(&planned.change_id) {
+            if count >= 0 {
+                planned.affected_rows = Some(count);
+            }
+        }
+    }
+
     // Phase 5: Generate SQL (already inside plan)
     let up_sql = sql::generate_up_sql(&migration_plan);
     let down_sql = sql::generate_down_sql(&migration_plan);
@@ -340,11 +381,16 @@ pub fn run_migrate(opts: MigrateOptions) -> Result<i32, String> {
             plan::Risk::Risky => "\x1b[33m[risky]\x1b[0m",
             plan::Risk::Destructive => "\x1b[31m[destructive]\x1b[0m",
         };
+        let rows = planned
+            .affected_rows
+            .map(|n| format!("  ({} row(s) affected)", n))
+            .unwrap_or_default();
         human_println!(
-            "    {} {} {}",
+            "    {} {} {}{}",
             risk_tag,
             planned.description(),
-            planned.up_sql_preview()
+            planned.up_sql_preview(),
+            rows,
         );
     }
 
@@ -391,22 +437,12 @@ pub fn run_migrate(opts: MigrateOptions) -> Result<i32, String> {
             eprintln!();
             eprintln!("\x1b[1;31m{}Destructive changes detected!\x1b[0m", WARN);
 
-            // Query row counts for destructive changes so the user knows
-            // exactly how much data will be lost before confirming.
-            let row_counts =
-                runtime.block_on(async { count_destructive_rows(&client, &migration_plan).await });
-
+            // affected_rows already populated above — use it directly
             for planned in &migration_plan.changes {
                 if planned.requires_approval {
-                    let count_str = row_counts
-                        .get(&planned.change_id)
-                        .and_then(|&c| {
-                            if c >= 0 {
-                                Some(format!("  ({} row(s) affected)", c))
-                            } else {
-                                None
-                            }
-                        })
+                    let count_str = planned
+                        .affected_rows
+                        .map(|n| format!("  ({} row(s) affected)", n))
                         .unwrap_or_default();
                     eprintln!(
                         "  \x1b[31m{}\x1b[0m {}{}",
@@ -430,7 +466,7 @@ pub fn run_migrate(opts: MigrateOptions) -> Result<i32, String> {
 
     // Phase 7: Execute migration
     human_println!("{}Executing migration...", ARROW);
-    runtime.block_on(async {
+    block_on_safe(async {
         execute::execute_migration(&mut client, &migration_plan, &up_sql, &down_sql).await
     })?;
 
@@ -452,12 +488,14 @@ pub fn run_migrate(opts: MigrateOptions) -> Result<i32, String> {
     Ok(0)
 }
 
-/// Count affected rows for destructive changes so the user can see
-/// exactly how much data will be lost before confirming.
+/// Count affected rows for every change in the plan so the user can see
+/// how much data will be touched before confirming.
 ///
-/// Runs lightweight COUNT queries — uses pg_class reltuples estimate
-/// for full-table drops, and COUNT(*) for column drops.
-async fn count_destructive_rows(
+/// Uses pg_class reltuples estimate for full-table operations,
+/// and COUNT(*) queries for column-level operations.
+///
+/// Single source of truth — called once, populates PlannedChange.affected_rows.
+async fn count_affected_rows(
     client: &deadpool_postgres::Client,
     plan: &plan::MigrationPlan,
 ) -> std::collections::HashMap<String, i64> {
@@ -465,9 +503,6 @@ async fn count_destructive_rows(
     let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
 
     for planned in &plan.changes {
-        if !planned.requires_approval {
-            continue;
-        }
         let count_result = match &planned.change {
             SchemaChange::DropTable { name } => {
                 // Fast estimate from pg_class — avoids full table scan
@@ -480,7 +515,8 @@ async fn count_destructive_rows(
                     .await
                     .map(|row| row.map(|r| r.get::<_, i64>(0)).unwrap_or(0))
             }
-            SchemaChange::DropColumn { table, column } => {
+            SchemaChange::DropColumn { table, column }
+            | SchemaChange::AlterColumnType { table, column, .. } => {
                 let query = format!(
                     "SELECT COUNT(*) FROM \"{}\" WHERE \"{}\" IS NOT NULL",
                     table.replace('\'', "''"),
@@ -491,10 +527,32 @@ async fn count_destructive_rows(
                     .await
                     .map(|row| row.get::<_, i64>(0))
             }
-            SchemaChange::AlterColumnType { table, column, .. } => {
-                // Type change may lose data — count rows with non-null values
+            SchemaChange::RenameTable { from, .. } => {
+                // Rename touches every row — use source table count
                 let query = format!(
-                    "SELECT COUNT(*) FROM \"{}\" WHERE \"{}\" IS NOT NULL",
+                    "SELECT COALESCE(reltuples::bigint, 0) FROM pg_class WHERE relname = '{}'",
+                    from.replace('\'', "''")
+                );
+                client
+                    .query_opt(&query, &[])
+                    .await
+                    .map(|row| row.map(|r| r.get::<_, i64>(0)).unwrap_or(0))
+            }
+            SchemaChange::RenameColumn { table, .. } => {
+                // Rename touches every row — total count
+                let query = format!(
+                    "SELECT COALESCE(reltuples::bigint, 0) FROM pg_class WHERE relname = '{}'",
+                    table.replace('\'', "''")
+                );
+                client
+                    .query_opt(&query, &[])
+                    .await
+                    .map(|row| row.map(|r| r.get::<_, i64>(0)).unwrap_or(0))
+            }
+            SchemaChange::SetNotNull { table, column, .. } => {
+                // Rows with NULL in this column — these would cause the ALTER to fail
+                let query = format!(
+                    "SELECT COUNT(*) FROM \"{}\" WHERE \"{}\" IS NULL",
                     table.replace('\'', "''"),
                     column.replace('\'', "''")
                 );
@@ -502,9 +560,32 @@ async fn count_destructive_rows(
                     .query_one(&query, &[])
                     .await
                     .map(|row| row.get::<_, i64>(0))
+            }
+            SchemaChange::DropNotNull { table, column, .. } => {
+                // Total rows in table — all will now allow nulls
+                let query = format!(
+                    "SELECT COALESCE(reltuples::bigint, 0) FROM pg_class WHERE relname = '{}'",
+                    table.replace('\'', "''")
+                );
+                client
+                    .query_opt(&query, &[])
+                    .await
+                    .map(|row| row.map(|r| r.get::<_, i64>(0)).unwrap_or(0))
+            }
+            SchemaChange::AddColumn { table, column } if !column.nullable => {
+                // Adding a NOT NULL column without a default on an existing table
+                // requires a full-table scan to backfill. Show total rows.
+                let query = format!(
+                    "SELECT COALESCE(reltuples::bigint, 0) FROM pg_class WHERE relname = '{}'",
+                    table.replace('\'', "''")
+                );
+                client
+                    .query_opt(&query, &[])
+                    .await
+                    .map(|row| row.map(|r| r.get::<_, i64>(0)).unwrap_or(0))
             }
             SchemaChange::DropEnum { .. } => {
-                // Enum drops are tracked implicitly — we can't easily count
+                // Enum drops are tracked implicitly — can't easily count
                 // which tables use the enum without an expensive scan.
                 Ok(-1)
             }
