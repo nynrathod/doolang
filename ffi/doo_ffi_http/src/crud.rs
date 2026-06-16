@@ -15,7 +15,7 @@ use doo_ffi_core::DooResult;
 
 use crate::db_bridge::{
     execute_db_delete_by_id, execute_db_insert, execute_db_query, execute_db_query_by_id,
-    execute_db_statement, generate_create_table_sql, is_pool_initialized, to_snake_case,
+    is_pool_initialized, to_snake_case,
 };
 use crate::helpers::c_to_string;
 use crate::metadata::{filter_response_fields, get_struct_metadata, json_get_id};
@@ -620,53 +620,18 @@ pub extern "C" fn doo_http_crud(
         let resource_key = extract_crud_resource(&base_str);
         ffi_debug!("HTTP", "CRUD resource key: {}", resource_key);
 
-        // Try to create table in database if connected
-        if is_pool_initialized() {
-            ffi_debug!(
-                "HTTP",
-                "Database connected, setting up DB-backed CRUD for {}",
-                resource_key
-            );
-
-            if let Some(metadata) = get_struct_metadata(&struct_name) {
-                let create_sql = generate_create_table_sql(&resource_key, &metadata);
-                ffi_debug!("HTTP", "CREATE TABLE SQL:\n{}", create_sql);
-
-                match execute_db_statement(&create_sql) {
-                    Ok(_) => {
-                        ffi_debug!(
-                            "HTTP",
-                            "Table '{}' created/verified successfully",
-                            resource_key
-                        );
-                        let mut tables = get_crud_db_tables()
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner());
-                        tables.insert(resource_key.clone(), struct_name.clone());
-                    }
-                    Err(e) => {
-                        ffi_debug!(
-                            "HTTP",
-                            "Warning: Failed to create table '{}': {}",
-                            resource_key,
-                            e
-                        );
-                    }
-                }
-            } else {
-                ffi_debug!(
-                    "HTTP",
-                    "Warning: No metadata found for struct '{}'",
-                    struct_name
-                );
-            }
-        } else {
-            ffi_debug!(
-                "HTTP",
-                "WARNING: No database connection for CRUD resource '{}'",
-                resource_key
-            );
-        }
+        // Register resource → struct mapping for CRUD handlers.
+        // Table creation is handled by `doo migrate` or `doo run --migrate`.
+        let mut tables = get_crud_db_tables()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        tables.insert(resource_key.clone(), struct_name.clone());
+        ffi_debug!(
+            "HTTP",
+            "CRUD resource '{}' mapped to struct '{}' (table must be created via `doo migrate`)",
+            resource_key,
+            struct_name
+        );
 
         // Register CRUD routes
         let routes = get_routes();

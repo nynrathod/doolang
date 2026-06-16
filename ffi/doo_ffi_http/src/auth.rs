@@ -12,8 +12,8 @@ use doo_ffi_core::ffi_debug;
 use doo_ffi_core::DooResult;
 
 use crate::db_bridge::{
-    execute_db_insert, execute_db_query_with_string_param, execute_db_statement,
-    generate_create_table_sql, is_pool_initialized, to_snake_case,
+    execute_db_insert, execute_db_query_with_string_param,
+    is_pool_initialized, to_snake_case,
 };
 use crate::helpers::c_to_string;
 use crate::metadata::get_struct_metadata;
@@ -657,40 +657,17 @@ pub extern "C" fn doo_http_auth(
             *auth_struct = Some(struct_name.clone());
         }
 
-        // Try to create users table in database if connected
-        if is_pool_initialized() {
-            ffi_debug!("HTTP", "Database connected, setting up DB-backed auth");
-
-            if let Some(metadata) = get_struct_metadata(&struct_name) {
-                let create_sql = generate_create_table_sql(table_name, &metadata);
-                ffi_debug!("HTTP", "CREATE TABLE SQL for users:\n{}", create_sql);
-
-                match execute_db_statement(&create_sql) {
-                    Ok(_) => {
-                        ffi_debug!(
-                            "HTTP",
-                            "Users table '{}' created/verified successfully",
-                            table_name
-                        );
-                        let mut auth_table = get_auth_db_table()
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner());
-                        *auth_table = Some(table_name.to_string());
-                    }
-                    Err(e) => {
-                        ffi_debug!("HTTP", "Warning: Failed to create users table: {}", e);
-                    }
-                }
-            } else {
-                ffi_debug!(
-                    "HTTP",
-                    "Warning: No metadata found for struct '{}', using in-memory auth",
-                    struct_name
-                );
-            }
-        } else {
-            ffi_debug!("HTTP", "No database connection, using in-memory auth");
-        }
+        // Register auth table name for DB-backed auth.
+        // Table creation is handled by `doo migrate` or `doo run --migrate`.
+        let mut auth_table = get_auth_db_table()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *auth_table = Some(table_name.to_string());
+        ffi_debug!(
+            "HTTP",
+            "Auth mapped to table '{}' (table must be created via `doo migrate`)",
+            table_name
+        );
 
         // Register auth routes
         let routes = get_routes();

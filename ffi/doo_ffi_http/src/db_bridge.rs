@@ -13,7 +13,6 @@ use std::sync::OnceLock;
 use doo_ffi_core::ffi_debug;
 
 use crate::helpers::string_to_c;
-use crate::metadata::StructMetadata;
 
 // =============================================================================
 // DATABASE SYMBOL RESOLUTION — supports static and dynamic linking
@@ -235,73 +234,7 @@ pub(crate) fn call_db_query_with_params(sql: *const c_char, params: *const c_cha
 // Re-export from doo_core — single source of truth for string case conversion.
 pub(crate) use doo_core::string::{to_pascal_case, to_snake_case};
 
-/// Generate CREATE TABLE SQL from struct metadata
-/// Uses snake_case for column names (PostgreSQL convention)
-pub(crate) fn generate_create_table_sql(table_name: &str, metadata: &StructMetadata) -> String {
-    let mut columns = Vec::new();
 
-    for field in &metadata.fields {
-        // Convert field name to snake_case for PostgreSQL convention
-        let col_name = to_snake_case(&field.name);
-
-        // Smart fallback: if field is named "id" with Int type, make it SERIAL PRIMARY KEY
-        // This is needed because decorators are not passed from codegen
-        let is_id_field = col_name == "id" && field.field_type == "Int";
-
-        if is_id_field {
-            columns.push(format!("  {} SERIAL PRIMARY KEY", col_name));
-            continue;
-        }
-
-        // Map Doo types to PostgreSQL types
-        let sql_type = match field.field_type.as_str() {
-            "Int" => "INTEGER",
-            "Float" => "REAL",
-            "Bool" => "BOOLEAN",
-            "Str" | "String" => "TEXT",
-            _ => "TEXT", // Default to TEXT for unknown types
-        };
-
-        let mut col_def = format!("  {} {}", col_name, sql_type);
-
-        // Check decorators (if they ever get passed)
-        for dec in &field.decorators {
-            if dec == "primary" || dec == "@primary" {
-                col_def.push_str(" PRIMARY KEY");
-            }
-            if dec == "auto" || dec == "@auto" {
-                col_def = format!("  {} SERIAL PRIMARY KEY", col_name);
-            }
-            if dec == "unique" || dec == "@unique" {
-                col_def.push_str(" UNIQUE");
-            }
-            if dec.starts_with("default(") || dec.starts_with("@default(") {
-                // Extract default value
-                let start = dec.find('(').unwrap_or(0) + 1;
-                let end = dec.rfind(')').unwrap_or(dec.len());
-                let default_val = &dec[start..end];
-                // Quote strings, leave numbers/booleans as-is
-                if default_val == "true" || default_val == "false" {
-                    col_def.push_str(&format!(" DEFAULT {}", default_val));
-                } else if default_val.parse::<i64>().is_ok() || default_val.parse::<f64>().is_ok() {
-                    col_def.push_str(&format!(" DEFAULT {}", default_val));
-                } else {
-                    // String value - remove surrounding quotes if present
-                    let clean_val = default_val.trim_matches('"').trim_matches('\'');
-                    col_def.push_str(&format!(" DEFAULT '{}'", clean_val));
-                }
-            }
-        }
-
-        columns.push(col_def);
-    }
-
-    format!(
-        "CREATE TABLE IF NOT EXISTS {} (\n{}\n)",
-        table_name,
-        columns.join(",\n")
-    )
-}
 
 // ============================================================================
 // DATABASE EXECUTION HELPERS - Using FFI calls to doo_db.dll
