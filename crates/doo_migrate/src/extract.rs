@@ -1144,7 +1144,7 @@ mod doo_driver_loader {
             });
 
         while let Some(path) = queue.pop_front() {
-            if path.len() < 2 {
+            if path.is_empty() {
                 continue;
             }
 

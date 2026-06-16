@@ -87,12 +87,15 @@ pub fn resolve_module_path(
     project_root: &Path,
     stdlib_path: Option<&Path>,
 ) -> Option<PathBuf> {
-    if path.len() < 2 {
+    if path.is_empty() {
         return None;
     }
 
     // std::Module → stdlib/module.doo or stdlib/module/mod.doo
     if path[0] == "std" {
+        if path.len() < 2 {
+            return None; // "std" alone is invalid
+        }
         if let Some(stdlib) = stdlib_path {
             let module_name = path[1].to_lowercase();
             let file = stdlib.join(format!("{}.doo", module_name));
@@ -107,19 +110,39 @@ pub fn resolve_module_path(
         return None;
     }
 
-    // Relative import: look in project directory
+    // Relative import: look in project directory.
+    // Try original case first, then lowercase (imports are case-insensitive).
     let mut file_path = project_root.to_path_buf();
-    for segment in &path[..path.len() - 1] {
+    for segment in &path[..path.len().saturating_sub(1)] {
         file_path = file_path.join(segment.to_lowercase());
     }
-    let last = path.last().unwrap().to_lowercase();
-    let file = file_path.join(format!("{}.doo", last));
-    if file.exists() {
-        return Some(file);
+    let last = path.last().unwrap();
+    let last_lower = last.to_lowercase();
+
+    // 1) Try original case
+    let file_original = file_path.join(format!("{}.doo", last));
+    if file_original.exists() {
+        return Some(file_original);
     }
-    let mod_file = file_path.join(&last).join("mod.doo");
-    if mod_file.exists() {
-        return Some(mod_file);
+    // 2) Try lowercase (case-insensitive fallback)
+    if last != &last_lower {
+        let file_lower = file_path.join(format!("{}.doo", last_lower));
+        if file_lower.exists() {
+            return Some(file_lower);
+        }
     }
+
+    // mod.doo variants
+    let mod_original = file_path.join(last).join("mod.doo");
+    if mod_original.exists() {
+        return Some(mod_original);
+    }
+    if last != &last_lower {
+        let mod_lower = file_path.join(&last_lower).join("mod.doo");
+        if mod_lower.exists() {
+            return Some(mod_lower);
+        }
+    }
+
     None
 }
