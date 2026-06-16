@@ -104,6 +104,14 @@ pub enum Commands {
         #[arg(long, short)]
         verbose: bool,
 
+        /// Run database migrations before starting
+        #[arg(long)]
+        migrate: bool,
+
+        /// Auto-approve destructive migration changes (only with --migrate)
+        #[arg(long)]
+        force: bool,
+
         /// Arguments to pass to the program
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
