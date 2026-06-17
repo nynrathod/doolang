@@ -131,12 +131,12 @@ fn main() {
 
     let app = Server::new(":3125");
 
-    // Register OAuth with webhooks — same syntax, just add webhooksJson arg.
+    // Register OAuth with webhooks — pass WebhooksJson inside options map.
     // Auto-registers: GET /auth/google, GET /auth/google/callback,
     //                 GET /auth/github, GET /auth/github/callback
     // Fires "oauth_login" event on successful OAuth callback
     print("Registering OAuth with webhooks...");
-    app.oauth({Providers: ["Google", "GitHub"]}, webhooksJson);
+    app.oauth({Providers: ["Google", "GitHub"], WebhooksJson: webhooksJson});
     print("OAuth with webhooks registered.");
 
     // Public routes
