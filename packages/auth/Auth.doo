@@ -159,8 +159,15 @@ fn Jwt() -> Str {}
 //
 // Note: app.auth and app.oauth are mutually exclusive — use one or the other.
 // JWT middleware (Jwt()) works with both systems for API route protection.
-@extern("doo_auth", "doo_auth_oauth_setup")
-fn Server.oauth(self, options: {Str: Str}?) -> !AuthError {}
+//
+// Usage:
+//   app.oauth({Providers: ["Google", "GitHub"]})                      — no webhooks
+//   app.oauth({Providers: ["Google", "GitHub"]}, webhooksJson)         — with webhooks
+//
+// The webhooksJson parameter is optional — omit for no webhooks, pass "[]" or config array.
+// Event: "oauth_login" fires on successful OAuth callback
+@extern("doo_http", "doo_http_oauth_with_webhooks")
+fn Server.oauth(self, options: {Str: Str}?, webhooksJson: Str) -> !AuthError {}
 
 // === Password Reset ===
 
