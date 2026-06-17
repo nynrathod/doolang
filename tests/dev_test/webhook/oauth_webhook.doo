@@ -1,0 +1,154 @@
+// =============================================================================
+// DOO WEBHOOK OAUTH TEST
+// =============================================================================
+// Tests that app.oauth() with webhooks properly:
+// 1. Registers OAuth provider routes
+// 2. Fires webhooks on oauth_login event
+// 3. Webhook filters work (provider-based)
+// 4. Payload field filtering works
+// =============================================================================
+
+import std::Http::{Server, Request, Response};
+import std::Auth::{Jwt};
+import std::Database;
+
+// ─── Response Structs ───────────────────────────────────────────────────────
+
+struct MessageResponse {
+    message: Str,
+}
+
+struct ProfileResponse {
+    id: Int,
+    email: Str,
+    name: Str,
+}
+
+// ─── Webhook Config Structs ─────────────────────────────────────────────────
+
+struct WebhookFilter {
+    Id: Str,
+    Field: Str,
+    Operator: Str,
+    Value: Str,
+}
+
+struct WebhookConfig {
+    Id: Str,
+    Event: Str,
+    Url: Str,
+    Filters: [WebhookFilter],
+    PayloadFields: [Str],
+}
+
+// ─── Database ───────────────────────────────────────────────────────────────
+
+static DB: Database;
+
+// ─── Handlers ───────────────────────────────────────────────────────────────
+
+fn PingHandler() -> Str {
+    return "pong";
+}
+
+fn GetPublicInfo() -> MessageResponse {
+    print("📍 Handler: GetPublicInfo (public, no auth)");
+    return MessageResponse {
+        message: "Public information",
+    };
+}
+
+fn GetProfile(req: Request) -> ProfileResponse {
+    print("📍 Handler: GetProfile (JWT protected)");
+    return ProfileResponse {
+        id: 1,
+        email: "user@example.com",
+        name: "OAuth User",
+    };
+}
+
+fn GetStatus() -> MessageResponse {
+    print("📍 Handler: GetStatus (public)");
+    return MessageResponse {
+        message: "Server is running with OAuth",
+    };
+}
+
+// ─── Main ───────────────────────────────────────────────────────────────────
+
+fn main() {
+    print("=========================================");
+    print("  DOO WEBHOOK OAUTH TEST");
+    print("=========================================");
+    print("");
+
+    // ─── Build webhook configs for OAuth events ──────────────────────────
+    // Events: "oauth_login"
+
+    let whOAuthAll = WebhookConfig {
+        Id: "wh-oauth-all",
+        Event: "oauth_login",
+        Url: "http://localhost:9997/webhook-oauth-all",
+        Filters: [],
+        PayloadFields: [],
+    };
+
+    let whOAuthGoogle = WebhookConfig {
+        Id: "wh-oauth-google",
+        Event: "oauth_login",
+        Url: "http://localhost:9997/webhook-oauth-google",
+        Filters: [WebhookFilter {
+            Id: "f-provider",
+            Field: "Provider",
+            Operator: "equals",
+            Value: "Google",
+        }],
+        PayloadFields: ["Email", "Name", "Provider"],
+    };
+
+    let whOAuthGitHub = WebhookConfig {
+        Id: "wh-oauth-github",
+        Event: "oauth_login",
+        Url: "http://localhost:9997/webhook-oauth-github",
+        Filters: [WebhookFilter {
+            Id: "f-provider-gh",
+            Field: "Provider",
+            Operator: "equals",
+            Value: "GitHub",
+        }],
+        PayloadFields: ["Email", "Name", "Provider"],
+    };
+
+    let configs: [WebhookConfig] = [whOAuthAll, whOAuthGoogle, whOAuthGitHub];
+    let webhooksJson: Str = JSON.stringify(configs);
+
+    print("Webhooks JSON: " + webhooksJson);
+
+    // ─── Database ─────────────────────────────────────────────────────────
+    print("Connecting to database...");
+    DB = Database::Postgres()?;
+    print("Database connected.");
+
+    let app = Server::new(":3125");
+
+    // Register OAuth with webhooks — same syntax, just add webhooksJson arg.
+    // Auto-registers: GET /auth/google, GET /auth/google/callback,
+    //                 GET /auth/github, GET /auth/github/callback
+    // Fires "oauth_login" event on successful OAuth callback
+    print("Registering OAuth with webhooks...");
+    app.oauth({Providers: ["Google", "GitHub"]}, webhooksJson);
+    print("OAuth with webhooks registered.");
+
+    // Public routes
+    app.get("/public", GetPublicInfo);
+    app.get("/status", GetStatus);
+
+    // JWT-protected route (OAuth sessions issue JWT tokens)
+    app.get("/profile", Jwt(), GetProfile);
+
+    // Health check
+    app.get("/ping", PingHandler);
+
+    print("Starting server on port 3125...");
+    app.start();
+}
