@@ -55,16 +55,16 @@ fn GetUser(id: Int) -> UserProfile ! DatabaseError {
     let user: User = db.rawWithParams("SELECT * FROM users WHERE id = $1", id)?;
     Ok ToProfile(user);
 }
-
+static DB: Database;
 fn main() {
-    let db = Database::Postgres()?;
+    DB = Database::Postgres()?;
     let app = Server::new(":3113");
 
     // Auth endpoints - will auto-handle @writeOnly password
-    app.auth("/signup", "/login", User, db);
+    app.auth("/signup", "/login", User, DB);
 
     // CRUD - will respect decorators
-    app.crud("/users", User, db);
+    app.crud("/users", User, DB);
 
     // Custom endpoints
     app.get("/users-all", GetUsers);
