@@ -200,7 +200,7 @@ fn try_expand_route_group(expr: &Expr) -> Option<Vec<Expr>> {
         // Transform each route call
         let expanded: Vec<Expr> = route_calls
             .into_iter()
-            .map(|(http_method, path_expr, handler_expr)| {
+            .map(|(http_method, path_expr, handler_expr, webhook_opt)| {
                 // Create full path: prefix + path
                 let full_path = create_path_concat(prefix_expr, &path_expr, expr.span);
 
@@ -210,13 +210,13 @@ fn try_expand_route_group(expr: &Expr) -> Option<Vec<Expr>> {
                 // Convert handler to string
                 let handler_str = convert_handler_to_string(handler_expr, expr.span);
 
-                if middleware_args.is_empty() {
+                let route_call = if middleware_args.is_empty() {
                     // No middleware: app.get(path, handler)
                     Expr::new(
                         ExprKind::MethodCall {
                             object: object.clone(),
-                            method: http_method,
-                            args: vec![full_path, handler_str],
+                            method: http_method.clone(),
+                            args: vec![full_path.clone(), handler_str],
                         },
                         expr.span,
                     )
@@ -233,13 +233,41 @@ fn try_expand_route_group(expr: &Expr) -> Option<Vec<Expr>> {
                             object: object.clone(),
                             method: format!("{}WithMiddleware", http_method),
                             args: vec![
-                                full_path,
+                                full_path.clone(),
                                 Expr::new(ExprKind::StrLit(middleware_str), expr.span),
                                 handler_str,
                             ],
                         },
                         expr.span,
                     )
+                };
+
+                // If this route has a webhook config, wrap route + webhook in a Block
+                if let Some(webhook_expr) = webhook_opt {
+                    let wh_call = Expr::new(
+                        ExprKind::MethodCall {
+                            object: object.clone(),
+                            method: "webhookForRoute".to_string(),
+                            args: vec![
+                                Expr::new(ExprKind::StrLit(http_method.to_uppercase()), expr.span),
+                                full_path,
+                                webhook_expr,
+                            ],
+                        },
+                        expr.span,
+                    );
+                    Expr::new(
+                        ExprKind::Block(
+                            vec![
+                                Stmt::new(StmtKind::Expr(route_call), expr.span),
+                                Stmt::new(StmtKind::Expr(wh_call), expr.span),
+                            ],
+                            None,
+                        ),
+                        expr.span,
+                    )
+                } else {
+                    route_call
                 }
             })
             .collect();
@@ -252,8 +280,12 @@ fn try_expand_route_group(expr: &Expr) -> Option<Vec<Expr>> {
     None
 }
 
+/// A route call extracted from a group block.
+/// (method, path, handler, optional_webhook_json)
+type ExtractedRoute = (String, Expr, Expr, Option<Expr>);
+
 /// Extract route calls from statements.
-fn extract_route_calls_from_stmts(stmts: &[Stmt]) -> Vec<(String, Expr, Expr)> {
+fn extract_route_calls_from_stmts(stmts: &[Stmt]) -> Vec<ExtractedRoute> {
     stmts
         .iter()
         .filter_map(|stmt| {
@@ -266,22 +298,30 @@ fn extract_route_calls_from_stmts(stmts: &[Stmt]) -> Vec<(String, Expr, Expr)> {
         .collect()
 }
 
-/// Extract a route call (method, path, handler) from an expression.
-fn extract_route_call(expr: &Expr) -> Option<(String, Expr, Expr)> {
-    if let ExprKind::Call { func, args } = &expr.kind {
-        if let ExprKind::Ident(method_name) = &func.kind {
+/// Extract a route call (method, path, handler, optional_webhook)
+/// from an expression.
+///
+/// Handles two patterns:
+/// - `get("/path", handler)` — 2 args, no webhook
+/// - `get("/path", handler, webhooksJson)` — 3 args, with webhook
+fn extract_route_call(expr: &Expr) -> Option<ExtractedRoute> {
+    match &expr.kind {
+        ExprKind::Call { func, args } => {
+            let method_name = match &func.kind {
+                ExprKind::Ident(name) => name,
+                _ => return None,
+            };
             if !is_http_method(method_name) {
                 return None;
             }
-
-            if args.len() != 2 {
-                return None;
+            match args.len() {
+                2 => Some((method_name.clone(), args[0].clone(), args[1].clone(), None)),
+                3 => Some((method_name.clone(), args[0].clone(), args[1].clone(), Some(args[2].clone()))),
+                _ => None,
             }
-
-            return Some((method_name.clone(), args[0].clone(), args[1].clone()));
         }
+        _ => None,
     }
-    None
 }
 
 /// Check if a string is a valid HTTP method name.
@@ -297,6 +337,7 @@ fn is_route_registration_method(name: &str) -> bool {
     matches!(
         name,
         "get" | "post" | "put" | "delete" | "patch" | "group" | "use" | "options" | "head"
+            | "auth" | "crud" | "oauth" | "cors" | "ratelimit" | "logger" | "metrics"
     )
 }
 
@@ -675,26 +716,9 @@ fn transform_expr_recursive(expr: &mut Expr) {
                     }
                 }
 
-                // Convert handlers to strings
+                // Convert handlers to strings (only for simple routes with 2 args)
                 if args.len() == 2 {
                     args[1] = convert_handler_to_string(args[1].clone(), args[1].span);
-                } else if args.len() > 2 && method != "use" {
-                    // Route with middleware: transform to WithMiddleware variant
-                    let middleware_count = args.len() - 2;
-                    let mut middleware_names = Vec::new();
-                    for i in 1..=middleware_count {
-                        middleware_names.push(extract_identifier_name(&args[i]));
-                    }
-                    let middleware_str = middleware_names.join(",");
-                    // Keep handler as-is (identifier) for function pointer passing
-                    let handler = args[args.len() - 1].clone();
-
-                    *method = format!("{}WithMiddleware", method);
-                    *args = vec![
-                        args[0].clone(),
-                        Expr::new(ExprKind::StrLit(middleware_str), expr.span),
-                        handler, // Keep as identifier, not string
-                    ];
                 } else if method == "use" && args.len() > 1 {
                     // Middleware chaining: app.use(M1, M2, M3) -> nested calls
                     let mut current = object.as_ref().clone();
@@ -716,6 +740,8 @@ fn transform_expr_recursive(expr: &mut Expr) {
                 }
 
                 // Handle auth() and crud() special methods
+                // The FFI always uses _with_webhooks variants, so we auto-append
+                // an empty "" webhook arg when the user omits it.
                 if method == "auth" && args.is_empty() {
                     // app.auth() with no args — inject sensible defaults from centralized constants.
                     // Uses active DB pool if connected, in-memory auth otherwise.
@@ -723,11 +749,22 @@ fn transform_expr_recursive(expr: &mut Expr) {
                     args.push(Expr::new(ExprKind::StrLit(DEFAULT_AUTH_LOGIN_PATH.into()), expr.span));
                     args.push(Expr::new(ExprKind::StrLit("".into()), expr.span));
                     args.push(Expr::new(ExprKind::StrLit("".into()), expr.span));
+                    args.push(Expr::new(ExprKind::StrLit("".into()), expr.span)); // webhooksJson
                 } else if method == "auth" && args.len() == 4 {
                     // app.auth(signupPath, loginPath, UserStruct, db)
+                    // Auto-append empty webhooksJson so FFI gets 5 args
+                    args[2] = convert_handler_to_string(args[2].clone(), args[2].span);
+                    args.push(Expr::new(ExprKind::StrLit("".into()), expr.span)); // webhooksJson
+                } else if method == "auth" && args.len() == 5 {
+                    // app.auth(signupPath, loginPath, UserStruct, db, webhooksJson)
                     args[2] = convert_handler_to_string(args[2].clone(), args[2].span);
                 } else if method == "crud" && args.len() == 3 {
                     // app.crud(basePath, ResourceStruct, db)
+                    // Auto-append empty webhooksJson so FFI gets 4 args
+                    args[1] = convert_handler_to_string(args[1].clone(), args[1].span);
+                    args.push(Expr::new(ExprKind::StrLit("".into()), expr.span)); // webhooksJson
+                } else if method == "crud" && args.len() == 4 {
+                    // app.crud(basePath, ResourceStruct, db, webhooksJson)
                     args[1] = convert_handler_to_string(args[1].clone(), args[1].span);
                 }
             }
