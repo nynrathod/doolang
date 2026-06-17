@@ -409,7 +409,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             
             // Get expected parameter types for this function call
             // This enables JSON.parse and similar to use the expected type
-            let param_types = builder.get_function_param_types(&func_name).cloned();
+            let param_types = builder.get_function_param_types(&func_name, args.len()).cloned();
             
             // Build arguments with expected types when available
             let arg_ops: Vec<_> = args.iter()
@@ -460,14 +460,14 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     span,
                 );
                 MirOperand::Temp(dest)
-            } else if let Some(ffi_info) = builder.get_ffi_info(&func_name).cloned() {
+            } else if let Some(ffi_info) = builder.get_ffi_info(&func_name, args.len()).cloned() {
                 // FFI function call - emit FfiCall instead of Call
                 let dest = builder.new_temp();
 
                 // Pad missing optional parameters with Nil (null pointer)
                 // This handles calls like Fetch(url) where options: {Str: Str}? is omitted
                 let mut ffi_args = arg_ops;
-                if let Some(param_types) = builder.get_function_param_types(&func_name) {
+                if let Some(param_types) = builder.get_function_param_types(&func_name, args.len()) {
                     let expected = param_types.len();
                     while ffi_args.len() < expected {
                         ffi_args.push(MirOperand::Const(MirConst::Nil));
@@ -848,9 +848,17 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             // Method functions are named _method_{TypeName}_{method}
             let mangled_method_name = receiver_type_name.as_ref()
                 .map(|type_name| format!("_method_{}_{}", type_name, method));
-            
+
+            // Compute expected param count BEFORE FFI lookup so overloaded
+            // extern functions (same name, different arities) resolve correctly.
+            let ffi_param_count = if is_module_receiver {
+                arg_ops.len()
+            } else {
+                1 + arg_ops.len() // receiver is passed as first arg
+            };
+
             let ffi_info = mangled_method_name.as_ref()
-                .and_then(|name| builder.get_ffi_info(name).cloned());
+                .and_then(|name| builder.get_ffi_info(name, ffi_param_count).cloned());
 
             if let Some(ffi) = ffi_info {
                 // FFI method call - determine if receiver should be passed as argument
@@ -871,7 +879,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 // Pad missing optional parameters with Nil (null pointer)
                 // This handles calls like app.cors() where options: {Str: Str}? is omitted
                 if let Some(mangled) = &mangled_method_name {
-                    if let Some(param_types) = builder.get_function_param_types(mangled) {
+                    if let Some(param_types) = builder.get_function_param_types(mangled, ffi_param_count) {
                         let expected = param_types.len();
                         while ffi_args.len() < expected {
                             ffi_args.push(MirOperand::Const(MirConst::Nil));
@@ -1227,7 +1235,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             // Check if this is actually an associated function call (e.g., Server::new(...))
             // rather than a true enum variant creation
             let mangled_name = format!("_method_{}_{}", enum_name, variant);
-            if let Some(ffi_info) = builder.get_ffi_info(&mangled_name).cloned() {
+            if let Some(ffi_info) = builder.get_ffi_info(&mangled_name, payload.len()).cloned() {
                 // This is an FFI associated function call, not enum creation
                 let dest = builder.new_temp();
                 let args: Vec<MirOperand> = payload.iter().map(|e| builder.build_expr(e)).collect();

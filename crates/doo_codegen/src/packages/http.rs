@@ -26,7 +26,11 @@ use inkwell::values::FunctionValue;
 
 pub(crate) const DOO_HTTP_GET_SERVER_INSTANCE: &str = "doo_http_get_server_instance";
 pub(crate) const DOO_HTTP_AUTH: &str = "doo_http_auth";
+pub(crate) const DOO_HTTP_AUTH_WITH_WEBHOOKS: &str = "doo_http_auth_with_webhooks";
 pub(crate) const DOO_HTTP_CRUD: &str = "doo_http_crud";
+pub(crate) const DOO_HTTP_CRUD_WITH_WEBHOOKS: &str = "doo_http_crud_with_webhooks";
+pub(crate) const DOO_HTTP_OAUTH_WITH_WEBHOOKS: &str = "doo_http_oauth_with_webhooks";
+pub(crate) const DOO_HTTP_REGISTER_ROUTE_WEBHOOK: &str = "doo_http_register_route_webhook";
 pub(crate) const DOO_HTTP_REGISTER_MIDDLEWARE: &str = "doo_http_register_middleware";
 pub(crate) const DOO_HTTP_REGISTER_HANDLER_WITH_METADATA: &str =
     "doo_http_register_handler_with_metadata";
@@ -128,8 +132,10 @@ pub(crate) fn wrap_func_ref<'ctx>(
 /// 3. Middleware registration — registers user-defined middleware function
 ///    pointers with the HTTP runtime.
 pub(crate) fn pre_call<'ctx>(ctx: &mut CodegenContext<'ctx>, symbol: &str, args: &[MirOperand]) {
-    // Struct metadata for auth/crud endpoints
-    if symbol == DOO_HTTP_AUTH || symbol == DOO_HTTP_CRUD {
+    // Struct metadata for auth/crud endpoints (including webhook variants)
+    if symbol == DOO_HTTP_AUTH || symbol == DOO_HTTP_AUTH_WITH_WEBHOOKS
+        || symbol == DOO_HTTP_CRUD || symbol == DOO_HTTP_CRUD_WITH_WEBHOOKS
+    {
         call_metadata::emit_struct_metadata_registration_for_auth_crud(ctx, symbol, args);
         // Emit RBAC policy metadata if a policy is registered for this struct
         call_metadata::emit_policy_metadata_if_present(ctx, args);

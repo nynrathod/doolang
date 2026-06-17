@@ -65,13 +65,20 @@ mod map_ops;
 mod metadata;
 pub mod metrics;
 mod middleware_ffi;
+mod oauth;
 mod password_reset;
 mod rbac;
 mod request;
 mod response;
 mod routes;
 mod validation;
+pub mod webhook_log;
 mod ws_ffi;
+
+// ============================================================================
+// GENERIC WEBHOOK ENGINE — Single Source of Truth for All Webhook Functionality
+// ============================================================================
+pub mod webhook_engine;
 
 // ============================================================================
 // SERVER LIFECYCLE
@@ -234,5 +241,64 @@ fn register_bridge_symbols() {
             "doo_http_push_cookie",
             routes::doo_http_push_cookie as *const std::ffi::c_void,
         );
+        doo_ffi_core::ffi_bridge::register(
+            "doo_http_webhooks_recent",
+            doo_http_webhooks_recent as *const std::ffi::c_void,
+        );
+        doo_ffi_core::ffi_bridge::register(
+            "doo_http_webhooks_deliveries",
+            doo_http_webhooks_deliveries as *const std::ffi::c_void,
+        );
+        doo_ffi_core::ffi_bridge::register(
+            "doo_http_webhooks_log_clear",
+            doo_http_webhooks_log_clear as *const std::ffi::c_void,
+        );
     });
+}
+
+// ============================================================================
+// WEBHOOK AUDIT LOG — FFI EXPORTS
+// ============================================================================
+
+/// Return recent webhook dispatch records from in-memory ring buffer.
+#[no_mangle]
+pub extern "C" fn doo_http_webhooks_recent(limit: i32) -> *mut DooResult {
+    ffi_safe_result!({
+        let l = if limit <= 0 { 0 } else { limit as usize };
+        let json = webhook_log::get_recent_records(l);
+        make_ok_json(&json)
+    })
+}
+
+/// Query webhook deliveries from DB with filters.
+/// Params: resource, event, webhook_id, status, limit, offset (all strings).
+/// Empty string = no filter. Returns JSON array of delivery records.
+#[no_mangle]
+pub extern "C" fn doo_http_webhooks_deliveries(
+    resource: *const c_char,
+    event: *const c_char,
+    webhook_id: *const c_char,
+    status: *const c_char,
+    limit: i32,
+    offset: i32,
+) -> *mut DooResult {
+    ffi_safe_result!({
+        let r = helpers::c_to_string(resource);
+        let e = helpers::c_to_string(event);
+        let w = helpers::c_to_string(webhook_id);
+        let s = helpers::c_to_string(status);
+        let l = if limit <= 0 { 0 } else { limit as usize };
+        let o = if offset < 0 { 0 } else { offset as usize };
+        let json = webhook_log::query_deliveries(&r, &e, &w, &s, l, o);
+        make_ok_json(&json)
+    })
+}
+
+/// Clear in-memory webhook dispatch records.
+#[no_mangle]
+pub extern "C" fn doo_http_webhooks_log_clear() -> *mut DooResult {
+    ffi_safe_result!({
+        webhook_log::clear_log();
+        make_ok_void()
+    })
 }

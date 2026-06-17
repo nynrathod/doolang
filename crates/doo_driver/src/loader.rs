@@ -642,11 +642,13 @@ pub fn resolve_imports(
                     let is_wanted =
                         import_all || is_explicitly_requested || is_associated_with_imported_type;
 
-                    // Create a unique key for the function to avoid duplicates
+                    // Create a unique key for the function to avoid duplicates.
+                    // Include param count so overloaded methods (same name, different arity)
+                    // can coexist — e.g., Server.oauth with 2 params and Server.oauth with 3 params.
                     let func_key = if let Some(ref assoc_type) = f.associated_type {
-                        format!("{}.{}", assoc_type, f.name)
+                        format!("{}.{}:{}", assoc_type, f.name, f.params.len())
                     } else {
-                        f.name.clone()
+                        format!("{}:{}", f.name, f.params.len())
                     };
 
                     // Import if:
@@ -1062,11 +1064,12 @@ pub fn resolve_imports(
 
                     let is_wanted = is_public || is_associated_with_imported_type;
 
-                    // Create a unique key for the function to avoid duplicates
+                    // Create a unique key for the function to avoid duplicates.
+                    // Include param count so overloaded methods can coexist.
                     let func_key = if let Some(ref assoc_type) = f.associated_type {
-                        format!("{}.{}", assoc_type, f.name)
+                        format!("{}.{}:{}", assoc_type, f.name, f.params.len())
                     } else {
-                        f.name.clone()
+                        format!("{}:{}", f.name, f.params.len())
                     };
 
                     // Import public functions and associated methods
@@ -1240,9 +1243,9 @@ pub fn resolve_imports(
                             || is_associated_with_imported_type;
 
                         let func_key = if let Some(ref assoc_type) = f.associated_type {
-                            format!("{}.{}", assoc_type, f.name)
+                            format!("{}.{}:{}", assoc_type, f.name, f.params.len())
                         } else {
-                            f.name.clone()
+                            format!("{}:{}", f.name, f.params.len())
                         };
 
                         if (is_explicitly_requested

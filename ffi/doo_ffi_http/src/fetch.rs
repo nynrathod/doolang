@@ -62,7 +62,7 @@ const MAX_RESPONSE_BODY_BYTES: usize = 10 * 1024 * 1024;
 static GLOBAL_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 /// Get or create the global HTTP client with optimized pool settings.
-fn get_client() -> &'static reqwest::Client {
+pub(crate) fn get_client() -> &'static reqwest::Client {
     GLOBAL_CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .pool_max_idle_per_host(32)
@@ -102,13 +102,17 @@ pub extern "C" fn doo_http_fetch(url: *const c_char, options: *mut c_void) -> *c
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
         // Parse URL
         let url_str = if url.is_null() {
-            return string_to_c(r#"{"status":0,"body":"","ok":false,"error":"fetch: url is null"}"#);
+            return string_to_c(
+                r#"{"status":0,"body":"","ok":false,"error":"fetch: url is null"}"#,
+            );
         } else {
             c_to_string(url)
         };
 
         if url_str.is_empty() {
-            return string_to_c(r#"{"status":0,"body":"","ok":false,"error":"fetch: url is empty"}"#);
+            return string_to_c(
+                r#"{"status":0,"body":"","ok":false,"error":"fetch: url is empty"}"#,
+            );
         }
 
         ffi_debug!("FETCH", "fetch({}, ...)", url_str);
@@ -132,14 +136,19 @@ pub extern "C" fn doo_http_fetch(url: *const c_char, options: *mut c_void) -> *c
             Ok(response_json) => string_to_c(&response_json),
             Err(e) => {
                 let escaped = e.replace('\\', "\\\\").replace('"', "\\\"");
-                string_to_c(&format!(r#"{{"status":0,"body":"","ok":false,"error":"{}"}}"#, escaped))
+                string_to_c(&format!(
+                    r#"{{"status":0,"body":"","ok":false,"error":"{}"}}"#,
+                    escaped
+                ))
             }
         }
     }));
 
     match result {
         Ok(ptr) => ptr,
-        Err(_) => string_to_c(r#"{"status":0,"body":"","ok":false,"error":"fetch: internal panic"}"#),
+        Err(_) => {
+            string_to_c(r#"{"status":0,"body":"","ok":false,"error":"fetch: internal panic"}"#)
+        }
     }
 }
 

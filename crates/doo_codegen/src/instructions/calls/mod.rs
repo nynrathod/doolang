@@ -556,10 +556,16 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     let method_name = format!("_method_{}_{}", tname, method_s);
                     if let Some(func_val) = ctx.get_function(&method_name) {
                         // Get LLVM parameter types to determine calling convention.
-                        // If arg count matches param count → static method (no self param).
-                        // If args + 1 matches param count → instance method (prepend receiver).
                         let param_types = func_val.get_type().get_param_types();
-                        let needs_self = arg_vals.len() + 1 == param_types.len();
+                        let num_params = param_types.len();
+
+                        // Determine if this is an instance method (needs self prepended).
+                        // Instance methods have a Temp/Local receiver that's a value, not a type name.
+                        // Static/module calls have a Global receiver (e.g., Server::new).
+                        // Also use param count: if args + 1 matches params, it's instance.
+                        let receiver_is_value =
+                            matches!(receiver, MirOperand::Temp(_) | MirOperand::Local(_));
+                        let needs_self = receiver_is_value || arg_vals.len() + 1 == num_params;
 
                         let mut all_args: Vec<inkwell::values::BasicMetadataValueEnum> =
                             if needs_self {

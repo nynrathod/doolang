@@ -272,6 +272,9 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
                         // Push httpOnly cookie — centralized
                         doo_ffi_core::cookies::push_auth_cookies(&token, None, 86400, 0);
 
+                        // === WEBHOOK: fire "signup" event (no-op if no webhooks registered) ===
+                        crate::webhook_engine::fire("auth:signup", "signup", &user_row);
+
                         let response = build_db_auth_response(&token, &user_row);
                         ffi_debug!("AUTH", "Signup success (DB): {}", response);
                         return make_ok_json(&response);
@@ -383,6 +386,9 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
 
                                 // Push httpOnly cookie — centralized
                                 doo_ffi_core::cookies::push_auth_cookies(&token, None, 86400, 0);
+
+                                // === WEBHOOK: fire "login" event (no-op if no webhooks registered) ===
+                                crate::webhook_engine::fire("auth:login", "login", &user_row);
 
                                 let response = build_db_auth_response(&token, &user_row);
                                 return make_ok_json(&response);
@@ -701,5 +707,62 @@ pub extern "C" fn doo_http_auth(
         );
 
         make_ok_void()
+    })
+}
+
+// ============================================================================
+// AUTH ROUTE REGISTRATION WITH WEBHOOKS
+// ============================================================================
+
+/// Set up auth routes for a user struct with webhook support.
+///
+/// Uses the GENERIC webhook_engine — parses webhooks JSON, registers configs
+/// with the engine, then delegates to the same route registration as doo_http_auth.
+/// The handlers check webhook_engine internally — zero code duplication.
+///
+/// Webhook keys used:
+/// - `"auth:signup"` — fired on successful user registration
+/// - `"auth:login"` — fired on successful user login
+#[no_mangle]
+pub extern "C" fn doo_http_auth_with_webhooks(
+    server: *const c_void,
+    signup_path: *const c_char,
+    login_path: *const c_char,
+    user_struct_name: *const c_char,
+    db: *const c_void,
+    webhooks_json: *const c_char,
+) -> *mut DooResult {
+    ffi_safe_result!({
+        // Parse and register webhook configs with the generic engine
+        let wh_json = c_to_string(webhooks_json);
+        if !wh_json.is_empty() && wh_json != "[]" {
+            match crate::webhook_engine::parse_configs(&wh_json) {
+                Ok(configs) if !configs.is_empty() => {
+                    // Register same configs for both signup and login keys.
+                    // Users filter by event in the webhook config's Event field
+                    // (e.g., Event: "signup" or Event: "login").
+                    crate::webhook_engine::register("auth:signup", configs.clone());
+                    crate::webhook_engine::register("auth:login", configs);
+                    ffi_debug!(
+                        "HTTP",
+                        "Registered webhooks for auth events (signup + login)"
+                    );
+                }
+                Ok(_) => {
+                    ffi_debug!("HTTP", "Empty webhook configs for auth");
+                }
+                Err(e) => {
+                    ffi_debug!(
+                        "HTTP",
+                        "Failed to parse auth webhooks JSON: {}",
+                        e
+                    );
+                    // Non-fatal: auth still works without webhooks
+                }
+            }
+        }
+
+        // Delegate to the standard auth registration
+        doo_http_auth(server, signup_path, login_path, user_struct_name, db)
     })
 }

@@ -433,7 +433,9 @@ fn build_table_def_from_struct(
         let is_index = field.decorators.iter().any(|d| d.name == "index");
         let is_hashed = field.decorators.iter().any(|d| d.name == "hash");
         let is_optional =
-            field.is_optional || field.decorators.iter().any(|d| d.name == "optional");
+            field.is_optional || field.decorators.iter().any(|d| d.name == "optional")
+                // @internal fields are never in request body, so INSERTs omit them → must be nullable
+                || field.decorators.iter().any(|d| d.name == "internal");
 
         let mut field_transitive_enums: Vec<String> = Vec::new();
         check_non_table_struct_field(

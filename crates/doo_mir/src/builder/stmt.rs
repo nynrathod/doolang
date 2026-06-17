@@ -198,7 +198,7 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                                 .get(&resolved_name)
                                 .copied()
                                 .unwrap_or((builtin::ANY, builtin::ANY));
-                            let ffi = builder.ffi_functions.contains_key(&resolved_name);
+                            let ffi = builder.is_ffi_name(&resolved_name);
                             (types.0, types.1, ffi)
                         } else {
                             (builtin::ANY, builtin::ANY, false)
@@ -738,7 +738,7 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                             .get(&resolved_name)
                             .copied()
                             .unwrap_or((builtin::ANY, builtin::ANY));
-                        let ffi = builder.ffi_functions.contains_key(&resolved_name);
+                        let ffi = builder.is_ffi_name(&resolved_name);
                         (types.0, types.1, ffi)
                     } else {
                         (builtin::ANY, builtin::ANY, false)

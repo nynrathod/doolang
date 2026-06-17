@@ -18,7 +18,7 @@ use crate::db_bridge::{
     is_pool_initialized, to_snake_case,
 };
 use crate::helpers::c_to_string;
-use crate::metadata::{filter_response_fields, get_struct_metadata, json_get_id};
+use crate::metadata::get_struct_metadata;
 use crate::rbac::{
     check_policy, extract_jwt_claims_from_request, filter_request_fields_rbac,
     filter_response_fields_rbac, get_jwt_role, get_resource_owner_from_row, is_authenticated,
@@ -26,6 +26,7 @@ use crate::rbac::{
 use crate::router::{get_routes, CrudConfig};
 use crate::types::*;
 use crate::validation::{validate_item_against_schema, validate_required_fields};
+use crate::webhook_engine;
 use crate::{make_err_http, make_ok_json, make_ok_void};
 
 // ============================================================================
@@ -283,6 +284,10 @@ extern "C" fn crud_create_handler(req: *const DooRequest) -> *mut DooResult {
                                 jwt_role.as_deref(),
                                 false,
                             );
+
+                            // === WEBHOOK: fire "created" event (no-op if no webhooks registered) ===
+                            webhook_engine::fire(&format!("crud:{}", resource), "created", &created);
+
                             let response =
                                 serde_json::to_string(&serde_json::json!({ "data": filtered }))
                                     .unwrap_or_else(|_| r#"{"data":{}}"#.to_string());
@@ -498,6 +503,10 @@ extern "C" fn crud_update_handler(req: *const DooRequest) -> *mut DooResult {
                                 jwt_role.as_deref(),
                                 is_owner,
                             );
+
+                            // === WEBHOOK: fire "updated" event (no-op if no webhooks registered) ===
+                            webhook_engine::fire(&format!("crud:{}", resource), "updated", &updated);
+
                             let response =
                                 serde_json::to_string(&serde_json::json!({ "data": filtered }))
                                     .unwrap_or_else(|_| r#"{"data":{}}"#.to_string());
@@ -571,6 +580,9 @@ extern "C" fn crud_delete_handler(req: *const DooRequest) -> *mut DooResult {
         match execute_db_delete_by_id(&sql, id as i32) {
             Ok(affected) => {
                 if affected > 0 {
+                    // === WEBHOOK: fire "deleted" event with the record that was just deleted ===
+                    webhook_engine::fire(&format!("crud:{}", resource), "deleted", &existing);
+
                     return make_ok_json(r#"{"data":{"deleted":true}}"#);
                 } else {
                     return make_err_http(404, "Resource not found");
@@ -620,61 +632,145 @@ pub extern "C" fn doo_http_crud(
         let resource_key = extract_crud_resource(&base_str);
         ffi_debug!("HTTP", "CRUD resource key: {}", resource_key);
 
-        // Register resource → struct mapping for CRUD handlers.
-        // Table creation is handled by `doo migrate` or `doo run --migrate`.
-        let mut tables = get_crud_db_tables()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        tables.insert(resource_key.clone(), struct_name.clone());
+        // Delegate to shared route registration
+        register_crud_routes(&base_str, &struct_name, &resource_key);
+
+        make_ok_void()
+    })
+}
+
+// ============================================================================
+// SHARED CRUD ROUTE REGISTRATION — Single Source of Truth
+// ============================================================================
+
+/// Register CRUD routes for a resource struct.
+/// Both `doo_http_crud` and `doo_http_crud_with_webhooks` call this.
+/// The handlers check webhook_engine internally — if webhooks are registered
+/// they fire; if not, it's a zero-cost no-op.
+fn register_crud_routes(
+    base_str: &str,
+    struct_name: &str,
+    resource_key: &str,
+) {
+    // Register resource → struct mapping for CRUD handlers.
+    // Table creation is handled by `doo migrate` or `doo run --migrate`.
+    let mut tables = get_crud_db_tables()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    tables.insert(resource_key.to_string(), struct_name.to_string());
+    ffi_debug!(
+        "HTTP",
+        "CRUD resource '{}' mapped to struct '{}' (table must be created via `doo migrate`)",
+        resource_key,
+        struct_name
+    );
+    drop(tables);
+
+    // Register CRUD routes
+    let routes = get_routes();
+    let mut registry = routes.lock().unwrap_or_else(|e| e.into_inner());
+
+    let get_one_path = format!("{}/{{id}}", base_str);
+
+    // Read routes extract headers so RBAC can enforce read policies with auth context.
+    registry.register_needs_headers("GET", base_str, crud_list_handler);
+    registry.register_needs_headers("GET", &get_one_path, crud_get_handler);
+
+    // Write routes: auto-protect with JWT when app.auth() has been configured.
+    let auth_configured = registry.auth_config.is_some();
+    if auth_configured {
         ffi_debug!(
             "HTTP",
-            "CRUD resource '{}' mapped to struct '{}' (table must be created via `doo migrate`)",
-            resource_key,
+            "Auth configured — CRUD write routes for {} will require JWT",
+            base_str
+        );
+        let jwt_mw: Vec<DooMiddlewareFn> = vec![crate::middleware::jwt_middleware_handler];
+        registry.register_with_middleware(
+            "POST",
+            base_str,
+            crud_create_handler,
+            jwt_mw.clone(),
+        );
+        registry.register_with_middleware(
+            "PUT",
+            &get_one_path,
+            crud_update_handler,
+            jwt_mw.clone(),
+        );
+        registry.register_with_middleware("DELETE", &get_one_path, crud_delete_handler, jwt_mw);
+    } else {
+        registry.register("POST", base_str, crud_create_handler);
+        registry.register("PUT", &get_one_path, crud_update_handler);
+        registry.register("DELETE", &get_one_path, crud_delete_handler);
+    }
+
+    registry.crud_configs.push(CrudConfig {
+        base_path: base_str.to_string(),
+        resource_struct: struct_name.to_string(),
+    });
+}
+
+// ============================================================================
+// CRUD ROUTE REGISTRATION WITH WEBHOOKS
+// ============================================================================
+
+/// Set up CRUD routes for a resource struct with webhook support.
+///
+/// Uses the GENERIC webhook_engine — parses webhooks JSON, registers configs
+/// with the engine, then delegates to the same route registration as doo_http_crud.
+/// The handlers check webhook_engine internally — zero code duplication.
+#[no_mangle]
+pub extern "C" fn doo_http_crud_with_webhooks(
+    _server: *const c_void,
+    base_path: *const c_char,
+    resource_struct_name: *const c_char,
+    _db: *const c_void,
+    webhooks_json: *const c_char,
+) -> *mut DooResult {
+    ffi_safe_result!({
+        let base_str = c_to_string(base_path);
+        let struct_name = c_to_string(resource_struct_name);
+
+        ffi_debug!(
+            "HTTP",
+            "CRUD+Webhooks configured: base={}, struct={}",
+            base_str,
             struct_name
         );
 
-        // Register CRUD routes
-        let routes = get_routes();
-        let mut registry = routes.lock().unwrap_or_else(|e| e.into_inner());
+        let resource_key = extract_crud_resource(&base_str);
+        ffi_debug!("HTTP", "CRUD+Webhooks resource key: {}", resource_key);
 
-        // Read routes extract headers so RBAC can enforce read policies with auth context.
-        registry.register_needs_headers("GET", &base_str, crud_list_handler);
-        let get_one_path = format!("{}/{{id}}", base_str);
-        registry.register_needs_headers("GET", &get_one_path, crud_get_handler);
-
-        // Write routes: auto-protect with JWT when app.auth() has been configured.
-        // This is generic — any CRUD endpoint auto-protects writes when auth is present.
-        let auth_configured = registry.auth_config.is_some();
-        if auth_configured {
-            ffi_debug!(
-                "HTTP",
-                "Auth configured — CRUD write routes for {} will require JWT",
-                base_str
-            );
-            let jwt_mw: Vec<DooMiddlewareFn> = vec![crate::middleware::jwt_middleware_handler];
-            registry.register_with_middleware(
-                "POST",
-                &base_str,
-                crud_create_handler,
-                jwt_mw.clone(),
-            );
-            registry.register_with_middleware(
-                "PUT",
-                &get_one_path,
-                crud_update_handler,
-                jwt_mw.clone(),
-            );
-            registry.register_with_middleware("DELETE", &get_one_path, crud_delete_handler, jwt_mw);
-        } else {
-            registry.register("POST", &base_str, crud_create_handler);
-            registry.register("PUT", &get_one_path, crud_update_handler);
-            registry.register("DELETE", &get_one_path, crud_delete_handler);
+        // Parse and register webhook configs with the generic engine
+        let wh_json = c_to_string(webhooks_json);
+        if !wh_json.is_empty() && wh_json != "[]" {
+            match webhook_engine::parse_configs(&wh_json) {
+                Ok(configs) if !configs.is_empty() => {
+                    let engine_key = format!("crud:{}", resource_key);
+                    webhook_engine::register(&engine_key, configs);
+                    ffi_debug!(
+                        "HTTP",
+                        "Registered webhooks for CRUD key '{}'",
+                        engine_key
+                    );
+                }
+                Ok(_) => {
+                    ffi_debug!("HTTP", "Empty webhook configs for '{}'", resource_key);
+                }
+                Err(e) => {
+                    ffi_debug!(
+                        "HTTP",
+                        "Failed to parse webhooks JSON for '{}': {}",
+                        resource_key,
+                        e
+                    );
+                    // Non-fatal: CRUD still works without webhooks
+                }
+            }
         }
 
-        registry.crud_configs.push(CrudConfig {
-            base_path: base_str,
-            resource_struct: struct_name,
-        });
+        // Delegate to shared route registration (handlers check webhook_engine internally)
+        register_crud_routes(&base_str, &struct_name, &resource_key);
 
         make_ok_void()
     })
