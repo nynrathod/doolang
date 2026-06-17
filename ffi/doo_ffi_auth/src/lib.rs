@@ -671,7 +671,15 @@ pub extern "C" fn doo_auth_oauth_setup(
             .cloned()
             .or_else(|| std::env::var("OAUTH_CALLBACK_URL").ok());
 
-        match strategies::oauth::http_handlers::setup_from_map(&providers, &base_path, callback_url.as_deref()) {
+        // Read optional "WebhooksJson" key — JSON array of WebhookConfig objects.
+        // Passed to the generic webhook engine via cross-DLL bridge (same pattern as cookies).
+        let webhooks_json = map
+            .get("WebhooksJson")
+            .or_else(|| map.get("webhooksJson"))
+            .or_else(|| map.get("webhooks_json"))
+            .cloned();
+
+        match strategies::oauth::http_handlers::setup_from_map(&providers, &base_path, callback_url.as_deref(), webhooks_json.as_deref()) {
             Ok(()) => make_ok_string("ok"),
             Err(e) => make_err(AuthErrorCode::InvalidRequest, &e),
         }

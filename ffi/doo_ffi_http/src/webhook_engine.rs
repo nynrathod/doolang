@@ -110,9 +110,7 @@ impl WebhookEngine {
 /// - OAuth: `register("oauth:google", configs)`
 /// - Routes: `register("route:GET:/api/x", configs)`
 pub fn register(key: &str, configs: Vec<WebhookConfig>) {
-    let mut engine = get_engine()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let mut engine = get_engine().lock().unwrap_or_else(|e| e.into_inner());
 
     ffi_debug!(
         "WEBHOOK_ENGINE",
@@ -147,9 +145,7 @@ pub fn parse_configs(json: &str) -> Result<Vec<WebhookConfig>, String> {
 /// Looks up webhook configs by key, checks event match + filters,
 /// then spawns fire-and-forget threads for each matching webhook.
 pub fn fire(key: &str, event: &str, record: &serde_json::Value) {
-    let engine = get_engine()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let engine = get_engine().lock().unwrap_or_else(|e| e.into_inner());
 
     let configs = match engine.configs.get(key) {
         Some(c) => c,
@@ -175,9 +171,7 @@ pub fn fire(key: &str, event: &str, record: &serde_json::Value) {
 /// Check if any webhooks are registered for a given key.
 /// Used as a fast-path check before doing expensive work.
 pub fn has_webhooks(key: &str) -> bool {
-    let engine = get_engine()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let engine = get_engine().lock().unwrap_or_else(|e| e.into_inner());
     engine.configs.contains_key(key)
 }
 
@@ -370,4 +364,52 @@ fn dispatch_webhook(config: &WebhookConfig, record: &serde_json::Value, context_
             }
         }
     });
+}
+
+// ============================================================================
+// CROSS-DLL BRIDGE — extern "C" wrappers for doo_ffi_auth (and future FFIs)
+// ============================================================================
+// These functions expose the webhook engine to other DLLs via C ABI, so they
+// can be resolved at runtime with dlsym/GetProcAddress. This follows the same
+// pattern as doo_http_register_package_route and doo_http_push_cookie used by
+// doo_ffi_auth's http_handlers.rs.
+
+use std::os::raw::c_char;
+
+/// Register webhook configs for a key. Called by doo_ffi_auth via dynamic resolution.
+/// key: namespace key like "oauth:google"
+/// configs_json: JSON array of WebhookConfig objects
+#[no_mangle]
+pub extern "C" fn doo_http_register_webhooks(key: *const c_char, configs_json: *const c_char) {
+    if key.is_null() || configs_json.is_null() {
+        return;
+    }
+    let key_str = doo_ffi_core::helpers::c_to_string_lossy(key);
+    let json_str = doo_ffi_core::helpers::c_to_string_lossy(configs_json);
+    if let Ok(configs) = parse_configs(&json_str) {
+        if !configs.is_empty() {
+            register(&key_str, configs);
+        }
+    }
+}
+
+/// Fire webhooks for a key + event. Called by doo_ffi_auth via dynamic resolution.
+/// key: namespace key like "oauth:google"
+/// event: event name like "oauth_login"
+/// payload_json: JSON payload to send to webhook URLs
+#[no_mangle]
+pub extern "C" fn doo_http_fire_webhook(
+    key: *const c_char,
+    event: *const c_char,
+    payload_json: *const c_char,
+) {
+    if key.is_null() || event.is_null() || payload_json.is_null() {
+        return;
+    }
+    let key_str = doo_ffi_core::helpers::c_to_string_lossy(key);
+    let event_str = doo_ffi_core::helpers::c_to_string_lossy(event);
+    let json_str = doo_ffi_core::helpers::c_to_string_lossy(payload_json);
+    if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&json_str) {
+        fire(&key_str, &event_str, &payload);
+    }
 }

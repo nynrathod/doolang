@@ -65,7 +65,6 @@ mod map_ops;
 mod metadata;
 pub mod metrics;
 mod middleware_ffi;
-mod oauth;
 mod password_reset;
 mod rbac;
 mod request;

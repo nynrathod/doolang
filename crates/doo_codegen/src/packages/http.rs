@@ -29,7 +29,6 @@ pub(crate) const DOO_HTTP_AUTH: &str = "doo_http_auth";
 pub(crate) const DOO_HTTP_AUTH_WITH_WEBHOOKS: &str = "doo_http_auth_with_webhooks";
 pub(crate) const DOO_HTTP_CRUD: &str = "doo_http_crud";
 pub(crate) const DOO_HTTP_CRUD_WITH_WEBHOOKS: &str = "doo_http_crud_with_webhooks";
-pub(crate) const DOO_HTTP_OAUTH_WITH_WEBHOOKS: &str = "doo_http_oauth_with_webhooks";
 pub(crate) const DOO_HTTP_REGISTER_ROUTE_WEBHOOK: &str = "doo_http_register_route_webhook";
 pub(crate) const DOO_HTTP_REGISTER_MIDDLEWARE: &str = "doo_http_register_middleware";
 pub(crate) const DOO_HTTP_REGISTER_HANDLER_WITH_METADATA: &str =

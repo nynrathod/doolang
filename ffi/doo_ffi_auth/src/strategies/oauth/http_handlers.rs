@@ -69,6 +69,8 @@ struct OAuthConfig {
     /// URL to redirect to after successful OAuth login.
     /// Read from: app.oauth({CallbackUrl: "..."}) > OAUTH_CALLBACK_URL env var > None (returns JSON).
     callback_url: Option<String>,
+    /// Webhook configs JSON string for oauth_login event (optional).
+    webhooks_json: Option<String>,
 }
 
 static OAUTH_CONFIG: OnceLock<OAuthConfig> = OnceLock::new();
@@ -326,6 +328,12 @@ extern "C" fn oauth_callback_handler(req: *const c_void) -> *mut DooResult {
                 // Cookies are already pushed to PENDING_COOKIES by exchange_code()
                 // via push_auth_cookies(). The HTTP server will add Set-Cookie headers
                 // to whatever response we return — including redirects.
+
+                // === WEBHOOK: fire "oauth_login" event via cross-DLL bridge ===
+                // Uses the generic webhook engine in doo_ffi_http (same engine used
+                // by CRUD, Auth, and custom route webhooks). No-op if not configured.
+                let engine_key = format!("oauth:{}", provider);
+                fire_webhook_via_http_bridge(&engine_key, "oauth_login", &json);
 
                 // If callback URL is configured, redirect browser to that exact URL.
                 // The URL is used as-is — no path appended (user controls the full URL).
@@ -860,6 +868,62 @@ pub fn push_cookies_via_http_bridge(
     }
 }
 
+// ============================================================================
+// CROSS-DLL WEBHOOK BRIDGE — Fire webhooks via doo_ffi_http's generic engine
+// ============================================================================
+// Same dynamic-resolution pattern as cookies and route registration.
+// doo_ffi_auth has zero dependency on doo_ffi_http — all calls are resolved
+// at runtime via dlsym/GetProcAddress.
+
+/// Type alias for doo_http_register_webhooks(key, configs_json)
+type RegisterWebhooksFn = extern "C" fn(key: *const c_char, configs_json: *const c_char);
+
+/// Type alias for doo_http_fire_webhook(key, event, payload_json)
+type FireWebhookFn = extern "C" fn(key: *const c_char, event: *const c_char, payload_json: *const c_char);
+
+/// Cached function pointer to `doo_http_register_webhooks`.
+static REGISTER_WEBHOOKS_FN: OnceLock<Option<RegisterWebhooksFn>> = OnceLock::new();
+
+/// Cached function pointer to `doo_http_fire_webhook`.
+static FIRE_WEBHOOK_FN: OnceLock<Option<FireWebhookFn>> = OnceLock::new();
+
+fn get_register_webhooks_fn() -> Option<RegisterWebhooksFn> {
+    *REGISTER_WEBHOOKS_FN.get_or_init(|| resolve_symbol_in_process(b"doo_http_register_webhooks\0"))
+}
+
+fn get_fire_webhook_fn() -> Option<FireWebhookFn> {
+    *FIRE_WEBHOOK_FN.get_or_init(|| resolve_symbol_in_process(b"doo_http_fire_webhook\0"))
+}
+
+/// Register webhook configs via cross-DLL bridge to doo_ffi_http's generic engine.
+/// No-op if the HTTP DLL isn't loaded (e.g., during testing or non-HTTP contexts).
+pub fn register_webhooks_via_http_bridge(engine_key: &str, webhooks_json: &str) {
+    if let Some(register_fn) = get_register_webhooks_fn() {
+        let key_c = string_to_c(engine_key);
+        let json_c = string_to_c(webhooks_json);
+        register_fn(key_c, json_c);
+        doo_ffi_core::doo_free(key_c as *mut u8);
+        doo_ffi_core::doo_free(json_c as *mut u8);
+        ffi_debug!("OAUTH", "Registered webhooks for '{}' via HTTP bridge", engine_key);
+    } else {
+        ffi_debug!("OAUTH", "HTTP bridge unavailable, skipping webhook registration for '{}'", engine_key);
+    }
+}
+
+/// Fire webhooks via cross-DLL bridge to doo_ffi_http's generic engine.
+/// No-op if the HTTP DLL isn't loaded or no webhooks are registered for the key.
+pub fn fire_webhook_via_http_bridge(engine_key: &str, event: &str, payload_json: &str) {
+    if let Some(fire_fn) = get_fire_webhook_fn() {
+        let key_c = string_to_c(engine_key);
+        let event_c = string_to_c(event);
+        let payload_c = string_to_c(payload_json);
+        fire_fn(key_c, event_c, payload_c);
+        doo_ffi_core::doo_free(key_c as *mut u8);
+        doo_ffi_core::doo_free(event_c as *mut u8);
+        doo_ffi_core::doo_free(payload_c as *mut u8);
+    }
+}
+
 /// Register a route with the HTTP server via runtime symbol resolution.
 fn register_http_route(
     method: &str,
@@ -964,6 +1028,7 @@ pub fn setup_from_map(
     providers: &[String],
     base_path: &str,
     callback_url: Option<&str>,
+    webhooks_json: Option<&str>,
 ) -> Result<(), String> {
     if providers.is_empty() {
         return Err("At least one OAuth provider must be specified".to_string());
@@ -993,11 +1058,23 @@ pub fn setup_from_map(
         providers: initialized_providers.clone(),
         base_path: base_path.to_string(),
         callback_url: callback_url.map(|s| s.to_string()),
+        webhooks_json: webhooks_json.map(|s| s.to_string()),
     };
 
     OAUTH_CONFIG
         .set(config)
         .map_err(|_| "OAuth already initialized".to_string())?;
+
+    // Register webhooks via cross-DLL bridge (same pattern as cookies)
+    // The webhook engine lives in doo_ffi_http; we resolve it at runtime.
+    if let Some(ref wh_json) = webhooks_json {
+        if !wh_json.is_empty() && *wh_json != "[]" {
+            for provider in &initialized_providers {
+                let engine_key = format!("oauth:{}", provider);
+                register_webhooks_via_http_bridge(&engine_key, wh_json);
+            }
+        }
+    }
 
     // Register routes only for providers that were actually initialized
     let base = base_path.trim_end_matches('/');
@@ -1061,5 +1138,5 @@ pub fn setup(config_json: &str) -> Result<(), String> {
     // Parse configuration
     let (providers, base_path) = parse_oauth_config(config_json)?;
     let callback_url = std::env::var("OAUTH_CALLBACK_URL").ok();
-    setup_from_map(&providers, &base_path, callback_url.as_deref())
+    setup_from_map(&providers, &base_path, callback_url.as_deref(), None)
 }

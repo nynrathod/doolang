@@ -316,7 +316,12 @@ fn extract_route_call(expr: &Expr) -> Option<ExtractedRoute> {
             }
             match args.len() {
                 2 => Some((method_name.clone(), args[0].clone(), args[1].clone(), None)),
-                3 => Some((method_name.clone(), args[0].clone(), args[1].clone(), Some(args[2].clone()))),
+                3 => Some((
+                    method_name.clone(),
+                    args[0].clone(),
+                    args[1].clone(),
+                    Some(args[2].clone()),
+                )),
                 _ => None,
             }
         }
@@ -336,8 +341,22 @@ fn is_http_method(name: &str) -> bool {
 fn is_route_registration_method(name: &str) -> bool {
     matches!(
         name,
-        "get" | "post" | "put" | "delete" | "patch" | "group" | "use" | "options" | "head"
-            | "auth" | "crud" | "oauth" | "cors" | "ratelimit" | "logger" | "metrics"
+        "get"
+            | "post"
+            | "put"
+            | "delete"
+            | "patch"
+            | "group"
+            | "use"
+            | "options"
+            | "head"
+            | "auth"
+            | "crud"
+            | "oauth"
+            | "cors"
+            | "ratelimit"
+            | "logger"
+            | "metrics"
     )
 }
 
@@ -745,16 +764,24 @@ fn transform_expr_recursive(expr: &mut Expr) {
                 if method == "auth" && args.is_empty() {
                     // app.auth() with no args — inject sensible defaults from centralized constants.
                     // Uses active DB pool if connected, in-memory auth otherwise.
-                    args.push(Expr::new(ExprKind::StrLit(DEFAULT_AUTH_SIGNUP_PATH.into()), expr.span));
-                    args.push(Expr::new(ExprKind::StrLit(DEFAULT_AUTH_LOGIN_PATH.into()), expr.span));
+                    args.push(Expr::new(
+                        ExprKind::StrLit(DEFAULT_AUTH_SIGNUP_PATH.into()),
+                        expr.span,
+                    ));
+                    args.push(Expr::new(
+                        ExprKind::StrLit(DEFAULT_AUTH_LOGIN_PATH.into()),
+                        expr.span,
+                    ));
                     args.push(Expr::new(ExprKind::StrLit("".into()), expr.span));
                     args.push(Expr::new(ExprKind::StrLit("".into()), expr.span));
-                    args.push(Expr::new(ExprKind::StrLit("".into()), expr.span)); // webhooksJson
+                    args.push(Expr::new(ExprKind::StrLit("".into()), expr.span));
+                // webhooksJson
                 } else if method == "auth" && args.len() == 4 {
                     // app.auth(signupPath, loginPath, UserStruct, db)
                     // Auto-append empty webhooksJson so FFI gets 5 args
                     args[2] = convert_handler_to_string(args[2].clone(), args[2].span);
-                    args.push(Expr::new(ExprKind::StrLit("".into()), expr.span)); // webhooksJson
+                    args.push(Expr::new(ExprKind::StrLit("".into()), expr.span));
+                // webhooksJson
                 } else if method == "auth" && args.len() == 5 {
                     // app.auth(signupPath, loginPath, UserStruct, db, webhooksJson)
                     args[2] = convert_handler_to_string(args[2].clone(), args[2].span);
@@ -762,7 +789,8 @@ fn transform_expr_recursive(expr: &mut Expr) {
                     // app.crud(basePath, ResourceStruct, db)
                     // Auto-append empty webhooksJson so FFI gets 4 args
                     args[1] = convert_handler_to_string(args[1].clone(), args[1].span);
-                    args.push(Expr::new(ExprKind::StrLit("".into()), expr.span)); // webhooksJson
+                    args.push(Expr::new(ExprKind::StrLit("".into()), expr.span));
+                // webhooksJson
                 } else if method == "crud" && args.len() == 4 {
                     // app.crud(basePath, ResourceStruct, db, webhooksJson)
                     args[1] = convert_handler_to_string(args[1].clone(), args[1].span);
