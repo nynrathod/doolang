@@ -3,7 +3,50 @@
 //! Converts `serde_json::Value` parameters to `tokio_postgres::types::ToSql`.
 //! This is the SINGLE SOURCE OF TRUTH for Doo→PostgreSQL param type mapping.
 
-use tokio_postgres::types::{ToSql, Type};
+use bytes::BytesMut;
+use std::error::Error;
+use tokio_postgres::types::{to_sql_checked, FromSql, IsNull, ToSql, Type};
+
+// ============================================================================
+// AnyString — accepts ALL PostgreSQL types for both read (FromSql) and write (ToSql)
+// ============================================================================
+// Custom/user-defined PG types (enums, domains, composites) have OIDs that
+// tokio-postgres maps to `Inner::Other`. `String::accepts()` only returns true
+// for built-in text types (VARCHAR, TEXT, BPCHAR, NAME, UNKNOWN) — NOT for
+// `Other` types like enums or for JSON/JSONB. This wrapper bypasses the type
+// check and reads/writes raw text, letting PostgreSQL handle coercion.
+#[derive(Debug)]
+pub(crate) struct AnyString(pub(crate) String);
+
+impl ToSql for AnyString {
+    fn to_sql(
+        &self,
+        _ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn Error + Sync + Send>> {
+        out.extend_from_slice(self.0.as_bytes());
+        Ok(IsNull::No)
+    }
+
+    fn accepts(_ty: &Type) -> bool {
+        true // Accept any type — PostgreSQL coerces text to target type
+    }
+
+    to_sql_checked!();
+}
+
+impl<'a> FromSql<'a> for AnyString {
+    fn from_sql(_ty: &Type, raw: &'a [u8]) -> Result<Self, Box<dyn Error + Sync + Send>> {
+        let s = std::str::from_utf8(raw)
+            .map_err(|e| Box::new(e) as Box<dyn Error + Sync + Send>)?
+            .to_string();
+        Ok(AnyString(s))
+    }
+
+    fn accepts(_ty: &Type) -> bool {
+        true // Accept any type — read raw text representation
+    }
+}
 
 /// Convert a single JSON value to a PostgreSQL parameter, using the PG-inferred
 /// type to ensure compatibility.
@@ -25,7 +68,8 @@ pub fn json_value_to_typed_param(
             &Type::FLOAT4 => Box::new(None::<f32>),
             &Type::FLOAT8 | &Type::NUMERIC => Box::new(None::<f64>),
             &Type::BOOL => Box::new(None::<bool>),
-            _ => Box::new(None::<String>),
+            &Type::JSON | &Type::JSONB => Box::new(serde_json::Value::Null),
+            _ => Box::new(None::<AnyString>),
         };
     }
 
@@ -199,18 +243,36 @@ pub fn json_value_to_typed_param(
             serde_json::Value::Number(n) => Box::new(n.as_i64().unwrap_or(0) != 0),
             _ => Box::new(false),
         },
+        // JSON/JSONB — must be serde_json::Value, NOT raw String
+        // PostgreSQL infers JSONB when CAST($n AS jsonb) or $n::jsonb is used.
+        // tokio-postgres requires serde_json::Value for JSON/JSONB; String fails.
+        &Type::JSON | &Type::JSONB => match v {
+            serde_json::Value::String(s) => {
+                // Parse the JSON string to a proper serde_json::Value
+                match serde_json::from_str::<serde_json::Value>(s) {
+                    Ok(val) => Box::new(val),
+                    // If parsing fails, send as a JSON string wrapper
+                    Err(_) => Box::new(serde_json::Value::String(s.clone())),
+                }
+            }
+            serde_json::Value::Null => Box::new(serde_json::Value::Null),
+            // Already a JSON value — pass through
+            other => Box::new(other.clone()),
+        },
         // Text types + UNKNOWN — always send as String
         &Type::TEXT | &Type::VARCHAR | &Type::BPCHAR | &Type::NAME => match v {
             serde_json::Value::String(s) => Box::new(s.clone()),
             serde_json::Value::Null => Box::new(None::<String>),
             _ => Box::new(v.to_string()),
         },
-        // NULL
-        _ if matches!(v, serde_json::Value::Null) => Box::new(None::<String>),
-        // UNKNOWN or any unrecognized type — send as String (safe default)
+        // NULL — use AnyString wrapper to accept all PG types including custom enums
+        _ if matches!(v, serde_json::Value::Null) => Box::new(None::<AnyString>),
+        // Custom/user-defined types (enums, domains, etc.) or any unrecognized
+        // type — use AnyString which accepts all PG types and serializes as text.
+        // PostgreSQL will coerce the text representation to the target type.
         _ => match v {
-            serde_json::Value::String(s) => Box::new(s.clone()),
-            serde_json::Value::Null => Box::new(None::<String>),
+            serde_json::Value::String(s) => Box::new(AnyString(s.clone())),
+            serde_json::Value::Null => Box::new(None::<AnyString>),
             _ => Box::new(v.to_string()),
         },
     }

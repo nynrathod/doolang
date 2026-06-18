@@ -748,6 +748,7 @@ dependencies = [
 name = "doo_ffi_db"
 version = "0.4.2"
 dependencies = [
+ "bytes",
  "chrono",
  "deadpool",
  "deadpool-postgres",
@@ -2104,6 +2105,8 @@ dependencies = [
  "chrono",
  "fallible-iterator",
  "postgres-protocol",
+ "serde_core",
+ "serde_json",
 ]
 
 [[package]]

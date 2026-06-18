@@ -188,7 +188,11 @@ impl SqlType {
             Boolean => DefaultValue::Boolean(false),
             Timestamp | TimestampTz => DefaultValue::Expression("NOW()".to_string()),
             Json | Jsonb => DefaultValue::Expression("'{}'::jsonb".to_string()),
-            Enum(_) => DefaultValue::String(String::new()),
+            Enum(name) => {
+                // Use enum_first() to get the first valid enum value at runtime.
+                // An empty string '' is never valid for a PostgreSQL enum type.
+                DefaultValue::Expression(format!("enum_first(NULL::{})", name))
+            }
             Custom(_) => DefaultValue::String(String::new()),
         }
     }

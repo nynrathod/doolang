@@ -144,15 +144,19 @@ fn write_column_value(buf: &mut String, row: &Row, i: usize, col: &tokio_postgre
             }
             _ => buf.push_str("null"),
         },
-        "json" | "jsonb" => match row.try_get::<usize, Option<String>>(i) {
-            Ok(Some(s)) => {
-                buf.push_str(&s);
+        "json" | "jsonb" => match row.try_get::<usize, Option<serde_json::Value>>(i) {
+            Ok(Some(v)) => {
+                buf.push_str(&v.to_string());
             }
             _ => buf.push_str("null"),
         },
-        _ => match row.try_get::<usize, Option<String>>(i) {
-            Ok(Some(v)) => write_json_string(buf, &v),
-            _ => buf.push_str("null"),
+        _ => match row.try_get::<usize, Option<crate::drivers::postgres::params::AnyString>>(i) {
+            Ok(Some(v)) => write_json_string(buf, &v.0),
+            // Fallback: try String for built-in text types
+            _ => match row.try_get::<usize, Option<String>>(i) {
+                Ok(Some(v)) => write_json_string(buf, &v),
+                _ => buf.push_str("null"),
+            },
         },
     }
 }
@@ -230,16 +234,15 @@ fn row_col_to_value(row: &Row, i: usize) -> serde_json::Value {
             .map(|dt| serde_json::Value::String(dt.and_utc().to_rfc3339()))
             .unwrap_or(serde_json::Value::Null),
         "json" | "jsonb" => row
-            .try_get::<usize, Option<String>>(i)
+            .try_get::<usize, Option<serde_json::Value>>(i)
             .ok()
             .flatten()
-            .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or(serde_json::Value::Null),
         _ => row
-            .try_get::<usize, Option<String>>(i)
+            .try_get::<usize, Option<crate::drivers::postgres::params::AnyString>>(i)
             .ok()
             .flatten()
-            .map(serde_json::Value::from)
+            .map(|v| serde_json::Value::String(v.0))
             .unwrap_or(serde_json::Value::Null),
     }
 }
