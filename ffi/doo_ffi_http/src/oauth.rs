@@ -30,6 +30,9 @@ use doo_ffi_core::DooResult;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
+use crate::db_bridge::{
+    execute_db_insert, execute_db_query_with_string_param, is_pool_initialized, to_snake_case,
+};
 use crate::helpers::{c_to_string, make_redirect};
 use crate::router::get_routes;
 use crate::types::*;
@@ -483,6 +486,9 @@ fn get_oauth_auth_url(provider: &str) -> Result<String, String> {
 ///
 /// Retrieves the PKCE code_verifier from PKCE_STORE (stored during auth URL generation)
 /// and includes it in the token exchange request. The verifier is consumed (removed) after use.
+///
+/// After successful exchange, upserts the user into the `users` table and returns
+/// OUR JWT tokens (not the provider's) along with created_at/updated_at timestamps.
 fn exchange_oauth_code(provider: &str, code: &str, state: &str) -> Result<String, String> {
     let (client_id, redirect_uri, _auth_url) = get_provider_config(provider)?;
     let client_secret = get_env_var(&format!("OAUTH_{}_CLIENT_SECRET", provider.to_uppercase()))?;
@@ -534,21 +540,153 @@ fn exchange_oauth_code(provider: &str, code: &str, state: &str) -> Result<String
     let token_data: serde_json::Value =
         serde_json::from_str(&body).map_err(|e| format!("Invalid token response: {}", e))?;
 
-    let access_token = token_data
+    let provider_access_token = token_data
         .get("access_token")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "No access_token in response".to_string())?;
 
-    let user_info = get_oauth_user_info(provider, access_token)?;
+    // Get normalized user info from the provider
+    let user_info = get_oauth_user_info(provider, provider_access_token)?;
 
+    // Upsert user into database (auto-sets created_at/updated_at via DB defaults + trigger)
+    let (user_id, created_at, updated_at) = if is_pool_initialized() {
+        upsert_oauth_user(&user_info)?
+    } else {
+        ffi_debug!("OAUTH", "DB not available — skipping user upsert for OAuth");
+        (0i64, String::new(), String::new())
+    };
+
+    // Generate OUR JWT access token (not the provider's)
+    let email = user_info
+        .get("Email")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let access_token = crate::auth::generate_jwt_token(email, user_id, None);
+
+    // Build result — returns OUR JWT token + user info + timestamps
     let result = serde_json::json!({
         "access_token": access_token,
         "refresh_token": token_data.get("refresh_token").and_then(|v| v.as_str()).unwrap_or(""),
         "expires_in": token_data.get("expires_in").and_then(|v| v.as_i64()).unwrap_or(3600),
         "user": user_info,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "provider_access_token": provider_access_token,
+        "provider_refresh_token": token_data.get("refresh_token").and_then(|v| v.as_str()).unwrap_or(""),
     });
 
     Ok(result.to_string())
+}
+
+/// Upsert an OAuth user into the `users` table.
+///
+/// - If user with this email doesn't exist: INSERT with provider info, created_at = NOW()
+/// - If user exists: UPDATE name/avatar/provider, updated_at auto-set by trigger
+///
+/// Returns (user_id, created_at, updated_at) from the database record.
+fn upsert_oauth_user(user_info: &serde_json::Value) -> Result<(i64, String, String), String> {
+    let email = user_info
+        .get("Email")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let name = user_info.get("Name").and_then(|v| v.as_str()).unwrap_or("");
+    let avatar = user_info
+        .get("Avatar")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let provider = user_info
+        .get("Provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if email.is_empty() {
+        return Err("OAuth user info missing email".to_string());
+    }
+
+    // Check if user already exists
+    let check_sql = "SELECT id, created_at, updated_at FROM users WHERE email = $1";
+    let existing = execute_db_query_with_string_param(check_sql, email)?;
+    let existing_rows: Vec<serde_json::Value> = serde_json::from_str(&existing).unwrap_or_default();
+
+    if let Some(row) = existing_rows.first() {
+        // User exists — UPDATE provider/name/avatar, updated_at auto-set by trigger
+        let user_id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+        let created_at = row
+            .get("created_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        // Update user profile with latest provider info
+        let update_sql = "UPDATE users SET name = $1, avatar = $2, provider = $3 WHERE email = $4";
+        let update_values: Vec<serde_json::Value> = vec![
+            serde_json::json!(name),
+            serde_json::json!(avatar),
+            serde_json::json!(provider),
+            serde_json::json!(email),
+        ];
+        execute_db_insert(update_sql, &update_values)?;
+
+        // Fetch updated row to get current updated_at
+        let refetch = execute_db_query_with_string_param(
+            "SELECT updated_at FROM users WHERE email = $1",
+            email,
+        )?;
+        let refetch_rows: Vec<serde_json::Value> =
+            serde_json::from_str(&refetch).unwrap_or_default();
+        let updated_at = refetch_rows
+            .first()
+            .and_then(|r| r.get("updated_at"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        ffi_debug!(
+            "OAUTH",
+            "Updated existing user: email={}, id={}",
+            email,
+            user_id
+        );
+        Ok((user_id, created_at, updated_at))
+    } else {
+        // New user — INSERT with provider info, created_at/updated_at auto-set by DB defaults
+        let insert_sql = "INSERT INTO users (email, password, name, role, provider, avatar) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_at, updated_at";
+        let insert_values: Vec<serde_json::Value> = vec![
+            serde_json::json!(email),
+            serde_json::json!(""), // OAuth users have no password
+            serde_json::json!(name),
+            serde_json::json!(""), // default role
+            serde_json::json!(provider),
+            serde_json::json!(avatar),
+        ];
+        let result_json = execute_db_insert(insert_sql, &insert_values)?;
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&result_json).unwrap_or_default();
+
+        if let Some(row) = rows.first() {
+            let user_id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+            let created_at = row
+                .get("created_at")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let updated_at = row
+                .get("updated_at")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            ffi_debug!(
+                "OAUTH",
+                "Created new OAuth user: email={}, id={}, provider={}",
+                email,
+                user_id,
+                provider
+            );
+            Ok((user_id, created_at, updated_at))
+        } else {
+            Err("Failed to create OAuth user: no rows returned".to_string())
+        }
+    }
 }
 
 /// Get user info from provider using access token.

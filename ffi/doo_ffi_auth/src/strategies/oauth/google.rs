@@ -223,6 +223,8 @@ impl OAuthProvider for GoogleProvider {
             avatar: google_user.picture,
             provider: "google".to_string(),
             email_verified: google_user.verified_email,
+            created_at: None, // Set by auth layer on user creation
+            updated_at: None, // Set by auth layer on user creation
         })
     }
 

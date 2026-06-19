@@ -12,8 +12,7 @@ use doo_ffi_core::ffi_debug;
 use doo_ffi_core::DooResult;
 
 use crate::db_bridge::{
-    execute_db_insert, execute_db_query_with_string_param,
-    is_pool_initialized, to_snake_case,
+    execute_db_insert, execute_db_query_with_string_param, is_pool_initialized, to_snake_case,
 };
 use crate::helpers::c_to_string;
 use crate::metadata::get_struct_metadata;
@@ -202,7 +201,11 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
     // Validate extra fields (e.g. enum fields like Role) against struct metadata
     if let Some(struct_name) = get_auth_struct_name() {
         let full_body = serde_json::Value::Object(json.clone());
-        if let Err(e) = crate::validation::validate_item_against_struct(&full_body, &struct_name, "/auth/signup") {
+        if let Err(e) = crate::validation::validate_item_against_struct(
+            &full_body,
+            &struct_name,
+            "/auth/signup",
+        ) {
             return make_err_http(400, &e);
         }
     }
@@ -382,7 +385,8 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
                                 let user_id = crate::metadata::json_get_id(&user_row).unwrap_or(0);
                                 // Extract role value from the @role-decorated field if present
                                 let role_value = extract_role_from_user_row(&user_row, &table_name);
-                                let token = generate_jwt_token(&email, user_id, role_value.as_deref());
+                                let token =
+                                    generate_jwt_token(&email, user_id, role_value.as_deref());
 
                                 // Push httpOnly cookie — centralized
                                 doo_ffi_core::cookies::push_auth_cookies(&token, None, 86400, 0);
@@ -466,7 +470,7 @@ fn extract_role_from_user_row(user_row: &serde_json::Value, table_name: &str) ->
     None
 }
 
-fn generate_jwt_token(sub: &str, user_id: i64, role: Option<&str>) -> String {
+pub(crate) fn generate_jwt_token(sub: &str, user_id: i64, role: Option<&str>) -> String {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
     use serde::{Deserialize, Serialize};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -752,11 +756,7 @@ pub extern "C" fn doo_http_auth_with_webhooks(
                     ffi_debug!("HTTP", "Empty webhook configs for auth");
                 }
                 Err(e) => {
-                    ffi_debug!(
-                        "HTTP",
-                        "Failed to parse auth webhooks JSON: {}",
-                        e
-                    );
+                    ffi_debug!("HTTP", "Failed to parse auth webhooks JSON: {}", e);
                     // Non-fatal: auth still works without webhooks
                 }
             }

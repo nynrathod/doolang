@@ -312,6 +312,8 @@ pub fn exchange_code(provider_name: &str, code: &str, state: &str) -> Result<Str
         refresh_token: Some(refresh_token.clone()),
         expires_in: Some(access_expiry),
         user: user_info,
+        created_at: None, // Set by DB layer on user upsert
+        updated_at: None, // Set by DB layer on user upsert
         provider_access_token: Some(token_response.access_token),
         provider_refresh_token: token_response.refresh_token,
     };
