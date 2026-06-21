@@ -7,6 +7,33 @@ use crate::diff::SchemaChange;
 use crate::plan::MigrationPlan;
 use crate::schema::*;
 
+// ============================================================================
+// Identifier Quoting — Single Source of Truth
+// ============================================================================
+
+/// Quote a PostgreSQL identifier (table, column, constraint, index, enum name).
+///
+/// Wraps the identifier in double quotes and escapes any embedded double quotes
+/// by doubling them. This protects against SQL reserved keywords (e.g. `as`,
+/// `user`, `order`, `group`) and special characters in identifiers.
+///
+/// PostgreSQL quoted identifiers are case-sensitive; unquoted identifiers are
+/// folded to lowercase. Since Doo always generates lowercase snake_case names,
+/// quoting preserves the lowercase form correctly.
+fn quote_ident(ident: &str) -> String {
+    let escaped = ident.replace('"', "\"\"");
+    format!("\"{}\"", escaped)
+}
+
+/// Quote a list of identifiers and join them with a separator.
+fn quote_idents(items: &[String], sep: &str) -> String {
+    items
+        .iter()
+        .map(|s| quote_ident(s))
+        .collect::<Vec<_>>()
+        .join(sep)
+}
+
 /// Generate combined UP SQL for the entire migration plan.
 pub fn generate_up_sql(plan: &MigrationPlan) -> String {
     plan.changes
@@ -37,34 +64,49 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
                 .map(|v| format!("'{}'", v))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("CREATE TYPE {} AS ENUM ({});", e.name, variants)
+            format!(
+                "CREATE TYPE {} AS ENUM ({});",
+                quote_ident(&e.name),
+                variants
+            )
+        }
+        SchemaChange::RenameEnum { from, to } => {
+            format!(
+                "ALTER TYPE {} RENAME TO {};",
+                quote_ident(from),
+                quote_ident(to)
+            )
         }
         SchemaChange::AddEnumValue { enum_name, value } => {
             format!(
                 "ALTER TYPE {} ADD VALUE IF NOT EXISTS '{}';",
-                enum_name, value
+                quote_ident(enum_name),
+                value
             )
         }
         SchemaChange::DropEnum { name } => {
-            format!("DROP TYPE IF EXISTS {};", name)
+            format!("DROP TYPE IF EXISTS {};", quote_ident(name))
         }
 
         // --- Tables ---
         SchemaChange::CreateTable(t) => generate_create_table(t),
         SchemaChange::DropTable { name } => {
-            format!("DROP TABLE IF EXISTS {} CASCADE;", name)
+            format!("DROP TABLE IF EXISTS {} CASCADE;", quote_ident(name))
         }
         SchemaChange::RenameTable { from, to } => {
-            format!("ALTER TABLE {} RENAME TO {};", from, to)
+            format!(
+                "ALTER TABLE {} RENAME TO {};",
+                quote_ident(from),
+                quote_ident(to)
+            )
         }
 
         // --- Columns ---
         SchemaChange::AddColumn { table, column } => {
             let col_type = column.sql_type.to_ddl();
-            let mut sql = format!(
-                "ALTER TABLE {} ADD COLUMN {} {}",
-                table, column.name, col_type
-            );
+            let q_table = quote_ident(table);
+            let q_col = quote_ident(&column.name);
+            let mut sql = format!("ALTER TABLE {} ADD COLUMN {} {}", q_table, q_col, col_type);
 
             // If column should be NOT NULL:
             // - With a default: add NOT NULL inline (safe, existing rows get the default)
@@ -90,7 +132,7 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
                 let zero = column.sql_type.zero_default().to_sql();
                 sql.push_str(&format!(
                     "\nUPDATE {} SET {} = {} WHERE {} IS NULL;\nALTER TABLE {} ALTER COLUMN {} SET NOT NULL;",
-                    table, column.name, zero, column.name, table, column.name
+                    q_table, q_col, zero, q_col, q_table, q_col
                 ));
             }
             sql
@@ -98,21 +140,29 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
         SchemaChange::DropColumn { table, column } => {
             format!(
                 "ALTER TABLE {} DROP COLUMN IF EXISTS {} CASCADE;",
-                table, column
+                quote_ident(table),
+                quote_ident(column)
             )
         }
         SchemaChange::RenameColumn { table, from, to } => {
-            format!("ALTER TABLE {} RENAME COLUMN {} TO {};", table, from, to)
+            format!(
+                "ALTER TABLE {} RENAME COLUMN {} TO {};",
+                quote_ident(table),
+                quote_ident(from),
+                quote_ident(to)
+            )
         }
         SchemaChange::AlterColumnType {
             table, column, to, ..
         } => {
+            let q_table = quote_ident(table);
+            let q_col = quote_ident(column);
             format!(
                 "ALTER TABLE {} ALTER COLUMN {} TYPE {} USING {}::{};",
-                table,
-                column,
+                q_table,
+                q_col,
                 to.to_ddl(),
-                column,
+                q_col,
                 to.to_ddl()
             )
         }
@@ -129,15 +179,18 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
                 Some(dv) => dv.to_sql(),
                 None => sql_type.zero_default().to_sql(),
             };
+            let q_table = quote_ident(table);
+            let q_col = quote_ident(column);
             format!(
                 "UPDATE {} SET {} = {} WHERE {} IS NULL;\nALTER TABLE {} ALTER COLUMN {} SET NOT NULL;",
-                table, column, backfill_value, column, table, column
+                q_table, q_col, backfill_value, q_col, q_table, q_col
             )
         }
         SchemaChange::DropNotNull { table, column } => {
             format!(
                 "ALTER TABLE {} ALTER COLUMN {} DROP NOT NULL;",
-                table, column
+                quote_ident(table),
+                quote_ident(column)
             )
         }
         SchemaChange::SetDefault {
@@ -147,15 +200,16 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
         } => {
             format!(
                 "ALTER TABLE {} ALTER COLUMN {} SET DEFAULT {};",
-                table,
-                column,
+                quote_ident(table),
+                quote_ident(column),
                 default.to_sql()
             )
         }
         SchemaChange::DropDefault { table, column } => {
             format!(
                 "ALTER TABLE {} ALTER COLUMN {} DROP DEFAULT;",
-                table, column
+                quote_ident(table),
+                quote_ident(column)
             )
         }
 
@@ -167,13 +221,17 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
         } => {
             format!(
                 "ALTER TABLE {} ADD CONSTRAINT {} PRIMARY KEY ({});",
-                table,
-                name,
-                columns.join(", ")
+                quote_ident(table),
+                quote_ident(name),
+                quote_idents(columns, ", ")
             )
         }
         SchemaChange::DropPrimaryKey { table, name } => {
-            format!("ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};", table, name)
+            format!(
+                "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
+                quote_ident(table),
+                quote_ident(name)
+            )
         }
         SchemaChange::AddUnique {
             table,
@@ -182,13 +240,17 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
         } => {
             format!(
                 "ALTER TABLE {} ADD CONSTRAINT {} UNIQUE ({});",
-                table,
-                name,
-                columns.join(", ")
+                quote_ident(table),
+                quote_ident(name),
+                quote_idents(columns, ", ")
             )
         }
         SchemaChange::DropUnique { table, name } => {
-            format!("ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};", table, name)
+            format!(
+                "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
+                quote_ident(table),
+                quote_ident(name)
+            )
         }
         SchemaChange::AddCheck {
             table,
@@ -197,11 +259,17 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
         } => {
             format!(
                 "ALTER TABLE {} ADD CONSTRAINT {} CHECK ({});",
-                table, name, expression
+                quote_ident(table),
+                quote_ident(name),
+                expression
             )
         }
         SchemaChange::DropCheck { table, name } => {
-            format!("ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};", table, name)
+            format!(
+                "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
+                quote_ident(table),
+                quote_ident(name)
+            )
         }
 
         // --- Indexes ---
@@ -210,30 +278,67 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
             format!(
                 "CREATE {}INDEX IF NOT EXISTS {} ON {} ({});",
                 unique,
-                index.name,
-                table,
-                index.columns.join(", ")
+                quote_ident(&index.name),
+                quote_ident(table),
+                quote_idents(&index.columns, ", ")
             )
         }
         SchemaChange::DropIndex { name, .. } => {
-            format!("DROP INDEX IF EXISTS {};", name)
+            format!("DROP INDEX IF EXISTS {};", quote_ident(name))
         }
 
         // --- Foreign Keys ---
         SchemaChange::AddForeignKey { table, fk } => {
             format!(
                 "ALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({}) ON DELETE {} ON UPDATE {};",
-                table,
-                fk.name,
-                fk.columns.join(", "),
-                fk.ref_table,
-                fk.ref_columns.join(", "),
+                quote_ident(table),
+                quote_ident(&fk.name),
+                quote_idents(&fk.columns, ", "),
+                quote_ident(&fk.ref_table),
+                quote_idents(&fk.ref_columns, ", "),
                 fk.on_delete.to_sql(),
                 fk.on_update.to_sql()
             )
         }
         SchemaChange::DropForeignKey { table, name } => {
-            format!("ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};", table, name)
+            format!(
+                "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
+                quote_ident(table),
+                quote_ident(name)
+            )
+        }
+        SchemaChange::ModifyForeignKey {
+            table,
+            constraint_name,
+            fk,
+            previous,
+            change_kind,
+        } => {
+            // Safe approach: DROP old constraint then ADD new one.
+            // PostgreSQL doesn't have ALTER CONSTRAINT for FKs, so drop+add is the standard way.
+            // Include a comment about what changed for audit trail.
+            let q_table = quote_ident(table);
+            let drop_sql = format!(
+                "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
+                q_table,
+                quote_ident(&previous.name)
+            );
+            let add_sql = format!(
+                "ALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({}) ON DELETE {} ON UPDATE {};",
+                q_table,
+                quote_ident(&fk.name),
+                quote_idents(&fk.columns, ", "),
+                quote_ident(&fk.ref_table),
+                quote_idents(&fk.ref_columns, ", "),
+                fk.on_delete.to_sql(),
+                fk.on_update.to_sql()
+            );
+            format!(
+                "-- Modify FK {} (changed: {})\n{}",
+                quote_ident(constraint_name),
+                change_kind,
+                [drop_sql.as_str(), add_sql.as_str()].join("\n")
+            )
         }
     }
 }
@@ -242,7 +347,14 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
 /// Returns None for irreversible changes.
 pub fn change_to_down_sql(change: &SchemaChange) -> Option<String> {
     match change {
-        SchemaChange::CreateEnum(e) => Some(format!("DROP TYPE IF EXISTS {};", e.name)),
+        SchemaChange::CreateEnum(e) => {
+            Some(format!("DROP TYPE IF EXISTS {};", quote_ident(&e.name)))
+        }
+        SchemaChange::RenameEnum { from, to } => Some(format!(
+            "ALTER TYPE {} RENAME TO {};",
+            quote_ident(to),
+            quote_ident(from)
+        )),
         SchemaChange::AddEnumValue { .. } => {
             // PostgreSQL cannot remove enum values — irreversible
             None
@@ -252,18 +364,24 @@ pub fn change_to_down_sql(change: &SchemaChange) -> Option<String> {
             None
         }
 
-        SchemaChange::CreateTable(t) => Some(format!("DROP TABLE IF EXISTS {} CASCADE;", t.name)),
+        SchemaChange::CreateTable(t) => Some(format!(
+            "DROP TABLE IF EXISTS {} CASCADE;",
+            quote_ident(&t.name)
+        )),
         SchemaChange::DropTable { .. } => {
             // Can't recreate without knowing columns
             None
         }
-        SchemaChange::RenameTable { from, to } => {
-            Some(format!("ALTER TABLE {} RENAME TO {};", to, from))
-        }
+        SchemaChange::RenameTable { from, to } => Some(format!(
+            "ALTER TABLE {} RENAME TO {};",
+            quote_ident(to),
+            quote_ident(from)
+        )),
 
         SchemaChange::AddColumn { table, column } => Some(format!(
             "ALTER TABLE {} DROP COLUMN IF EXISTS {};",
-            table, column.name
+            quote_ident(table),
+            quote_ident(&column.name)
         )),
         SchemaChange::DropColumn { .. } => {
             // Can't recreate dropped column with data
@@ -271,32 +389,41 @@ pub fn change_to_down_sql(change: &SchemaChange) -> Option<String> {
         }
         SchemaChange::RenameColumn { table, from, to } => Some(format!(
             "ALTER TABLE {} RENAME COLUMN {} TO {};",
-            table, to, from
+            quote_ident(table),
+            quote_ident(to),
+            quote_ident(from)
         )),
         SchemaChange::AlterColumnType {
             table,
             column,
             from,
             ..
-        } => Some(format!(
-            "ALTER TABLE {} ALTER COLUMN {} TYPE {} USING {}::{};",
-            table,
-            column,
-            from.to_ddl(),
-            column,
-            from.to_ddl()
-        )),
+        } => {
+            let q_table = quote_ident(table);
+            let q_col = quote_ident(column);
+            Some(format!(
+                "ALTER TABLE {} ALTER COLUMN {} TYPE {} USING {}::{};",
+                q_table,
+                q_col,
+                from.to_ddl(),
+                q_col,
+                from.to_ddl()
+            ))
+        }
         SchemaChange::SetNotNull { table, column, .. } => Some(format!(
             "ALTER TABLE {} ALTER COLUMN {} DROP NOT NULL;",
-            table, column
+            quote_ident(table),
+            quote_ident(column)
         )),
         SchemaChange::DropNotNull { table, column } => Some(format!(
             "ALTER TABLE {} ALTER COLUMN {} SET NOT NULL;",
-            table, column
+            quote_ident(table),
+            quote_ident(column)
         )),
         SchemaChange::SetDefault { table, column, .. } => Some(format!(
             "ALTER TABLE {} ALTER COLUMN {} DROP DEFAULT;",
-            table, column
+            quote_ident(table),
+            quote_ident(column)
         )),
         SchemaChange::DropDefault { .. } => {
             // Can't restore unknown default
@@ -304,28 +431,53 @@ pub fn change_to_down_sql(change: &SchemaChange) -> Option<String> {
         }
         SchemaChange::AddPrimaryKey { table, name, .. } => Some(format!(
             "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
-            table, name
+            quote_ident(table),
+            quote_ident(name)
         )),
         SchemaChange::DropPrimaryKey { .. } => None,
         SchemaChange::AddUnique { table, name, .. } => Some(format!(
             "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
-            table, name
+            quote_ident(table),
+            quote_ident(name)
         )),
         SchemaChange::DropUnique { .. } => None,
         SchemaChange::AddCheck { table, name, .. } => Some(format!(
             "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
-            table, name
+            quote_ident(table),
+            quote_ident(name)
         )),
         SchemaChange::DropCheck { .. } => None,
-        SchemaChange::CreateIndex { index, .. } => {
-            Some(format!("DROP INDEX IF EXISTS {};", index.name))
-        }
+        SchemaChange::CreateIndex { index, .. } => Some(format!(
+            "DROP INDEX IF EXISTS {};",
+            quote_ident(&index.name)
+        )),
         SchemaChange::DropIndex { .. } => None,
         SchemaChange::AddForeignKey { table, fk } => Some(format!(
             "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
-            table, fk.name
+            quote_ident(table),
+            quote_ident(&fk.name)
         )),
         SchemaChange::DropForeignKey { .. } => None,
+        SchemaChange::ModifyForeignKey {
+            table,
+            fk,
+            previous,
+            ..
+        } => {
+            // Rollback: DROP the new constraint, re-ADD the old one
+            let q_table = quote_ident(table);
+            Some(format!(
+                "-- Rollback FK modification\nALTER TABLE {} DROP CONSTRAINT IF EXISTS {};\nALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({}) ON DELETE {} ON UPDATE {};",
+                q_table, quote_ident(&fk.name),
+                q_table,
+                quote_ident(&previous.name),
+                quote_idents(&previous.columns, ", "),
+                quote_ident(&previous.ref_table),
+                quote_idents(&previous.ref_columns, ", "),
+                previous.on_delete.to_sql(),
+                previous.on_update.to_sql()
+            ))
+        }
     }
 }
 
@@ -334,11 +486,12 @@ fn generate_create_table(table: &TableDef) -> String {
     let mut parts = Vec::new();
 
     for col in &table.columns {
-        let mut col_sql = format!("  {} {}", col.name, col.sql_type.to_ddl());
+        let q_col = quote_ident(&col.name);
+        let mut col_sql = format!("  {} {}", q_col, col.sql_type.to_ddl());
 
         if col.is_auto {
             // Use GENERATED ALWAYS AS IDENTITY for modern PostgreSQL
-            col_sql = format!("  {} INTEGER GENERATED ALWAYS AS IDENTITY", col.name);
+            col_sql = format!("  {} INTEGER GENERATED ALWAYS AS IDENTITY", q_col);
         }
 
         if !col.nullable && !col.is_auto {
@@ -358,8 +511,8 @@ fn generate_create_table(table: &TableDef) -> String {
     if let Some(pk) = &table.primary_key {
         parts.push(format!(
             "  CONSTRAINT {} PRIMARY KEY ({})",
-            pk.name,
-            pk.columns.join(", ")
+            quote_ident(&pk.name),
+            quote_idents(&pk.columns, ", ")
         ));
     }
 
@@ -367,8 +520,8 @@ fn generate_create_table(table: &TableDef) -> String {
     for uq in &table.unique_constraints {
         parts.push(format!(
             "  CONSTRAINT {} UNIQUE ({})",
-            uq.name,
-            uq.columns.join(", ")
+            quote_ident(&uq.name),
+            quote_idents(&uq.columns, ", ")
         ));
     }
 
@@ -376,7 +529,8 @@ fn generate_create_table(table: &TableDef) -> String {
     for check in &table.check_constraints {
         parts.push(format!(
             "  CONSTRAINT {} CHECK ({})",
-            check.name, check.expression
+            quote_ident(&check.name),
+            check.expression
         ));
     }
 
@@ -384,10 +538,10 @@ fn generate_create_table(table: &TableDef) -> String {
     for fk in &table.foreign_keys {
         parts.push(format!(
             "  CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({}) ON DELETE {} ON UPDATE {}",
-            fk.name,
-            fk.columns.join(", "),
-            fk.ref_table,
-            fk.ref_columns.join(", "),
+            quote_ident(&fk.name),
+            quote_idents(&fk.columns, ", "),
+            quote_ident(&fk.ref_table),
+            quote_idents(&fk.ref_columns, ", "),
             fk.on_delete.to_sql(),
             fk.on_update.to_sql()
         ));
@@ -395,7 +549,7 @@ fn generate_create_table(table: &TableDef) -> String {
 
     let mut sql = format!(
         "CREATE TABLE IF NOT EXISTS {} (\n{}\n);",
-        table.name,
+        quote_ident(&table.name),
         parts.join(",\n")
     );
 
@@ -405,9 +559,9 @@ fn generate_create_table(table: &TableDef) -> String {
         sql.push_str(&format!(
             "\nCREATE {}INDEX IF NOT EXISTS {} ON {} ({});",
             unique,
-            idx.name,
-            table.name,
-            idx.columns.join(", ")
+            quote_ident(&idx.name),
+            quote_ident(&table.name),
+            quote_idents(&idx.columns, ", ")
         ));
     }
 

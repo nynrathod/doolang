@@ -15,6 +15,7 @@ pub fn affected_objects_for(change: &SchemaChange) -> Vec<String> {
     use SchemaChange::*;
     match change {
         CreateEnum(e) => vec![e.name.clone()],
+        RenameEnum { from, to } => vec![from.clone(), to.clone()],
         AddEnumValue { enum_name, .. } => vec![enum_name.clone()],
         DropEnum { name } => vec![name.clone()],
 
@@ -104,6 +105,23 @@ pub fn affected_objects_for(change: &SchemaChange) -> Vec<String> {
             format!("{}.fk.{}", table, fk.name),
         ],
         DropForeignKey { table, name } => vec![table.clone(), format!("{}.fk.{}", table, name)],
+        ModifyForeignKey {
+            table,
+            fk,
+            previous,
+            ..
+        } => {
+            let mut objects = vec![
+                table.clone(),
+                fk.ref_table.clone(),
+                format!("{}.fk.{}", table, fk.name),
+            ];
+            // Include previous ref_table too in case it changed
+            if previous.ref_table != fk.ref_table {
+                objects.push(previous.ref_table.clone());
+            }
+            objects
+        }
     }
 }
 
@@ -117,6 +135,10 @@ pub fn affected_objects_for(change: &SchemaChange) -> Vec<String> {
 pub enum SchemaChange {
     // --- Enum Types ---
     CreateEnum(EnumTypeDef),
+    RenameEnum {
+        from: String,
+        to: String,
+    },
     AddEnumValue {
         enum_name: String,
         value: String,
@@ -227,6 +249,18 @@ pub enum SchemaChange {
         table: String,
         name: String,
     },
+    /// Modify an existing foreign key — column, target table, or actions changed.
+    /// The from/to fields capture what changed so the UI can show a clear diff.
+    ModifyForeignKey {
+        table: String,
+        /// Name of the FK constraint (may stay the same or change).
+        constraint_name: String,
+        fk: ForeignKeyDef,
+        /// Previous FK definition (for rollback).
+        previous: ForeignKeyDef,
+        /// What changed: "target", "columns", "on_delete", "on_update", "multi"
+        change_kind: String,
+    },
 }
 
 /// Compute the diff between current and desired schemas.
@@ -290,11 +324,25 @@ pub fn compute_diff(current: &DatabaseSchema, desired: &DatabaseSchema) -> Vec<S
         }
     }
 
-    // 2. Tables in the database but NOT in our desired schema: SKIP.
-    // These are foreign tables belonging to other projects that happen to
-    // share the same database. The migration system only manages tables
-    // defined in the current project's .doo source files.
-    // We intentionally do NOT generate DropTable for them.
+    // 2. Dropped tables (in current DB but NOT in desired schema, excluding renames).
+    // These are tables that were previously managed by doo_migrate but have been
+    // removed from the project's .doo source files. In DooCloud, each project has
+    // its own database, so all user tables are owned by the current project.
+    for current_table in &current.tables {
+        if !desired_tables.contains_key(current_table.name.as_str())
+            && !renamed_tables.contains(current_table.name.as_str())
+        {
+            // Skip tables that look like system/internal tables
+            // (pg_*, sql_*, information_schema, doo_migrations)
+            let lower = current_table.name.to_lowercase();
+            if lower.starts_with("pg_") || lower.starts_with("sql_") || lower == "doo_migrations" {
+                continue;
+            }
+            changes.push(SchemaChange::DropTable {
+                name: current_table.name.clone(),
+            });
+        }
+    }
 
     // 3. Modified tables (in both or renamed — diff columns, constraints, indexes)
     for desired_table in &desired.tables {
@@ -330,7 +378,26 @@ fn tables_match_for_rename(current: &TableDef, desired: &TableDef) -> bool {
     if current.columns.len() != desired.columns.len() {
         return false;
     }
+    // Count how many column names match (by name, order-independent).
+    // A genuine table rename keeps the same columns — just the table name changes.
+    // Require ALL column names to match to avoid false rename detection when
+    // a completely different new table happens to have the same column types.
+    let desired_names: std::collections::HashSet<&str> =
+        desired.columns.iter().map(|c| c.name.as_str()).collect();
+    let current_names: std::collections::HashSet<&str> =
+        current.columns.iter().map(|c| c.name.as_str()).collect();
+    let matching_names = desired_names.intersection(&current_names).count();
+    let total_names = desired_names.len().max(current_names.len());
+    // Require ALL column names to match for a rename.
+    // If ANY column name differs, this is a different table — not a rename.
+    if matching_names != total_names {
+        return false;
+    }
     for (cur_col, des_col) in current.columns.iter().zip(desired.columns.iter()) {
+        // Column names must also match by position (same order)
+        if cur_col.name != des_col.name {
+            return false;
+        }
         // Handle Serial/Integer equivalence (auto-increment columns)
         let types_eq = cur_col.sql_type == des_col.sql_type
             || (cur_col.is_auto || des_col.is_auto)
@@ -351,14 +418,48 @@ fn diff_enums(
     desired: &HashMap<&str, &EnumTypeDef>,
     changes: &mut Vec<SchemaChange>,
 ) {
-    // New enums
+    // Track which enums have been matched (rename or direct match) to avoid
+    // double-processing them.
+    let mut matched_desired: HashSet<&str> = HashSet::new();
+    let mut matched_current: HashSet<&str> = HashSet::new();
+
+    // --- Rename detection: match unmatched desired enums with unmatched current enums ---
+    // An enum rename is detected when:
+    // 1. The desired name does NOT exist in current DB
+    // 2. The current name does NOT exist in desired schema
+    // 3. Both have the same variants (same values, same order)
+    for (desired_name, desired_def) in desired {
+        if current.contains_key(desired_name) {
+            continue; // Already exists — handled below as modified
+        }
+        // Find a current enum NOT in desired that has identical variants
+        for (current_name, current_def) in current {
+            if desired.contains_key(current_name) {
+                continue; // Still exists — not a rename source
+            }
+            if matched_current.contains(current_name) {
+                continue; // Already matched to another rename
+            }
+            if enum_variants_match(current_def, desired_def) {
+                changes.push(SchemaChange::RenameEnum {
+                    from: current_name.to_string(),
+                    to: desired_name.to_string(),
+                });
+                matched_desired.insert(desired_name);
+                matched_current.insert(current_name);
+                break;
+            }
+        }
+    }
+
+    // --- New enums (in desired but not current, excluding renames) ---
     for (name, def) in desired {
-        if !current.contains_key(name) {
+        if !current.contains_key(name) && !matched_desired.contains(name) {
             changes.push(SchemaChange::CreateEnum((*def).clone()));
         }
     }
 
-    // Modified enums — can only add values (PostgreSQL limitation)
+    // --- Modified enums — can only add values (PostgreSQL limitation) ---
     for (name, desired_def) in desired {
         if let Some(current_def) = current.get(name) {
             let current_variants: HashSet<&str> =
@@ -375,8 +476,19 @@ fn diff_enums(
     }
 
     // Enums in the database but NOT in our desired schema: SKIP.
-    // These are foreign enums from other projects sharing the database.
+    // These are foreign enums from other projects sharing the database,
+    // OR enums that were renamed (handled above via RenameEnum).
     // We intentionally do NOT generate DropEnum for them.
+}
+
+/// Check if two enum type definitions have identical variants (same values, same order).
+/// Used for rename detection — if variants match exactly, it's likely a rename.
+fn enum_variants_match(a: &EnumTypeDef, b: &EnumTypeDef) -> bool {
+    a.variants.len() == b.variants.len()
+        && a.variants
+            .iter()
+            .zip(b.variants.iter())
+            .all(|(va, vb)| va == vb)
 }
 
 /// Diff two versions of the same table.
@@ -497,7 +609,19 @@ fn diff_column(
             (SqlType::Serial, SqlType::Integer) | (SqlType::Integer, SqlType::Serial)
         ) && (current.is_auto || desired.is_auto);
 
-        if !is_serial_equiv {
+        // Skip if both are Enum types and a RenameEnum covers this change.
+        // When an enum is renamed, columns referencing it show a type change
+        // (Enum("old") → Enum("new")), but PostgreSQL handles this automatically
+        // via ALTER TYPE RENAME — no ALTER COLUMN needed.
+        let is_enum_rename = match (&current.sql_type, &desired.sql_type) {
+            (SqlType::Enum(cur_enum), SqlType::Enum(des_enum)) => changes.iter().any(|c| {
+                matches!(c, SchemaChange::RenameEnum { from, to }
+                    if from == cur_enum && to == des_enum)
+            }),
+            _ => false,
+        };
+
+        if !is_serial_equiv && !is_enum_rename {
             changes.push(SchemaChange::AlterColumnType {
                 table: table.to_string(),
                 column: desired.name.clone(),
@@ -642,46 +766,168 @@ fn diff_unique_constraints(
     }
 }
 
-/// Diff foreign keys.
+/// Diff foreign keys — detects adds, drops, and modifications.
+///
+/// Modifications include:
+/// - Target table changed (ref_table)
+/// - Referenced columns changed (ref_columns)
+/// - ON DELETE action changed
+/// - ON UPDATE action changed
+/// - Local columns changed (columns)
 fn diff_foreign_keys(
     table: &str,
     current: &[ForeignKeyDef],
     desired: &[ForeignKeyDef],
     changes: &mut Vec<SchemaChange>,
 ) {
-    let current_by_cols: HashMap<(&str, Vec<String>), &ForeignKeyDef> = current
-        .iter()
-        .map(|fk| {
-            let mut cols = fk.columns.clone();
-            cols.sort();
-            ((fk.ref_table.as_str(), cols), fk)
-        })
-        .collect();
+    // Match by name when possible (stable identity), fall back to (ref_table, columns) key.
+    // Name-based matching is more robust for detecting modifications because
+    // the user may change ref_table or columns but keep the same FK name.
+    let current_by_name: HashMap<&str, &ForeignKeyDef> =
+        current.iter().map(|fk| (fk.name.as_str(), fk)).collect();
+    let desired_by_name: HashMap<&str, &ForeignKeyDef> =
+        desired.iter().map(|fk| (fk.name.as_str(), fk)).collect();
 
-    let desired_by_cols: HashMap<(&str, Vec<String>), &ForeignKeyDef> = desired
-        .iter()
-        .map(|fk| {
-            let mut cols = fk.columns.clone();
-            cols.sort();
-            ((fk.ref_table.as_str(), cols), fk)
-        })
-        .collect();
+    // Track which current FKs have been matched (by name or by key)
+    let mut matched_current: HashSet<&str> = HashSet::new();
+    let mut matched_desired: HashSet<&str> = HashSet::new();
 
-    for (key, fk) in &desired_by_cols {
-        if !current_by_cols.contains_key(key) {
-            changes.push(SchemaChange::AddForeignKey {
-                table: table.to_string(),
-                fk: (*fk).clone(),
-            });
+    // Phase 1: Match by name — detect modifications
+    for (name, desired_fk) in &desired_by_name {
+        if let Some(current_fk) = current_by_name.get(name) {
+            matched_current.insert(name);
+            matched_desired.insert(name);
+
+            // Check what changed
+            let mut changed_parts: Vec<&str> = Vec::new();
+
+            if current_fk.ref_table != desired_fk.ref_table {
+                changed_parts.push("target");
+            }
+            if current_fk.columns != desired_fk.columns {
+                changed_parts.push("columns");
+            }
+            if current_fk.ref_columns != desired_fk.ref_columns {
+                changed_parts.push("ref_columns");
+            }
+            if current_fk.on_delete != desired_fk.on_delete {
+                changed_parts.push("on_delete");
+            }
+            if current_fk.on_update != desired_fk.on_update {
+                changed_parts.push("on_update");
+            }
+
+            if !changed_parts.is_empty() {
+                let change_kind = if changed_parts.len() > 1 {
+                    "multi".to_string()
+                } else {
+                    changed_parts[0].to_string()
+                };
+
+                changes.push(SchemaChange::ModifyForeignKey {
+                    table: table.to_string(),
+                    constraint_name: name.to_string(),
+                    fk: (*desired_fk).clone(),
+                    previous: (*current_fk).clone(),
+                    change_kind,
+                });
+            }
         }
     }
 
-    for (key, fk) in &current_by_cols {
-        if !desired_by_cols.contains_key(key) {
-            changes.push(SchemaChange::DropForeignKey {
-                table: table.to_string(),
-                name: fk.name.clone(),
-            });
+    // Phase 2: Match unmatched by (ref_table, columns) key — fallback for unnamed FKs
+    // Build key-based maps for unmatched FKs only
+    let current_by_key: HashMap<(&str, Vec<String>), &ForeignKeyDef> = current
+        .iter()
+        .filter(|fk| !matched_current.contains(fk.name.as_str()))
+        .map(|fk| {
+            let mut cols = fk.columns.clone();
+            cols.sort();
+            ((fk.ref_table.as_str(), cols), fk)
+        })
+        .collect();
+
+    let desired_by_key: HashMap<(&str, Vec<String>), &ForeignKeyDef> = desired
+        .iter()
+        .filter(|fk| !matched_desired.contains(fk.name.as_str()))
+        .map(|fk| {
+            let mut cols = fk.columns.clone();
+            cols.sort();
+            ((fk.ref_table.as_str(), cols), fk)
+        })
+        .collect();
+
+    // New FKs (in desired but not in current by key)
+    for (key, fk) in &desired_by_key {
+        if !current_by_key.contains_key(key) {
+            // Check if there's a current FK with different ref_table but same columns
+            // (target table change detected via key mismatch)
+            let current_same_cols: Vec<&ForeignKeyDef> = current
+                .iter()
+                .filter(|cfk| {
+                    !matched_current.contains(cfk.name.as_str()) && {
+                        let mut c_cols = cfk.columns.clone();
+                        c_cols.sort();
+                        c_cols == key.1
+                    }
+                })
+                .collect();
+
+            if let Some(current_fk) = current_same_cols.first() {
+                // Same columns, different ref_table → modification (target changed)
+                matched_current.insert(current_fk.name.as_str());
+                matched_desired.insert(fk.name.as_str());
+
+                let mut changed_parts = vec!["target"];
+                if current_fk.on_delete != fk.on_delete {
+                    changed_parts.push("on_delete");
+                }
+                if current_fk.on_update != fk.on_update {
+                    changed_parts.push("on_update");
+                }
+                let change_kind = if changed_parts.len() > 1 {
+                    "multi".to_string()
+                } else {
+                    changed_parts[0].to_string()
+                };
+
+                changes.push(SchemaChange::ModifyForeignKey {
+                    table: table.to_string(),
+                    constraint_name: fk.name.clone(),
+                    fk: (*fk).clone(),
+                    previous: (*current_fk).clone(),
+                    change_kind,
+                });
+            } else {
+                changes.push(SchemaChange::AddForeignKey {
+                    table: table.to_string(),
+                    fk: (*fk).clone(),
+                });
+            }
+        }
+    }
+
+    // Dropped FKs (in current but not in desired by key, and not matched)
+    for (key, fk) in &current_by_key {
+        if !desired_by_key.contains_key(key) {
+            // Check if columns still exist but ref_table changed → already handled above
+            let desired_same_cols: Vec<&ForeignKeyDef> = desired
+                .iter()
+                .filter(|dfk| {
+                    !matched_desired.contains(dfk.name.as_str()) && {
+                        let mut d_cols = dfk.columns.clone();
+                        d_cols.sort();
+                        d_cols == key.1
+                    }
+                })
+                .collect();
+
+            if desired_same_cols.is_empty() {
+                changes.push(SchemaChange::DropForeignKey {
+                    table: table.to_string(),
+                    name: fk.name.clone(),
+                });
+            }
         }
     }
 }

@@ -157,7 +157,7 @@ impl PlannedChange {
     fn metadata(change: &SchemaChange) -> (String, String, Vec<String>) {
         use SchemaChange::*;
         let category = match change {
-            CreateEnum(_) | AddEnumValue { .. } | DropEnum { .. } => "enum",
+            CreateEnum(_) | RenameEnum { .. } | AddEnumValue { .. } | DropEnum { .. } => "enum",
             CreateTable(_) | DropTable { .. } | RenameTable { .. } => "schema",
             AddColumn { .. } | DropColumn { .. } | RenameColumn { .. } | AlterColumnType { .. } => {
                 "schema"
@@ -173,12 +173,13 @@ impl PlannedChange {
             | AddCheck { .. }
             | DropCheck { .. } => "constraint",
             CreateIndex { .. } | DropIndex { .. } => "index",
-            AddForeignKey { .. } | DropForeignKey { .. } => "foreign_key",
+            AddForeignKey { .. } | DropForeignKey { .. } | ModifyForeignKey { .. } => "foreign_key",
         }
         .to_string();
 
         let reason = match change {
             CreateEnum(e) => format!("Create new enum type '{}'", e.name),
+            RenameEnum { from, to } => format!("Rename enum type '{}' to '{}'", from, to),
             AddEnumValue { enum_name, value } => {
                 format!("Add value '{}' to enum '{}'", value, enum_name)
             }
@@ -245,6 +246,37 @@ impl PlannedChange {
                 fk.name, table, fk.ref_table
             ),
             DropForeignKey { table, name } => format!("Drop foreign key {} on {}", name, table),
+            ModifyForeignKey {
+                table,
+                fk,
+                previous,
+                change_kind,
+                ..
+            } => {
+                let kind_desc = match change_kind.as_str() {
+                    "target" => format!(
+                        "changed target from {} to {}",
+                        previous.ref_table, fk.ref_table
+                    ),
+                    "columns" => "columns changed".to_string(),
+                    "ref_columns" => "referenced columns changed".to_string(),
+                    "on_delete" => format!(
+                        "ON DELETE changed from {} to {}",
+                        previous.on_delete.to_sql(),
+                        fk.on_delete.to_sql()
+                    ),
+                    "on_update" => format!(
+                        "ON UPDATE changed from {} to {}",
+                        previous.on_update.to_sql(),
+                        fk.on_update.to_sql()
+                    ),
+                    _ => "multiple attributes changed".to_string(),
+                };
+                format!(
+                    "Modify foreign key {} on {} — {}",
+                    fk.name, table, kind_desc
+                )
+            }
         };
 
         // Use the SINGLE SOURCE OF TRUTH from diff.rs
@@ -740,7 +772,24 @@ fn classify_risk(change: &SchemaChange) -> Risk {
         | SchemaChange::DropIndex { .. }
         | SchemaChange::DropForeignKey { .. }
         | SchemaChange::RenameTable { .. }
-        | SchemaChange::RenameColumn { .. } => Risk::Risky,
+        | SchemaChange::RenameColumn { .. }
+        | SchemaChange::RenameEnum { .. } => Risk::Risky,
+
+        // FK modification — risk depends on what changed
+        SchemaChange::ModifyForeignKey { previous, fk, .. } => {
+            // Changing ON DELETE to CASCADE is risky (cascading deletes)
+            // Changing target table is risky (data integrity concern)
+            // Changing to a more restrictive action is risky
+            if previous.ref_table != fk.ref_table {
+                Risk::Risky
+            } else if fk.on_delete == crate::schema::ForeignKeyAction::Cascade
+                && previous.on_delete != crate::schema::ForeignKeyAction::Cascade
+            {
+                Risk::Risky // CASCADE can cause unexpected data loss
+            } else {
+                Risk::Safe
+            }
+        }
 
         // Type changes — depends on whether the cast is safe
         SchemaChange::AlterColumnType { from, to, .. } => {
@@ -771,7 +820,8 @@ fn change_order(change: &SchemaChange) -> u32 {
     match change {
         // Phase 1: Enum types (tables may reference them)
         SchemaChange::CreateEnum(_) => 10,
-        SchemaChange::AddEnumValue { .. } => 11,
+        SchemaChange::RenameEnum { .. } => 11,
+        SchemaChange::AddEnumValue { .. } => 12,
 
         // Phase 2: Create tables (before anything references them)
         SchemaChange::CreateTable(_) => 20,
@@ -796,6 +846,7 @@ fn change_order(change: &SchemaChange) -> u32 {
 
         // Phase 6: Foreign keys (after all tables/columns exist)
         SchemaChange::AddForeignKey { .. } => 60,
+        SchemaChange::ModifyForeignKey { .. } => 61,
 
         // Phase 7: Drops (reverse dependency order)
         SchemaChange::DropForeignKey { .. } => 70,

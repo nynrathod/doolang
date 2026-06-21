@@ -696,7 +696,10 @@ fn extract_from_hir(
         }
     }
 
-    // Create enum types for referenced enums
+    // Create enum types ONLY for enums that are referenced by table columns
+    // (or transitively through non-table struct fields used by table columns).
+    // Enums defined in .doo source but not used in any table column do NOT
+    // need PostgreSQL enum types — they're just in-code types with no DB presence.
     for (enum_name, variants) in &enum_map {
         if referenced_enums.contains(enum_name) {
             schema.enums.push(EnumTypeDef {
