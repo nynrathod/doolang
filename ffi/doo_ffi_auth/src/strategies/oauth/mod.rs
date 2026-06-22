@@ -294,17 +294,25 @@ pub fn exchange_code(provider_name: &str, code: &str, state: &str) -> Result<Str
     // Fetch user info using the provider's access token (used once, then discarded)
     let user_info = provider.get_user_info(&token_response.access_token)?;
 
+    // Upsert user into database and embed real user_id in JWT
+    let user_id = crate::user_bridge::upsert_oauth_user(&user_info).unwrap_or(0);
+
     // Create YOUR session tokens (not the provider's) — these are what the frontend uses
     let user_data_json = serde_json::to_string(&user_info)
         .map_err(|e| format!("Failed to serialize user info: {}", e))?;
 
     // Access token: short-lived, carries user data, used for API auth
     let access_expiry = session::get_access_expiry();
-    let access_token = session::sign_token(&user_info.email, Some(&user_data_json), access_expiry)?;
+    let access_token = session::sign_token(
+        &user_info.email,
+        user_id,
+        Some(&user_data_json),
+        access_expiry,
+    )?;
 
     // Refresh token: long-lived, minimal claims, used to get new access tokens
     let refresh_expiry = session::get_refresh_expiry();
-    let refresh_token = session::sign_refresh_token(&user_info.email, refresh_expiry)?;
+    let refresh_token = session::sign_refresh_token(&user_info.email, user_id, refresh_expiry)?;
 
     // Build result — returns YOUR tokens + provider tokens for reference
     let result = tokens::OAuthExchangeResult {

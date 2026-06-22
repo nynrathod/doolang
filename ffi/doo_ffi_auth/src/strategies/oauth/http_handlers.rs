@@ -441,9 +441,9 @@ extern "C" fn oauth_refresh_handler(req: *const c_void) -> *mut DooResult {
             }
         };
 
-        // Verify refresh token and get subject (email)
-        let sub = match crate::session::verify_refresh_token(&refresh_token) {
-            Ok(s) => s,
+        // Verify refresh token and get subject + user_id
+        let refresh_claims = match crate::session::verify_refresh_token(&refresh_token) {
+            Ok(c) => c,
             Err(e) => {
                 ffi_debug!("OAUTH", "Refresh token verification failed: {}", e);
                 return make_err_http(
@@ -454,9 +454,19 @@ extern "C" fn oauth_refresh_handler(req: *const c_void) -> *mut DooResult {
             }
         };
 
+        let user_id = crate::user_bridge::resolve_user_id(
+            refresh_claims.user_id,
+            &refresh_claims.sub,
+        );
+
         // Issue new access token with default expiry
         let access_expiry = crate::session::get_access_expiry();
-        let new_access = match crate::session::sign_token(&sub, None, access_expiry) {
+        let new_access = match crate::session::sign_token(
+            &refresh_claims.sub,
+            user_id,
+            None,
+            access_expiry,
+        ) {
             Ok(t) => t,
             Err(e) => {
                 return make_err_http(
@@ -469,7 +479,11 @@ extern "C" fn oauth_refresh_handler(req: *const c_void) -> *mut DooResult {
 
         // Refresh token rotation: issue new refresh token too (extends session)
         let refresh_expiry = crate::session::get_refresh_expiry();
-        let new_refresh = match crate::session::sign_refresh_token(&sub, refresh_expiry) {
+        let new_refresh = match crate::session::sign_refresh_token(
+            &refresh_claims.sub,
+            user_id,
+            refresh_expiry,
+        ) {
             Ok(t) => t,
             Err(e) => {
                 return make_err_http(
@@ -499,7 +513,7 @@ extern "C" fn oauth_refresh_handler(req: *const c_void) -> *mut DooResult {
         ffi_debug!(
             "OAUTH",
             "Refresh successful (with rotation) for sub={}",
-            sub
+            refresh_claims.sub
         );
         make_ok_json(&json)
     })) {
