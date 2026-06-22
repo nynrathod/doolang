@@ -34,7 +34,7 @@ strip = true      # Strip symbols
 panic = "abort"   # Smaller panic handler
 
 [workspace.package]
-version = "0.4.2"
+version = "0.4.3"
 edition = "2021"
 authors = ["Nayan Rathod "]
 repository = "https://github.com/nynrathod/doolang"
