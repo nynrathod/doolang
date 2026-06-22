@@ -96,6 +96,33 @@ const ERROR: &str = "✗ ";
 const WARN: &str = "⚠ ";
 const ARROW: &str = "→ ";
 
+// ─── System / Internal Tables ───────────────────────────────────────────────
+// These tables are managed by the Doo runtime (migration history, webhook logs,
+// etc.) and MUST NEVER appear in user-facing schema diffs, change detection,
+// or migration plans. They are completely invisible to the user.
+//
+// SINGLE SOURCE OF TRUTH: Add new system tables HERE. Both the introspector
+// and the diff engine reference this list.
+
+/// Tables managed internally by the Doo runtime — never part of user schema.
+pub const SYSTEM_TABLES: &[&str] = &["doo_migrations", "webhook_deliveries"];
+
+/// Returns `true` if the given table name (case-insensitive) is a system table.
+pub fn is_system_table(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    SYSTEM_TABLES.iter().any(|t| *t == lower.as_str())
+}
+
+/// Build a SQL `NOT IN (...)` clause for excluding system tables from queries.
+/// Returns a comma-separated, single-quoted list suitable for `NOT IN (...)`.
+pub fn system_tables_sql_exclusion() -> String {
+    SYSTEM_TABLES
+        .iter()
+        .map(|t| format!("'{}'", t))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Run an async future to completion, safely handling the case where a Tokio
 /// runtime already exists on the current thread (e.g., when `doo migrate` is
 /// invoked as a subprocess from the DooCloud server).

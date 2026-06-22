@@ -29,16 +29,18 @@ pub async fn connect(database_url: &str) -> Result<deadpool_postgres::Client, St
 pub async fn introspect_schema(client: &Client) -> Result<DatabaseSchema, String> {
     let mut schema = DatabaseSchema::default();
 
-    // 1. Get all user tables
+    // 1. Get all user tables (excluding system/internal tables)
+    let exclusion = crate::system_tables_sql_exclusion();
+    let tables_sql = format!(
+        "SELECT table_name FROM information_schema.tables
+         WHERE table_schema = 'public'
+         AND table_type = 'BASE TABLE'
+         AND table_name NOT IN ({})
+         ORDER BY table_name",
+        exclusion
+    );
     let tables = client
-        .query(
-            "SELECT table_name FROM information_schema.tables
-             WHERE table_schema = 'public'
-             AND table_type = 'BASE TABLE'
-             AND table_name != 'doo_migrations'
-             ORDER BY table_name",
-            &[],
-        )
+        .query(&tables_sql, &[])
         .await
         .map_err(|e| format!("Failed to query tables: {}", e))?;
 

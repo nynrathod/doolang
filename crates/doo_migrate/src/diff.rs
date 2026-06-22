@@ -333,9 +333,9 @@ pub fn compute_diff(current: &DatabaseSchema, desired: &DatabaseSchema) -> Vec<S
             && !renamed_tables.contains(current_table.name.as_str())
         {
             // Skip tables that look like system/internal tables
-            // (pg_*, sql_*, information_schema, doo_migrations)
+            // (pg_*, sql_*, information_schema, and any crate::SYSTEM_TABLES)
             let lower = current_table.name.to_lowercase();
-            if lower.starts_with("pg_") || lower.starts_with("sql_") || lower == "doo_migrations" {
+            if lower.starts_with("pg_") || lower.starts_with("sql_") || crate::is_system_table(&lower) {
                 continue;
             }
             changes.push(SchemaChange::DropTable {
