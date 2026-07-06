@@ -531,7 +531,7 @@ async fn count_affected_rows(
 
     for planned in &plan.changes {
         let count_result = match &planned.change {
-            SchemaChange::DropTable { name } => {
+            SchemaChange::DropTable { name, .. } => {
                 // Fast estimate from pg_class — avoids full table scan
                 let query = format!(
                     "SELECT COALESCE(reltuples::bigint, 0) FROM pg_class WHERE relname = '{}'",
@@ -542,7 +542,7 @@ async fn count_affected_rows(
                     .await
                     .map(|row| row.map(|r| r.get::<_, i64>(0)).unwrap_or(0))
             }
-            SchemaChange::DropColumn { table, column }
+            SchemaChange::DropColumn { table, column, .. }
             | SchemaChange::AlterColumnType { table, column, .. } => {
                 let query = format!(
                     "SELECT COUNT(*) FROM \"{}\" WHERE \"{}\" IS NOT NULL",

@@ -145,6 +145,7 @@ async fn introspect_table(
             is_unique: false,  // Set below from constraints
             is_index: false,   // Set below from indexes
             is_hashed: false,
+            decorators: Vec::new(), // Introspected — no Doo decorators available
         });
     }
 

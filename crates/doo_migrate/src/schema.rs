@@ -80,6 +80,11 @@ pub struct ColumnDef {
     pub is_index: bool,
     /// `@hash` — stored hashed (informational only, doesn't affect DDL).
     pub is_hashed: bool,
+    /// Full list of original Doo decorator strings (e.g. `["@primary", "@email", "@min(3)"]`).
+    /// This is the source of truth for restoring decorators on revert — never
+    /// reconstruct decorators from boolean flags when this list is available.
+    #[serde(default)]
+    pub decorators: Vec<String>,
 }
 
 // ============================================================================

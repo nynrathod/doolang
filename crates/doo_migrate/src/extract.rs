@@ -402,6 +402,29 @@ fn extract_crud_table_name(args: &[HirExpr]) -> String {
     "unknown".to_string()
 }
 
+/// Convert a HIR decorator to its Doo source string representation.
+/// e.g. `@primary`, `@email`, `@min(3)`, `@foreign(Task)`, `@default("hello")`
+fn decorator_to_string(dec: &doo_hir::HirDecorator) -> String {
+    let name = &dec.name;
+    if dec.args.is_empty() {
+        return format!("@{}", name);
+    }
+    let args_str: Vec<String> = dec
+        .args
+        .iter()
+        .map(|arg| match &arg.kind {
+            HirExprKind::Const(ConstValue::Str(s)) => s.clone(),
+            HirExprKind::Const(ConstValue::Int(n)) => n.to_string(),
+            HirExprKind::Const(ConstValue::Float(f)) => f.to_string(),
+            HirExprKind::Const(ConstValue::Bool(b)) => b.to_string(),
+            HirExprKind::Local { name } => name.clone(),
+            HirExprKind::Global { name } => name.clone(),
+            _ => String::new(),
+        })
+        .collect();
+    format!("@{}({})", name, args_str.join(", "))
+}
+
 /// Build a TableDef from a HIR struct (shared by @table and implicit table paths).
 fn build_table_def_from_struct(
     s: &doo_hir::HirStruct,
@@ -516,6 +539,13 @@ fn build_table_def_from_struct(
             }
         }
 
+        // Collect ALL decorator strings for full restoration on revert
+        let decorator_strings: Vec<String> = field
+            .decorators
+            .iter()
+            .map(|d| decorator_to_string(d))
+            .collect();
+
         columns.push(ColumnDef {
             name: col_name,
             field_name: field.name.clone(),
@@ -527,6 +557,7 @@ fn build_table_def_from_struct(
             is_unique,
             is_index,
             is_hashed,
+            decorators: decorator_strings,
         });
     }
 
@@ -547,6 +578,7 @@ fn build_table_def_from_struct(
                 is_unique: false,
                 is_index: false,
                 is_hashed: false,
+                decorators: Vec::new(),
             });
         }
         if !has_updated_at {
@@ -561,6 +593,7 @@ fn build_table_def_from_struct(
                 is_unique: false,
                 is_index: false,
                 is_hashed: false,
+                decorators: Vec::new(),
             });
         }
     }

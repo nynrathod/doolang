@@ -56,7 +56,7 @@ pub fn affected_objects_for(change: &SchemaChange) -> Vec<String> {
             }
             objects
         }
-        DropTable { name } => vec![name.clone()],
+        DropTable { name, .. } => vec![name.clone()],
         RenameTable { from, to } => vec![from.clone(), to.clone()],
 
         AddColumn { table, column } => {
@@ -67,7 +67,7 @@ pub fn affected_objects_for(change: &SchemaChange) -> Vec<String> {
             }
             objects
         }
-        DropColumn { table, column } => vec![table.clone(), format!("{}.{}", table, column)],
+        DropColumn { table, column, .. } => vec![table.clone(), format!("{}.{}", table, column)],
         RenameColumn { table, from, to } => vec![
             table.clone(),
             format!("{}.{}", table, from),
@@ -104,7 +104,7 @@ pub fn affected_objects_for(change: &SchemaChange) -> Vec<String> {
             fk.ref_table.clone(),
             format!("{}.fk.{}", table, fk.name),
         ],
-        DropForeignKey { table, name } => vec![table.clone(), format!("{}.fk.{}", table, name)],
+        DropForeignKey { table, name, .. } => vec![table.clone(), format!("{}.fk.{}", table, name)],
         ModifyForeignKey {
             table,
             fk,
@@ -151,6 +151,9 @@ pub enum SchemaChange {
     CreateTable(TableDef),
     DropTable {
         name: String,
+        /// Full previous table definition (columns, types, constraints, etc.)
+        /// so the frontend can restore all table metadata on revert.
+        previous: TableDef,
     },
     RenameTable {
         from: String,
@@ -165,6 +168,9 @@ pub enum SchemaChange {
     DropColumn {
         table: String,
         column: String,
+        /// Full previous column definition (type, decorators, constraints, etc.)
+        /// so the frontend can restore all column metadata on revert.
+        previous: ColumnDef,
     },
     RenameColumn {
         table: String,
@@ -248,6 +254,9 @@ pub enum SchemaChange {
     DropForeignKey {
         table: String,
         name: String,
+        /// Full previous FK definition (columns, ref_table, ref_columns, etc.)
+        /// so the frontend can restore the FK on revert.
+        previous: ForeignKeyDef,
     },
     /// Modify an existing foreign key — column, target table, or actions changed.
     /// The from/to fields capture what changed so the UI can show a clear diff.
@@ -343,6 +352,7 @@ pub fn compute_diff(current: &DatabaseSchema, desired: &DatabaseSchema) -> Vec<S
             }
             changes.push(SchemaChange::DropTable {
                 name: current_table.name.clone(),
+                previous: (*current_table).clone(),
             });
         }
     }
@@ -559,6 +569,7 @@ fn diff_table(current: &TableDef, desired: &TableDef, changes: &mut Vec<SchemaCh
             changes.push(SchemaChange::DropColumn {
                 table: table.clone(),
                 column: current_col.name.clone(),
+                previous: (*current_col).clone(),
             });
         }
     }
@@ -929,6 +940,7 @@ fn diff_foreign_keys(
                 changes.push(SchemaChange::DropForeignKey {
                     table: table.to_string(),
                     name: fk.name.clone(),
+                    previous: (*fk).clone(),
                 });
             }
         }

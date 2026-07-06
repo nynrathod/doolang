@@ -185,10 +185,10 @@ impl PlannedChange {
             }
             DropEnum { name } => format!("Drop enum type '{}' – irreversible data loss", name),
             CreateTable(t) => format!("Create new table '{}'", t.name),
-            DropTable { name } => format!("Drop table '{}' – all data lost", name),
+            DropTable { name, .. } => format!("Drop table '{}' – all data lost", name),
             RenameTable { from, to } => format!("Rename table '{}' to '{}'", from, to),
             AddColumn { table, column } => format!("Add column '{}.{}'", table, column.name),
-            DropColumn { table, column } => {
+            DropColumn { table, column, .. } => {
                 format!("Drop column '{}.{}' – data lost", table, column)
             }
             RenameColumn { table, from, to } => {
@@ -245,7 +245,7 @@ impl PlannedChange {
                 "Add foreign key {} on {} referencing {}",
                 fk.name, table, fk.ref_table
             ),
-            DropForeignKey { table, name } => format!("Drop foreign key {} on {}", name, table),
+            DropForeignKey { table, name, .. } => format!("Drop foreign key {} on {}", name, table),
             ModifyForeignKey {
                 table,
                 fk,

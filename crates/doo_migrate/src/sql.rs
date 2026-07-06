@@ -90,7 +90,7 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
 
         // --- Tables ---
         SchemaChange::CreateTable(t) => generate_create_table(t),
-        SchemaChange::DropTable { name } => {
+        SchemaChange::DropTable { name, .. } => {
             format!("DROP TABLE IF EXISTS {} CASCADE;", quote_ident(name))
         }
         SchemaChange::RenameTable { from, to } => {
@@ -137,7 +137,7 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
             }
             sql
         }
-        SchemaChange::DropColumn { table, column } => {
+        SchemaChange::DropColumn { table, column, .. } => {
             format!(
                 "ALTER TABLE {} DROP COLUMN IF EXISTS {} CASCADE;",
                 quote_ident(table),
@@ -300,7 +300,7 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
                 fk.on_update.to_sql()
             )
         }
-        SchemaChange::DropForeignKey { table, name } => {
+        SchemaChange::DropForeignKey { table, name, .. } => {
             format!(
                 "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {};",
                 quote_ident(table),
@@ -368,9 +368,9 @@ pub fn change_to_down_sql(change: &SchemaChange) -> Option<String> {
             "DROP TABLE IF EXISTS {} CASCADE;",
             quote_ident(&t.name)
         )),
-        SchemaChange::DropTable { .. } => {
-            // Can't recreate without knowing columns
-            None
+        SchemaChange::DropTable { name: _, previous } => {
+            // Recreate the table from the full previous definition
+            Some(generate_create_table(previous))
         }
         SchemaChange::RenameTable { from, to } => Some(format!(
             "ALTER TABLE {} RENAME TO {};",
