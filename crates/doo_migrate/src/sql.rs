@@ -157,14 +157,44 @@ pub fn change_to_up_sql(change: &SchemaChange) -> String {
         } => {
             let q_table = quote_ident(table);
             let q_col = quote_ident(column);
-            format!(
+            // PostgreSQL does NOT support SERIAL/BIGSERIAL in ALTER COLUMN TYPE.
+            // SERIAL is syntactic sugar for INTEGER + sequence — the actual
+            // underlying type is INTEGER. Map to the base type for the cast
+            // and create a sequence + set default to achieve the same effect.
+            let (target_type, needs_sequence) = match to {
+                SqlType::Serial => ("INTEGER".to_string(), true),
+                SqlType::BigSerial => ("BIGINT".to_string(), true),
+                other => (other.to_ddl(), false),
+            };
+            let mut sql = format!(
                 "ALTER TABLE {} ALTER COLUMN {} TYPE {} USING {}::{};",
-                q_table,
-                q_col,
-                to.to_ddl(),
-                q_col,
-                to.to_ddl()
-            )
+                q_table, q_col, target_type, q_col, target_type
+            );
+            if needs_sequence {
+                let seq_name = format!("{}_{}_seq", table, column);
+                // Create the sequence owned by the column
+                sql.push_str(&format!(
+                    "\nCREATE SEQUENCE IF NOT EXISTS {} OWNED BY {}.{};",
+                    quote_ident(&seq_name),
+                    q_table,
+                    q_col
+                ));
+                // Set the default to nextval from the sequence
+                sql.push_str(&format!(
+                    "\nALTER TABLE {} ALTER COLUMN {} SET DEFAULT nextval('{}');",
+                    q_table,
+                    q_col,
+                    quote_ident(&seq_name)
+                ));
+                // Start the sequence at max(id) + 1 so existing rows are preserved
+                sql.push_str(&format!(
+                    "\nSELECT setval('{}', COALESCE((SELECT MAX({}) FROM {}), 0) + 1, false);",
+                    quote_ident(&seq_name),
+                    q_col,
+                    q_table
+                ));
+            }
+            sql
         }
         SchemaChange::SetNotNull {
             table,
@@ -401,13 +431,15 @@ pub fn change_to_down_sql(change: &SchemaChange) -> Option<String> {
         } => {
             let q_table = quote_ident(table);
             let q_col = quote_ident(column);
+            // Handle Serial/BigSerial in DOWN SQL (same fix as UP SQL).
+            let (target_type, _needs_sequence) = match from {
+                SqlType::Serial => ("INTEGER".to_string(), true),
+                SqlType::BigSerial => ("BIGINT".to_string(), true),
+                other => (other.to_ddl(), false),
+            };
             Some(format!(
                 "ALTER TABLE {} ALTER COLUMN {} TYPE {} USING {}::{};",
-                q_table,
-                q_col,
-                from.to_ddl(),
-                q_col,
-                from.to_ddl()
+                q_table, q_col, target_type, q_col, target_type
             ))
         }
         SchemaChange::SetNotNull { table, column, .. } => Some(format!(

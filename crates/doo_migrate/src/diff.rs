@@ -616,12 +616,26 @@ fn diff_column(
 ) {
     // Type change
     if current.sql_type != desired.sql_type {
-        // Skip if current is Serial and desired is Integer with is_auto
-        // (they represent the same thing)
-        let is_serial_equiv = matches!(
-            (&current.sql_type, &desired.sql_type),
-            (SqlType::Serial, SqlType::Integer) | (SqlType::Integer, SqlType::Serial)
-        ) && (current.is_auto || desired.is_auto);
+        // Skip if current type and desired type are equivalent integer/auto-increment pairs.
+        // PostgreSQL SERIAL/BIGSERIAL are INTEGER/BIGINT under the hood; when @auto is
+        // involved on either side, treat all integer family types as equivalent.
+        let is_auto_involved = current.is_auto || desired.is_auto;
+        let is_serial_equiv = is_auto_involved
+            && match (&current.sql_type, &desired.sql_type) {
+                // Serial ↔ any integer
+                (SqlType::Serial, SqlType::SmallInt | SqlType::Integer | SqlType::BigInt)
+                | (SqlType::SmallInt | SqlType::Integer | SqlType::BigInt, SqlType::Serial) => true,
+                // BigSerial ↔ any integer
+                (SqlType::BigSerial, SqlType::SmallInt | SqlType::Integer | SqlType::BigInt)
+                | (SqlType::SmallInt | SqlType::Integer | SqlType::BigInt, SqlType::BigSerial) => {
+                    true
+                }
+                // Serial ↔ BigSerial (both auto-increment, just different sizes)
+                (SqlType::Serial, SqlType::BigSerial) | (SqlType::BigSerial, SqlType::Serial) => {
+                    true
+                }
+                _ => false,
+            };
 
         // Skip if both are Enum types and a RenameEnum covers this change.
         // When an enum is renamed, columns referencing it show a type change
