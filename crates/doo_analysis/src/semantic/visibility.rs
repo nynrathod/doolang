@@ -9,7 +9,6 @@
 //! - Struct fields follow the struct's visibility by default
 //! - Enum variants are always accessible if the enum is accessible
 
-use doo_core::doo_debug;
 use doo_core::Span;
 use std::collections::HashMap;
 
@@ -290,21 +289,21 @@ impl<'a> FieldVisibilityChecker<'a> {
                     value,
                     ..
                 } => {
-// Try to determine struct type from type_id first
+                    // Try to determine struct type from type_id first
                     if let Some(tid) = type_id {
                         if let Some(info) = self.type_registry.get(*tid) {
                             if let TypeKind::Struct {
                                 name: struct_name, ..
                             } = &info.kind
                             {
-self.local_struct_types
+                                self.local_struct_types
                                     .insert(name.clone(), struct_name.clone());
                             }
                         }
                     } else {
                         // Try to infer from value expression
                         if let Some(struct_name) = self.get_expr_struct_type(value) {
-self.local_struct_types.insert(name.clone(), struct_name);
+                            self.local_struct_types.insert(name.clone(), struct_name);
                         } else if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
                         }
                     }
@@ -339,14 +338,13 @@ self.local_struct_types.insert(name.clone(), struct_name);
                     HirExprKind::Global { name } => Some(name.as_str()),
                     HirExprKind::Local { name, .. } => Some(name.as_str()),
                     _ => {
-                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        }
+                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                         None
                     }
                 };
 
                 if let Some(name) = func_name {
-// Check various naming conventions:
+                    // Check various naming conventions:
                     // 1. CreateFoo() returns Foo
                     // 2. CreateFooBar() returns FooBar (check imported structs)
                     // 3. Foo() returns Foo (constructor named like struct)
@@ -382,16 +380,12 @@ self.local_struct_types.insert(name.clone(), struct_name);
             HirExprKind::Local { name, .. } => self.local_struct_types.get(name).cloned(),
             // Clone/Move pass through the inner type
             HirExprKind::Clone(inner) | HirExprKind::Move(inner) => {
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-
-                }
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                 self.get_expr_struct_type(inner)
             }
             // Try expression - unwrap the inner Result type
             HirExprKind::Try(inner) => {
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-
-                }
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                 // First, try to get struct type from the Try expression's type_id (the unwrapped ok type)
                 if let Some(type_id) = expr.type_id {
                     if let Some(info) = self.type_registry.get(type_id) {
@@ -419,8 +413,7 @@ self.local_struct_types.insert(name.clone(), struct_name);
             HirExprKind::MethodCall {
                 receiver, method, ..
             } => {
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                }
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                 // First check the expression's type_id directly
                 if let Some(type_id) = expr.type_id {
                     if let Some(info) = self.type_registry.get(type_id) {
@@ -441,14 +434,12 @@ self.local_struct_types.insert(name.clone(), struct_name);
                 // and method is a known self-returning pattern, return receiver name
                 // Uses centralized list from doo_core::constants::ffi_names
                 if let HirExprKind::Global { name: recv_name } = &receiver.kind {
-                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                    }
+                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                     // Check if receiver name is an imported struct
                     if self.imported_structs.contains(recv_name) {
                         // Check against centralized self-returning method patterns
                         if is_self_returning_method(method) {
-                            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                            }
+                            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                             return Some(recv_name.clone());
                         }
                     }
@@ -456,8 +447,7 @@ self.local_struct_types.insert(name.clone(), struct_name);
                 None
             }
             _ => {
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                }
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                 None
             }
         }
@@ -498,8 +488,7 @@ self.local_struct_types.insert(name.clone(), struct_name);
                 self.check_expr(object);
 
                 // Debug output
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                }
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
 
                 // Then check if this is a private field access on an imported struct
                 if Self::is_private_field(field) {
@@ -527,8 +516,7 @@ self.local_struct_types.insert(name.clone(), struct_name);
                     };
 
                     if let Some(struct_name) = struct_name {
-                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        }
+                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
 
                         // Only check imported structs
                         if self.imported_structs.contains(&struct_name) {
@@ -543,7 +531,6 @@ self.local_struct_types.insert(name.clone(), struct_name);
                                                 )
                                                 .is_ok()
                                                 {
-
                                                 }
                                                 self.errors.push(FieldVisibilityError {
                                                     field_name: field.clone(),

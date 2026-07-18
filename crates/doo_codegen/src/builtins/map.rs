@@ -116,7 +116,7 @@ impl MapBuiltins {
         let pair_ty = ctx
             .context
             .struct_type(&[key_llvm.into(), val_llvm.into()], false);
-        let pair_ptr_ty = pair_ty.ptr_type(AddressSpace::default());
+        let pair_ptr_ty = ctx.ptr_type();
         let map_base = ctx
             .builder
             .build_pointer_cast(map_ptr, pair_ptr_ty, "map_data_cast")
@@ -127,7 +127,7 @@ impl MapBuiltins {
             .builder
             .build_pointer_cast(
                 out_data,
-                key_llvm.ptr_type(AddressSpace::default()),
+                ctx.ptr_type(),
                 "keys_cast",
             )
             .ok()?;
@@ -198,7 +198,7 @@ impl MapBuiltins {
         let pair_ty = ctx
             .context
             .struct_type(&[key_llvm.into(), val_llvm.into()], false);
-        let pair_ptr_ty = pair_ty.ptr_type(AddressSpace::default());
+        let pair_ptr_ty = ctx.ptr_type();
         let map_base = ctx
             .builder
             .build_pointer_cast(map_ptr, pair_ptr_ty, "map_data_cast")
@@ -209,7 +209,7 @@ impl MapBuiltins {
             .builder
             .build_pointer_cast(
                 out_data,
-                val_llvm.ptr_type(AddressSpace::default()),
+                ctx.ptr_type(),
                 "values_cast",
             )
             .ok()?;
@@ -286,7 +286,7 @@ impl MapBuiltins {
         let pair_ty = ctx
             .context
             .struct_type(&[key_llvm.into(), val_llvm.into()], false);
-        let pair_ptr_ty = pair_ty.ptr_type(AddressSpace::default());
+        let pair_ptr_ty = ctx.ptr_type();
 
         let len_i32 = load_len_i32(ctx, map_ptr)?;
         let len_i64 = ctx

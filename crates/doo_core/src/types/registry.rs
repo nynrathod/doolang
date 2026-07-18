@@ -670,9 +670,8 @@ impl TypeRegistry {
                     // Full satisfaction checking is done in type_check.rs.
                     // For the registry, any type is tentatively compatible with an interface;
                     // the type checker validates actual method satisfaction.
+                    // This also covers Interface-to-Interface compatibility.
                     (_, TypeKind::Interface { .. }) => true,
-                    // An interface is compatible with itself
-                    (TypeKind::Interface { .. }, TypeKind::Interface { .. }) => actual == expected,
                     // TypeRef resolves to actual type (guard against self-referential TypeRefs)
                     (TypeKind::TypeRef { name }, _) => self
                         .lookup(name)

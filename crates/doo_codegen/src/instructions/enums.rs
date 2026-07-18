@@ -136,7 +136,7 @@ impl<'ctx> InstructionHandler<'ctx> for EnumHandler {
 
 /// Get the LLVM struct type for enums: { i32 tag, ptr payload }
 fn get_enum_type<'ctx>(ctx: &CodegenContext<'ctx>) -> inkwell::types::StructType<'ctx> {
-    let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+    let ptr_type = ctx.context.ptr_type(AddressSpace::default());
     ctx.context
         .struct_type(&[ctx.context.i32_type().into(), ptr_type.into()], false)
 }
@@ -157,7 +157,7 @@ fn emit_enum_create<'ctx>(
     payload: Option<&MirOperand>,
 ) -> Option<BasicValueEnum<'ctx>> {
     let enum_type = get_enum_type(ctx);
-    let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+    let ptr_type = ctx.context.ptr_type(AddressSpace::default());
 
     // Allocate enum struct
     let enum_alloca = ctx

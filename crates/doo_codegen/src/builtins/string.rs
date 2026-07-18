@@ -1119,7 +1119,7 @@ impl StringBuiltins {
         let after_bb = ctx.context.append_basic_block(current_fn, "count_after");
 
         let ptr_alloca = ctx.alloca_in_entry_block(
-            ctx.context.i8_type().ptr_type(AddressSpace::default()),
+            ctx.context.ptr_type(AddressSpace::default()),
             "ptr",
         )?;
         let count_alloca = ctx.alloca_in_entry_block(ctx.context.i32_type(), "count")?;
@@ -1130,7 +1130,7 @@ impl StringBuiltins {
         ctx.builder.build_unconditional_branch(loop_bb).ok()?;
 
         ctx.builder.position_at_end(loop_bb);
-        let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_type = ctx.context.ptr_type(AddressSpace::default());
         let curr_ptr = ctx
             .builder
             .build_load(ptr_type, ptr_alloca, "curr")
@@ -1212,7 +1212,6 @@ fn get_or_declare_strlen<'ctx>(ctx: &CodegenContext<'ctx>) -> inkwell::values::F
             let fn_type = ctx.context.i64_type().fn_type(
                 &[ctx
                     .context
-                    .i8_type()
                     .ptr_type(AddressSpace::default())
                     .into()],
                 false,
@@ -1225,7 +1224,7 @@ fn get_or_declare_strstr<'ctx>(ctx: &CodegenContext<'ctx>) -> inkwell::values::F
     ctx.module
         .get_function(ffi_names::STRSTR)
         .unwrap_or_else(|| {
-            let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+            let ptr_type = ctx.context.ptr_type(AddressSpace::default());
             let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
             ctx.module.add_function(ffi_names::STRSTR, fn_type, None)
         })
@@ -1237,7 +1236,7 @@ fn get_or_declare_strncmp<'ctx>(
     ctx.module
         .get_function(ffi_names::STRNCMP)
         .unwrap_or_else(|| {
-            let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+            let ptr_type = ctx.context.ptr_type(AddressSpace::default());
             let fn_type = ctx.context.i32_type().fn_type(
                 &[
                     ptr_type.into(),
@@ -1254,7 +1253,7 @@ fn get_or_declare_malloc<'ctx>(ctx: &CodegenContext<'ctx>) -> inkwell::values::F
     ctx.module
         .get_function(ffi_names::MALLOC)
         .unwrap_or_else(|| {
-            let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+            let ptr_type = ctx.context.ptr_type(AddressSpace::default());
             let fn_type = ptr_type.fn_type(&[ctx.context.i64_type().into()], false);
             ctx.module.add_function(ffi_names::MALLOC, fn_type, None)
         })
@@ -1264,7 +1263,7 @@ fn get_or_declare_memcpy<'ctx>(ctx: &CodegenContext<'ctx>) -> inkwell::values::F
     ctx.module
         .get_function(ffi_names::MEMCPY)
         .unwrap_or_else(|| {
-            let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+            let ptr_type = ctx.context.ptr_type(AddressSpace::default());
             let fn_type = ptr_type.fn_type(
                 &[
                     ptr_type.into(),
@@ -1283,7 +1282,7 @@ fn get_or_declare_string_split<'ctx>(
     ctx.module
         .get_function(ffi_names::DOO_STRING_SPLIT)
         .unwrap_or_else(|| {
-            let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+            let ptr_type = ctx.context.ptr_type(AddressSpace::default());
             // doo_string_split(str: *const c_char, delim: *const c_char) -> *mut u8
             let fn_type = ptr_type.fn_type(&[ptr_type.into(), ptr_type.into()], false);
             ctx.module
@@ -1297,7 +1296,7 @@ fn get_or_declare_string_replace_all<'ctx>(
     ctx.module
         .get_function(ffi_names::DOO_STRING_REPLACE_ALL)
         .unwrap_or_else(|| {
-            let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+            let ptr_type = ctx.context.ptr_type(AddressSpace::default());
             // doo_string_replace_all(haystack: *const c_char, needle: *const c_char, replacement: *const c_char) -> *const c_char
             let fn_type = ptr_type.fn_type(
                 &[ptr_type.into(), ptr_type.into(), ptr_type.into()],

@@ -381,7 +381,7 @@ pub(super) fn emit_print_tuple<'ctx>(
         .builder
         .build_pointer_cast(
             tuple_ptr,
-            tuple_llvm_type.ptr_type(AddressSpace::default()),
+            ctx.ptr_type(),
             "tuple_cast",
         )
         .ok();
@@ -488,7 +488,7 @@ pub(super) fn emit_print_enum<'ctx>(
     variants: &[(String, Option<doo_core::types::TypeId>)],
 ) {
     // Enum layout: { i32 tag (at offset 0), ptr payload (at offset 8) }
-    let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+    let ptr_type = ctx.context.ptr_type(AddressSpace::default());
     let i32_type = ctx.context.i32_type();
 
     // Get tag using raw byte offset (more reliable than struct GEP for mixed allocations)
@@ -496,7 +496,7 @@ pub(super) fn emit_print_enum<'ctx>(
         .builder
         .build_pointer_cast(
             enum_ptr,
-            i32_type.ptr_type(AddressSpace::default()),
+            ctx.ptr_type(),
             "tag_ptr",
         )
         .ok();
@@ -592,7 +592,7 @@ pub(super) fn emit_print_enum<'ctx>(
                     .builder
                     .build_pointer_cast(
                         ppf,
-                        ptr_type.ptr_type(AddressSpace::default()),
+                        ctx.ptr_type(),
                         "ppf_typed",
                     )
                     .ok();
@@ -819,7 +819,7 @@ fn emit_print_array_contents<'ctx>(
     };
 
     let elem_llvm = ctx.get_llvm_type(elem_type);
-    let elem_ptr_ty = elem_llvm.ptr_type(AddressSpace::default());
+    let elem_ptr_ty = ctx.ptr_type();
     let base = ctx
         .builder
         .build_pointer_cast(array_ptr, elem_ptr_ty, "arr_data_cast")
@@ -1024,7 +1024,7 @@ fn emit_print_map_contents<'ctx>(
     let pair_ty = ctx
         .context
         .struct_type(&[key_llvm.into(), val_llvm.into()], false);
-    let pair_ptr_ty = pair_ty.ptr_type(AddressSpace::default());
+    let pair_ptr_ty = ctx.ptr_type();
     let base = ctx
         .builder
         .build_pointer_cast(map_ptr, pair_ptr_ty, "map_data_cast")

@@ -33,13 +33,13 @@ impl<'ctx> TypeMapper<'ctx> {
             return self.context.i8_type().into();
         }
         if type_id == builtin::STR {
-            return self.context.i8_type().ptr_type(AddressSpace::default()).into();
+            return self.context.ptr_type(AddressSpace::default()).into();
         }
         if type_id == builtin::VOID {
             return self.context.i8_type().into();
         }
         if type_id == builtin::ANY {
-            return self.context.i8_type().ptr_type(AddressSpace::default()).into();
+            return self.context.ptr_type(AddressSpace::default()).into();
         }
         
         // Default - i64 for unknown types
@@ -53,7 +53,7 @@ impl<'ctx> TypeMapper<'ctx> {
             &[
                 self.context.i64_type().into(),  // len
                 self.context.i64_type().into(),  // cap
-                self.context.i8_type().ptr_type(AddressSpace::default()).into(),  // data
+                self.context.ptr_type(AddressSpace::default()).into(),  // data
             ],
             false,
         )
@@ -65,8 +65,8 @@ impl<'ctx> TypeMapper<'ctx> {
         self.context.struct_type(
             &[
                 self.context.i64_type().into(),  // len
-                self.context.i8_type().ptr_type(AddressSpace::default()).into(),  // keys
-                self.context.i8_type().ptr_type(AddressSpace::default()).into(),  // values
+                self.context.ptr_type(AddressSpace::default()).into(),  // keys
+                self.context.ptr_type(AddressSpace::default()).into(),  // values
             ],
             false,
         )
@@ -78,7 +78,7 @@ impl<'ctx> TypeMapper<'ctx> {
         self.context.struct_type(
             &[
                 self.context.i8_type().into(),  // is_ok (i8 for ABI)
-                self.context.i8_type().ptr_type(AddressSpace::default()).into(),  // value
+                self.context.ptr_type(AddressSpace::default()).into(),  // value
             ],
             false,
         )
@@ -106,8 +106,8 @@ impl<'ctx> TypeMapper<'ctx> {
         // Closure: { ptr func, ptr env }
         self.context.struct_type(
             &[
-                self.context.i8_type().ptr_type(AddressSpace::default()).into(),  // func
-                self.context.i8_type().ptr_type(AddressSpace::default()).into(),  // env
+                self.context.ptr_type(AddressSpace::default()).into(),  // func
+                self.context.ptr_type(AddressSpace::default()).into(),  // env
             ],
             false,
         )

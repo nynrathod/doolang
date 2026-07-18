@@ -6,7 +6,6 @@ use crate::context::CodegenContext;
 use crate::instructions::InstructionDispatcher;
 use crate::utils::operand_to_value;
 use doo_core::constants::ffi_names::{self, derive_ffi_symbol};
-use doo_core::doo_debug;
 use doo_core::types::{builtin, TypeKind, TypeRegistry};
 use doo_mir::sym::resolve;
 use doo_mir::{MirConst, MirFunction, MirGlobal, MirOperand, MirProgram, MirTerminator};
@@ -404,8 +403,6 @@ impl<'ctx> CodegenBuilder<'ctx> {
         let dispatcher = InstructionDispatcher::new();
 
         // Pre-pass: declare all struct types from the type registry
-        // This ensures struct types are available for FieldGet/FieldSet in methods
-        // that receive structs as parameters (like 'self')
         self.declare_struct_types(&mut ctx);
 
         // Populate struct field decorators from MIR structs
@@ -473,7 +470,14 @@ impl<'ctx> CodegenBuilder<'ctx> {
             self.generate_function(&mut ctx, func, &dispatcher);
         }
 
-        ctx.module
+        // Builder must not be dropped — its Drop calls LLVMDisposeBuilder which
+        // can crash on Windows due to CRT/allocator mismatch between the Rust
+        // binary and LLVM-C.dll (LLVM 22+). The Module is safely returned.
+        let CodegenContext {
+            module, builder, ..
+        } = ctx;
+        std::mem::forget(builder);
+        module
     }
 
     /// Emit a single LLVM global from a `MirGlobal`.

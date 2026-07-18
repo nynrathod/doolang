@@ -2,10 +2,7 @@
 
 use super::Lower;
 use crate::types::*;
-use doo_core::{
-    doo_debug,
-    types::{builtin, TypeId, TypeKind, TypeRegistry},
-};
+use doo_core::types::{builtin, TypeId, TypeKind, TypeRegistry};
 use doo_frontend::ast::{self, ElseBranch, ExprKind, IncDecOp, PatternKind, Stmt, StmtKind};
 
 impl Lower {

@@ -14,7 +14,6 @@ mod locals;
 mod metadata;
 mod type_cache;
 
-use doo_core::doo_debug;
 use doo_core::types::{TypeId, TypeKind, TypeRegistry};
 use inkwell::attributes::AttributeLoc;
 use inkwell::builder::Builder;
@@ -262,27 +261,23 @@ impl<'ctx> CodegenContext<'ctx> {
         let module = context.create_module(module_name);
         let builder = context.create_builder();
 
-        // Set target triple and data layout on the module at creation time.
-        // This ensures all struct layout computations (GEPs, struct_gep, size_of)
-        // use the correct target-specific alignment from the start.
-        // Without this, LLVM defaults to i64 ABI-align=4, but the backend uses
-        // the target's i64 ABI-align=8, causing mismatched offsets in mixed-size
-        // structs like {i8, i64} (Bool:Int map entries).
+        // Initialize native target support (required before any target queries).
         let _ = Target::initialize_native(&InitializationConfig::default());
+
+        // Set the target triple on the module.
         let triple = TargetMachine::get_default_triple();
         module.set_triple(&triple);
-        if let Ok(target) = Target::from_triple(&triple) {
-            if let Some(tm) = target.create_target_machine(
-                &triple,
-                "generic",
-                "",
-                inkwell::OptimizationLevel::None,
-                RelocMode::Default,
-                CodeModel::Default,
-            ) {
-                module.set_data_layout(&tm.get_target_data().get_data_layout());
-            }
-        }
+
+        // Set the data layout on the module (does NOT return a DataLayout —
+        // the module copies the layout string internally, so we don't need to
+        // keep any LLVM-allocated string alive).
+        Self::set_data_layout_on_module(&triple, &module);
+
+        // Leak the TargetTriple to avoid LLVM 22's LLVMDisposeMessage crash on Windows.
+        // The triple string is allocated by LLVM's internal allocator; dropping it
+        // via LLVMDisposeMessage can cause a silent exit due to CRT mismatch.
+        // Consistent with the mem::forget pattern for TargetData/TargetMachine below.
+        std::mem::forget(triple);
 
         Self {
             context,
@@ -321,13 +316,47 @@ impl<'ctx> CodegenContext<'ctx> {
         }
     }
 
+    /// Set the data layout on the module by temporarily creating a TargetMachine
+    /// and extracting its layout string via TargetData. The TargetMachine and
+    /// TargetData are leaked (mem::forget) to avoid LLVM 22's disposal crash on
+    /// Windows. The module copies the layout string internally, so we do NOT
+    /// return or store any DataLayout — avoiding LLVMDisposeMessage crashes.
+    fn set_data_layout_on_module(triple: &inkwell::targets::TargetTriple, module: &Module<'ctx>) {
+        let target = match Target::from_triple(triple) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let tm = match target.create_target_machine(
+            triple,
+            "generic",
+            "",
+            inkwell::OptimizationLevel::None,
+            RelocMode::Default,
+            CodeModel::Default,
+        ) {
+            Some(tm) => tm,
+            None => return,
+        };
+        let td = tm.get_target_data();
+        let dl = td.get_data_layout();
+        module.set_data_layout(&dl);
+        // Leak ALL LLVM resources to avoid LLVM 22 disposal crashes on Windows.
+        // TargetData, TargetMachine, AND DataLayout all internally hold LLVM
+        // resources whose Drop impls call LLVMDispose* functions that can cause
+        // silent exit/crash due to CRT/allocator mismatch on Windows.
+        // The module copies the layout string via set_data_layout, so dl does
+        // NOT need to outlive this scope.
+        std::mem::forget(td);
+        std::mem::forget(tm);
+        std::mem::forget(dl);
+    }
+
     pub fn get_type_kind(&self, type_id: TypeId) -> Option<TypeKind> {
         let result = self
             .type_registry
             .get(type_id)
             .map(|info| info.kind.clone());
-        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG_TYPES).is_ok() {
-        }
+        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG_TYPES).is_ok() {}
         result
     }
 
@@ -677,9 +706,10 @@ impl<'ctx> CodegenContext<'ctx> {
         self.context.f64_type()
     }
 
-    /// Get the pointer type.
+    /// Get the opaque pointer type (LLVM 15+).
+    /// All pointer types are the same in opaque pointer mode.
     pub fn ptr_type(&self) -> inkwell::types::PointerType<'ctx> {
-        self.context.i8_type().ptr_type(AddressSpace::default())
+        self.context.ptr_type(AddressSpace::default())
     }
 
     /// Get the current function from the builder's insert block.

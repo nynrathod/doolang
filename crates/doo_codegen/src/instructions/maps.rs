@@ -51,7 +51,7 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                 let len_i32 = ctx.i32_type().const_int(entries.len() as u64, false);
                 let data_ptr = alloc_with_header(ctx, len_i32, pair_ty, "map")?;
 
-                let pair_ptr_ty = pair_ty.ptr_type(AddressSpace::default());
+                let pair_ptr_ty = ctx.ptr_type();
                 let base = ctx
                     .builder
                     .build_pointer_cast(data_ptr, pair_ptr_ty, "map_data_cast")
@@ -102,7 +102,7 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                 let pair_ty = ctx
                     .context
                     .struct_type(&[key_llvm.into(), val_llvm.into()], false);
-                let pair_ptr_ty = pair_ty.ptr_type(AddressSpace::default());
+                let pair_ptr_ty = ctx.ptr_type();
                 let base = ctx
                     .builder
                     .build_pointer_cast(map_ptr, pair_ptr_ty, "map_data_cast")
@@ -225,7 +225,7 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                 let pair_ty = ctx
                     .context
                     .struct_type(&[key_llvm.into(), val_llvm.into()], false);
-                let pair_ptr_ty = pair_ty.ptr_type(AddressSpace::default());
+                let pair_ptr_ty = ctx.ptr_type();
                 let base = ctx
                     .builder
                     .build_pointer_cast(map_ptr, pair_ptr_ty, "map_data_cast")
@@ -340,7 +340,7 @@ impl<'ctx> InstructionHandler<'ctx> for MapHandler {
                 let pair_ty = ctx
                     .context
                     .struct_type(&[key_llvm.into(), val_llvm.into()], false);
-                let pair_ptr_ty = pair_ty.ptr_type(AddressSpace::default());
+                let pair_ptr_ty = ctx.ptr_type();
                 let old_base = ctx
                     .builder
                     .build_pointer_cast(old_data, pair_ptr_ty, "map_data_cast")

@@ -25,7 +25,7 @@ impl MemoryManager {
     /// Declare memory functions in the module.
     pub fn declare_runtime_functions<'ctx>(&self, context: &'ctx Context, module: &Module<'ctx>) {
         // Use i8.ptr_type() for pointer types (modern inkwell API)
-        let ptr_type = context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_type = context.ptr_type(AddressSpace::default());
         let i64_type = context.i64_type();
         let void_type = context.void_type();
         

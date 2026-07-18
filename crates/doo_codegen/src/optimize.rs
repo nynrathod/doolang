@@ -18,7 +18,6 @@
 //! - `default<Os>` - Size optimization (smaller binary)
 //! - `default<Oz>` - Min size optimization (smallest binary)
 
-use doo_core::doo_debug;
 use inkwell::module::Module;
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine};
@@ -209,7 +208,12 @@ pub fn optimize_module_with_config<'ctx>(module: &Module<'ctx>, config: &Optimiz
     let target_triple = TargetMachine::get_default_triple();
     let target = match Target::from_triple(&target_triple) {
         Ok(t) => t,
-        Err(e) => {
+        Err(_e) => {
+            // Leak the triple's LLVM string to avoid LLVM 22 disposal crash.
+            // _e (LLVMString) also needs leak, but it's the error message
+            // which would also crash on drop. Leak both.
+            std::mem::forget(_e);
+            std::mem::forget(target_triple);
             return;
         }
     };
@@ -231,23 +235,40 @@ pub fn optimize_module_with_config<'ctx>(module: &Module<'ctx>, config: &Optimiz
     ) {
         Some(tm) => tm,
         None => {
+            // Leak LLVM strings on early return to avoid LLVM 22 disposal crash.
+            std::mem::forget(target_triple);
+            std::mem::forget(cpu);
+            std::mem::forget(features);
             return;
         }
     };
 
     // Set module target triple and data layout
     // CRITICAL: The data layout MUST be set before optimization.
-    // Without it, LLVM uses a default layout where i64 has 4-byte ABI alignment,
-    // but the backend uses the target's 8-byte alignment. This causes struct field
-    // offset mismatches for types like {i8, i64} (Bool:Int maps), where the
-    // optimizer resolves GEPs at offset 4 but the backend reads at offset 8.
     module.set_triple(&target_triple);
-    module.set_data_layout(&target_machine.get_target_data().get_data_layout());
-
-    // Verify module before optimization (catch errors early)
-    if let Err(e) = module.verify() {
-        // Continue anyway - optimization might still work
+    {
+        let td = target_machine.get_target_data();
+        let dl = td.get_data_layout();
+        module.set_data_layout(&dl);
+        // Leak TargetData AND DataLayout to avoid LLVM 22 disposal crash.
+        // The module copies the layout string via set_data_layout, so dl's
+        // lifetime does NOT need to outlive the module. Both td and dl
+        // internally hold LLVM resources that crash on disposal via LLVM 22.
+        std::mem::forget(td);
+        std::mem::forget(dl);
     }
+
+    // Leak LLVM-allocated strings (TargetTriple, cpu, features) to avoid
+    // LLVM 22's LLVMDisposeMessage crash on Windows. These strings are allocated
+    // by LLVM's internal allocator and disposing them via the Rust-linked CRT
+    // can cause silent exit/crash. Consistent with mem::forget pattern used
+    // for TargetData and TargetMachine in this function.
+    std::mem::forget(target_triple);
+    std::mem::forget(cpu);
+    std::mem::forget(features);
+
+    // Skip module.verify() — crashes with LLVM 22 on Windows (CRT mismatch).
+    // The module is validated indirectly by successful compilation.
 
     // Create pass builder options
     let pass_options = PassBuilderOptions::create();
@@ -265,7 +286,13 @@ pub fn optimize_module_with_config<'ctx>(module: &Module<'ctx>, config: &Optimiz
     let passes = config.level.to_pass_pipeline();
 
     if let Err(e) = module.run_passes(passes, &target_machine, pass_options) {
+        // Leak the LLVM error string to avoid LLVM 22 disposal crash on Windows.
+        std::mem::forget(e);
     }
+
+    // Leak TargetMachine to avoid LLVM 22 disposal crash on Windows.
+    // (PassBuilderOptions is consumed by run_passes and dropped internally.)
+    std::mem::forget(target_machine);
 }
 
 /// Run default O3 optimization.

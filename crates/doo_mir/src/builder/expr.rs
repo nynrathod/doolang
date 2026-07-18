@@ -3,7 +3,6 @@ use crate::{BinaryOp, MirConst, MirInstrKind, MirOperand, MirTerminator};
 use crate::sym::{Sym, sym, resolve};
 use doo_core::{
     constants::ffi_names,
-    doo_debug,
     types::{builtin, TypeId as CoreTypeId, TypeKind},
 };
 use doo_hir::{HirBinOp, HirExpr, HirExprKind, HirMatchPattern};

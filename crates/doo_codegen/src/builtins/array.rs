@@ -486,7 +486,7 @@ impl ArrayBuiltins {
             .builder
             .build_pointer_cast(
                 new_data,
-                elem_llvm.ptr_type(AddressSpace::default()),
+                ctx.ptr_type(),
                 "arr_cast",
             )
             .ok()?;
@@ -539,7 +539,7 @@ impl ArrayBuiltins {
             .builder
             .build_pointer_cast(
                 arr_ptr,
-                elem_llvm.ptr_type(AddressSpace::default()),
+                ctx.ptr_type(),
                 "arr_cast",
             )
             .ok()?;
@@ -684,7 +684,7 @@ impl ArrayBuiltins {
             .builder
             .build_pointer_cast(
                 arr_ptr,
-                elem_llvm.ptr_type(AddressSpace::default()),
+                ctx.ptr_type(),
                 "in_cast",
             )
             .ok()?;
@@ -692,7 +692,7 @@ impl ArrayBuiltins {
             .builder
             .build_pointer_cast(
                 out_data,
-                elem_llvm.ptr_type(AddressSpace::default()),
+                ctx.ptr_type(),
                 "out_cast",
             )
             .ok()?;
@@ -828,7 +828,7 @@ impl ArrayBuiltins {
         let res_alloca = ctx
             .builder
             .build_alloca(
-                ctx.context.i8_type().ptr_type(AddressSpace::default()),
+                ctx.context.ptr_type(AddressSpace::default()),
                 "join_res",
             )
             .ok()?;
@@ -919,7 +919,7 @@ impl ArrayBuiltins {
                 .builder
                 .build_pointer_cast(
                     arr_ptr,
-                    elem_llvm.ptr_type(AddressSpace::default()),
+                    ctx.ptr_type(),
                     "arr_cast",
                 )
                 .ok()?;
@@ -989,7 +989,7 @@ impl ArrayBuiltins {
         let buf_end_alloca = ctx
             .builder
             .build_alloca(
-                ctx.context.i8_type().ptr_type(AddressSpace::default()),
+                ctx.context.ptr_type(AddressSpace::default()),
                 "buf_end",
             )
             .ok()?;
@@ -998,7 +998,7 @@ impl ArrayBuiltins {
         let cursor_alloca = ctx
             .builder
             .build_alloca(
-                ctx.context.i8_type().ptr_type(AddressSpace::default()),
+                ctx.context.ptr_type(AddressSpace::default()),
                 "cursor",
             )
             .ok()?;
@@ -1037,7 +1037,7 @@ impl ArrayBuiltins {
         let cursor = ctx
             .builder
             .build_load(
-                ctx.context.i8_type().ptr_type(AddressSpace::default()),
+                ctx.context.ptr_type(AddressSpace::default()),
                 cursor_alloca,
                 "cursor",
             )
@@ -1054,7 +1054,7 @@ impl ArrayBuiltins {
                 .builder
                 .build_pointer_cast(
                     arr_ptr,
-                    elem_llvm.ptr_type(AddressSpace::default()),
+                    ctx.ptr_type(),
                     "arr_cast",
                 )
                 .ok()?;
@@ -1113,7 +1113,7 @@ impl ArrayBuiltins {
                 .builder
                 .build_pointer_cast(
                     arr_ptr,
-                    elem_llvm.ptr_type(AddressSpace::default()),
+                    ctx.ptr_type(),
                     "arr_cast",
                 )
                 .ok()?;
@@ -1125,7 +1125,7 @@ impl ArrayBuiltins {
             let buf_end = ctx
                 .builder
                 .build_load(
-                    ctx.context.i8_type().ptr_type(AddressSpace::default()),
+                    ctx.context.ptr_type(AddressSpace::default()),
                     buf_end_alloca,
                     "buf_end",
                 )
@@ -1178,7 +1178,7 @@ impl ArrayBuiltins {
             let cursor_now = ctx
                 .builder
                 .build_load(
-                    ctx.context.i8_type().ptr_type(AddressSpace::default()),
+                    ctx.context.ptr_type(AddressSpace::default()),
                     cursor_alloca,
                     "cursor",
                 )
@@ -1206,7 +1206,7 @@ impl ArrayBuiltins {
         let cursor = ctx
             .builder
             .build_load(
-                ctx.context.i8_type().ptr_type(AddressSpace::default()),
+                ctx.context.ptr_type(AddressSpace::default()),
                 cursor_alloca,
                 "cursor",
             )
@@ -1232,7 +1232,7 @@ impl ArrayBuiltins {
         let cursor = ctx
             .builder
             .build_load(
-                ctx.context.i8_type().ptr_type(AddressSpace::default()),
+                ctx.context.ptr_type(AddressSpace::default()),
                 cursor_alloca,
                 "cursor",
             )
@@ -1248,7 +1248,7 @@ impl ArrayBuiltins {
         let res = ctx
             .builder
             .build_load(
-                ctx.context.i8_type().ptr_type(AddressSpace::default()),
+                ctx.context.ptr_type(AddressSpace::default()),
                 res_alloca,
                 "join_res",
             )
@@ -1692,7 +1692,7 @@ fn get_or_declare_malloc<'ctx>(ctx: &CodegenContext<'ctx>) -> FunctionValue<'ctx
     ctx.module
         .get_function(ffi_names::MALLOC)
         .unwrap_or_else(|| {
-            let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+            let ptr_type = ctx.context.ptr_type(AddressSpace::default());
             let fn_type = ptr_type.fn_type(&[ctx.context.i64_type().into()], false);
             ctx.module.add_function(ffi_names::MALLOC, fn_type, None)
         })
@@ -1702,7 +1702,7 @@ fn get_or_declare_strlen<'ctx>(ctx: &CodegenContext<'ctx>) -> FunctionValue<'ctx
     ctx.module
         .get_function(ffi_names::STRLEN)
         .unwrap_or_else(|| {
-            let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+            let ptr_type = ctx.context.ptr_type(AddressSpace::default());
             let fn_type = ctx.context.i64_type().fn_type(&[ptr_type.into()], false);
             ctx.module.add_function(ffi_names::STRLEN, fn_type, None)
         })
@@ -1712,7 +1712,7 @@ fn get_or_declare_memcpy<'ctx>(ctx: &CodegenContext<'ctx>) -> FunctionValue<'ctx
     ctx.module
         .get_function(ffi_names::MEMCPY)
         .unwrap_or_else(|| {
-            let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+            let ptr_type = ctx.context.ptr_type(AddressSpace::default());
             let fn_type = ptr_type.fn_type(
                 &[
                     ptr_type.into(),
@@ -1729,7 +1729,7 @@ fn get_or_declare_snprintf<'ctx>(ctx: &CodegenContext<'ctx>) -> FunctionValue<'c
     ctx.module
         .get_function(ffi_names::SNPRINTF)
         .unwrap_or_else(|| {
-            let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+            let ptr_type = ctx.context.ptr_type(AddressSpace::default());
             let i64_type = ctx.context.i64_type();
             // snprintf(char *str, size_t size, const char *format, ...)
             let fn_type = ctx
@@ -1747,7 +1747,7 @@ fn call_closure<'ctx>(
     args: &[BasicValueEnum<'ctx>],
     return_type: inkwell::types::BasicTypeEnum<'ctx>,
 ) -> Option<BasicValueEnum<'ctx>> {
-    let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+    let ptr_type = ctx.context.ptr_type(AddressSpace::default());
     let closure_type = ctx
         .context
         .struct_type(&[ptr_type.into(), ptr_type.into()], false);
@@ -1782,7 +1782,7 @@ fn call_closure<'ctx>(
         .builder
         .build_pointer_cast(
             fn_ptr,
-            fn_type.ptr_type(AddressSpace::default()),
+            ctx.ptr_type(),
             "fn_typed",
         )
         .ok()?;

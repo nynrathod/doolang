@@ -2,12 +2,9 @@
 
 use super::Lower;
 use crate::types::*;
-use doo_core::{
-    doo_debug,
-    types::{builtin, TypeId, TypeKind, TypeRegistry},
-};
+use doo_core::types::{builtin, TypeId, TypeKind, TypeRegistry};
 use doo_frontend::ast::{
-    self, Decorator, EnumDecl, ExprKind, FunctionDecl, ImportDecl, InterfaceDecl, Item, StaticDecl,
+    self, Decorator, EnumDecl, FunctionDecl, ImportDecl, InterfaceDecl, Item, StaticDecl,
     StructDecl,
 };
 

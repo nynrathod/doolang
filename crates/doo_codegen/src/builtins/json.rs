@@ -1,7 +1,6 @@
 use crate::context::CodegenContext;
 use crate::layout;
 use doo_core::constants::ffi_names;
-use doo_core::doo_debug;
 use doo_core::types::{TypeId, TypeKind};
 use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
@@ -102,7 +101,7 @@ impl JsonBuiltins {
         val: BasicValueEnum<'ctx>,
         target_type: Option<TypeId>,
     ) -> Option<BasicValueEnum<'ctx>> {
-        let i8_ptr = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let i8_ptr = ctx.context.ptr_type(AddressSpace::default());
 
         // Ensure val is a pointer (handle case where it arrives as i64 due to type inference gaps)
         let val = if val.is_int_value() {
@@ -294,7 +293,7 @@ impl JsonBuiltins {
         fields: &[(String, TypeId)],
         field_json_names: &std::collections::HashMap<String, String>,
     ) -> Option<BasicValueEnum<'ctx>> {
-        let i8_ptr = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let i8_ptr = ctx.context.ptr_type(AddressSpace::default());
         let i64_type = ctx.i64_type();
         let ptr_type = ctx.ptr_type();
 
@@ -830,7 +829,7 @@ impl JsonBuiltins {
         _name: &str,
         variants: &[(String, Option<TypeId>)],
     ) -> Option<BasicValueEnum<'ctx>> {
-        let i8_ptr = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let i8_ptr = ctx.context.ptr_type(AddressSpace::default());
         let i32_type = ctx.context.i32_type();
         let i64_type = ctx.i64_type();
         let ptr_type = ctx.ptr_type();
@@ -1384,7 +1383,7 @@ impl JsonBuiltins {
                     .builder
                     .build_pointer_cast(
                         tuple_ptr,
-                        tuple_llvm_type.ptr_type(AddressSpace::default()),
+                        ctx.ptr_type(),
                         "tuple_cast",
                     )
                     .ok()?;
@@ -1436,7 +1435,7 @@ impl JsonBuiltins {
                 } else if val.is_pointer_value() {
                     // Enum passed as pointer
                     let enum_ptr = val.into_pointer_value();
-                    let i32_ptr_ty = ctx.context.i32_type().ptr_type(AddressSpace::default());
+                    let i32_ptr_ty = ctx.context.ptr_type(AddressSpace::default());
                     let tag_ptr = ctx
                         .builder
                         .build_pointer_cast(enum_ptr, i32_ptr_ty, "tag_ptr")
@@ -1463,7 +1462,7 @@ impl JsonBuiltins {
                         .builder
                         .build_pointer_cast(
                             payload_field_ptr,
-                            ptr_ty.ptr_type(AddressSpace::default()),
+                            ctx.ptr_type(),
                             "pptr",
                         )
                         .ok()?;
@@ -1875,7 +1874,6 @@ impl JsonBuiltins {
         }
         let ft = ctx
             .context
-            .i8_type()
             .ptr_type(AddressSpace::default())
             .fn_type(&[], false);
         ctx.module
@@ -1888,7 +1886,7 @@ impl JsonBuiltins {
         {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let i64_ty = ctx.context.i64_type();
         let ft = ptr_ty.fn_type(&[i64_ty.into()], false);
         ctx.module
@@ -1898,7 +1896,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITER_FREE) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let ft = ctx.context.void_type().fn_type(&[ptr_ty.into()], false);
         ctx.module
             .add_function(ffi_names::DOO_JSON_WRITER_FREE, ft, None)
@@ -1907,7 +1905,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITER_FINISH) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         // Returns DooString* (treat as i8* for now)
         let ft = ptr_ty.fn_type(&[ptr_ty.into()], false);
         ctx.module
@@ -1919,7 +1917,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITE_INT) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let ft = ctx
             .context
             .void_type()
@@ -1931,7 +1929,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITE_FLOAT) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let ft = ctx
             .context
             .void_type()
@@ -1943,7 +1941,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITE_BOOL) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let ft = ctx
             .context
             .void_type()
@@ -1955,7 +1953,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITE_STRING) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let ft = ctx
             .context
             .void_type()
@@ -1967,7 +1965,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITE_KEY) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let ft = ctx
             .context
             .void_type()
@@ -1981,7 +1979,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITE_KEY_INT) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let i64_ty = ctx.i64_type();
         let ft = ctx
             .context
@@ -1996,7 +1994,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITE_KEY_FLOAT) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let f64_ty = ctx.f64_type();
         let ft = ctx
             .context
@@ -2011,7 +2009,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITE_KEY_BOOL) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let bool_ty = ctx.context.i8_type(); // Bool is i8 for C ABI compatibility
         let ft = ctx
             .context
@@ -2025,7 +2023,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITE_NULL) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let ft = ctx.context.void_type().fn_type(&[ptr_ty.into()], false);
         ctx.module
             .add_function(ffi_names::DOO_JSON_WRITE_NULL, ft, None)
@@ -2039,7 +2037,7 @@ impl JsonBuiltins {
         {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let ft = ctx.context.void_type().fn_type(&[ptr_ty.into()], false);
         ctx.module
             .add_function(ffi_names::DOO_JSON_WRITE_START_OBJECT, ft, None)
@@ -2051,7 +2049,7 @@ impl JsonBuiltins {
         {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let ft = ctx.context.void_type().fn_type(&[ptr_ty.into()], false);
         ctx.module
             .add_function(ffi_names::DOO_JSON_WRITE_END_OBJECT, ft, None)
@@ -2063,7 +2061,7 @@ impl JsonBuiltins {
         {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let ft = ctx.context.void_type().fn_type(&[ptr_ty.into()], false);
         ctx.module
             .add_function(ffi_names::DOO_JSON_WRITE_START_ARRAY, ft, None)
@@ -2072,7 +2070,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITE_END_ARRAY) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let ft = ctx.context.void_type().fn_type(&[ptr_ty.into()], false);
         ctx.module
             .add_function(ffi_names::DOO_JSON_WRITE_END_ARRAY, ft, None)
@@ -2081,7 +2079,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITE_COMMA) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let ft = ctx.context.void_type().fn_type(&[ptr_ty.into()], false);
         ctx.module
             .add_function(ffi_names::DOO_JSON_WRITE_COMMA, ft, None)
@@ -2090,7 +2088,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_WRITE_COLON) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let ft = ctx.context.void_type().fn_type(&[ptr_ty.into()], false);
         ctx.module
             .add_function(ffi_names::DOO_JSON_WRITE_COLON, ft, None)
@@ -2102,7 +2100,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_PARSE_OBJECT) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let ft = ptr_ty.fn_type(&[ptr_ty.into()], false);
         ctx.module
             .add_function(ffi_names::DOO_JSON_PARSE_OBJECT, ft, None)
@@ -2112,7 +2110,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_OBJECT_GET_INT) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let i64_ty = ctx.context.i64_type();
         let ft = i64_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
         ctx.module
@@ -2128,7 +2126,7 @@ impl JsonBuiltins {
         {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let f64_ty = ctx.context.f64_type();
         let ft = f64_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
         ctx.module
@@ -2139,7 +2137,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_OBJECT_GET_BOOL) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let i32_ty = ctx.context.i32_type();
         let ft = i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
         ctx.module
@@ -2150,7 +2148,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_OBJECT_GET_STR) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let ft = ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
         ctx.module
             .add_function(ffi_names::DOO_JSON_OBJECT_GET_STR, ft, None)
@@ -2165,7 +2163,7 @@ impl JsonBuiltins {
         {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let ft = ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
         ctx.module
             .add_function(ffi_names::DOO_JSON_OBJECT_GET_OPTIONAL_STR, ft, None)
@@ -2175,7 +2173,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_OBJECT_GET_JSON) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let ft = ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
         ctx.module
             .add_function(ffi_names::DOO_JSON_OBJECT_GET_JSON, ft, None)
@@ -2185,7 +2183,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_OBJECT_FREE) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let ft = ctx.context.void_type().fn_type(&[ptr_ty.into()], false);
         ctx.module
             .add_function(ffi_names::DOO_JSON_OBJECT_FREE, ft, None)
@@ -2197,7 +2195,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_ARRAY_COUNT) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let i64_ty = ctx.context.i64_type();
         let ft = i64_ty.fn_type(&[ptr_ty.into()], false);
         ctx.module
@@ -2213,7 +2211,7 @@ impl JsonBuiltins {
         {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let i64_ty = ctx.context.i64_type();
         // (json_str: ptr, index: i64) -> ptr
         let ft = ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false);
@@ -2226,7 +2224,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::DOO_JSON_GET_FIELD) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let ft = ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
         ctx.module
             .add_function(ffi_names::DOO_JSON_GET_FIELD, ft, None)
@@ -2241,7 +2239,7 @@ impl JsonBuiltins {
         {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let ft = ptr_ty.fn_type(&[ptr_ty.into()], false);
         ctx.module
             .add_function(ffi_names::DOO_JSON_GET_VARIANT_NAME, ft, None)
@@ -2256,7 +2254,7 @@ impl JsonBuiltins {
         {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let ft = ptr_ty.fn_type(&[ptr_ty.into()], false);
         ctx.module
             .add_function(ffi_names::DOO_JSON_GET_VARIANT_PAYLOAD, ft, None)
@@ -2266,7 +2264,7 @@ impl JsonBuiltins {
         if let Some(f) = ctx.module.get_function(ffi_names::STRCMP) {
             return f;
         }
-        let ptr_ty = ctx.context.i8_type().ptr_type(AddressSpace::default());
+        let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
         let i32_ty = ctx.context.i32_type();
         let ft = i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
         ctx.module.add_function(ffi_names::STRCMP, ft, None)

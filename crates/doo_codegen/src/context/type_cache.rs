@@ -40,7 +40,6 @@ impl<'ctx> CodegenContext<'ctx> {
         if type_id == builtin::STR {
             return self
                 .context
-                .i8_type()
                 .ptr_type(AddressSpace::default())
                 .into();
         }
@@ -50,7 +49,6 @@ impl<'ctx> CodegenContext<'ctx> {
         if type_id == builtin::ANY {
             return self
                 .context
-                .i8_type()
                 .ptr_type(AddressSpace::default())
                 .into();
         }
@@ -64,12 +62,10 @@ impl<'ctx> CodegenContext<'ctx> {
                 TypeKind::Float => self.context.f64_type().into(),
                 TypeKind::Str => self
                     .context
-                    .i8_type()
                     .ptr_type(AddressSpace::default())
                     .into(),
                 TypeKind::Any | TypeKind::Error => self
                     .context
-                    .i8_type()
                     .ptr_type(AddressSpace::default())
                     .into(),
 
@@ -83,20 +79,19 @@ impl<'ctx> CodegenContext<'ctx> {
                 | TypeKind::TypeRef { .. }
                 | TypeKind::TypeParam { .. } => self
                     .context
-                    .i8_type()
                     .ptr_type(AddressSpace::default())
                     .into(),
 
                 TypeKind::Enum { .. } => {
                     // Enum layout: { i32 tag, ptr payload }
-                    let ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
+                    let ptr_type = self.context.ptr_type(AddressSpace::default());
                     self.context
                         .struct_type(&[self.context.i32_type().into(), ptr_type.into()], false)
                         .into()
                 }
                 TypeKind::Interface { .. } => {
                     // Interface layout: fat pointer { data_ptr, vtable_ptr }
-                    let ptr_type = self.context.i8_type().ptr_type(AddressSpace::default());
+                    let ptr_type = self.context.ptr_type(AddressSpace::default());
                     self.context
                         .struct_type(&[ptr_type.into(), ptr_type.into()], false)
                         .into()
@@ -105,7 +100,6 @@ impl<'ctx> CodegenContext<'ctx> {
         } else {
             // Unknown type: treat as opaque pointer
             self.context
-                .i8_type()
                 .ptr_type(AddressSpace::default())
                 .into()
         }

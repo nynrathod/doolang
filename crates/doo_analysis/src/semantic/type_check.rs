@@ -13,8 +13,8 @@ use doo_core::{
     Span,
 };
 use doo_hir::{
-    ConstValue, HirBinOp, HirExpr, HirExprKind, HirFunction, HirItem, HirMatchPattern, HirProgram,
-    HirStmt, HirStmtKind,
+    HirBinOp, HirExpr, HirExprKind, HirFunction, HirItem, HirMatchPattern, HirProgram, HirStmt,
+    HirStmtKind,
 };
 
 /// Type checking error.
@@ -686,54 +686,6 @@ impl TypeChecker {
     /// Check a statement for type correctness.
     fn check_stmt(&mut self, stmt: &HirStmt) {
         match &stmt.kind {
-            HirStmtKind::If {
-                condition,
-                then_block,
-                else_block,
-            } => {
-                // Condition must be Bool
-                self.check_condition(condition);
-
-                // Check then block in its own scope
-                self.scopes.enter_scope(super::scope::ScopeKind::Block);
-                for s in then_block {
-                    self.check_stmt(s);
-                }
-                self.scopes.exit_scope();
-
-                // Check else block if present
-                if let Some(else_stmts) = else_block {
-                    self.scopes.enter_scope(super::scope::ScopeKind::Block);
-                    for s in else_stmts {
-                        self.check_stmt(s);
-                    }
-                    self.scopes.exit_scope();
-                }
-            }
-
-            HirStmtKind::While {
-                condition,
-                body,
-                increment,
-            } => {
-                // Condition must be Bool
-                self.check_condition(condition);
-
-                // Enter loop scope for the body
-                self.scopes.enter_scope(super::scope::ScopeKind::Loop);
-                for s in body {
-                    self.check_stmt(s);
-                }
-                for s in increment {
-                    self.check_stmt(s);
-                }
-                self.scopes.exit_scope();
-            }
-
-            HirStmtKind::Expr(expr) => {
-                self.check_expr(expr);
-            }
-
             HirStmtKind::Let {
                 name,
                 type_id,
@@ -963,7 +915,7 @@ impl TypeChecker {
             } => {
                 self.check_condition(condition);
 
-                self.scopes.enter_scope(super::scope::ScopeKind::Block);
+                self.scopes.enter_scope(super::scope::ScopeKind::Loop);
                 for s in body {
                     self.check_stmt(s);
                 }

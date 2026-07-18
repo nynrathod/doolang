@@ -14,7 +14,6 @@
 //! let doubled = nums.map((x) => x * 2);  // x: Int inferred, return Int inferred
 //! ```
 
-use doo_core::doo_debug;
 use doo_core::types::{builtin, TypeId, TypeKind, TypeRegistry};
 use doo_hir::{HirBinOp, HirExpr, HirExprKind, HirStmt, HirStmtKind, HirUnaryOp};
 use std::collections::HashMap;
@@ -317,7 +316,8 @@ impl TypeInference {
                     match &info.kind {
                         TypeKind::Struct {
                             name: struct_name,
-                            fields, ..
+                            fields,
+                            ..
                         } => {
                             for (fname, ftype, is_public) in fields {
                                 if fname == field {
@@ -328,8 +328,7 @@ impl TypeInference {
                                         // analysis should catch this. We could add an error here later.
                                         if std::env::var(doo_core::constants::env_vars::DOO_DEBUG)
                                             .is_ok()
-                                        {
-                                        }
+                                        {}
                                     }
                                     return *ftype;
                                 }

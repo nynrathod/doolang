@@ -10,7 +10,6 @@ pub mod stmt;
 
 use doo_analysis::{Decision, OwnershipResults};
 use doo_core::constants::ffi_names::derive_ffi_symbol;
-use doo_core::doo_debug;
 use doo_core::errors::codes::CompilerError;
 use doo_core::types::{builtin, TypeId as CoreTypeId, TypeKind, TypeRegistry};
 use doo_core::Span as CoreSpan;

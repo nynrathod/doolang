@@ -189,7 +189,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 }
                 let data_ptr = data_ptr?;
 
-                let elem_ptr_ty = elem_llvm_ty.ptr_type(AddressSpace::default());
+                let elem_ptr_ty = ctx.ptr_type();
                 let base = ctx
                     .builder
                     .build_pointer_cast(data_ptr, elem_ptr_ty, "arr_data_cast")
@@ -267,7 +267,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
 
                 let idx_i64 = int_to_i64(ctx, idx_int)?;
                 let elem_llvm_ty = ctx.get_llvm_type(*elem_type);
-                let elem_ptr_ty = elem_llvm_ty.ptr_type(AddressSpace::default());
+                let elem_ptr_ty = ctx.ptr_type();
                 let base = ctx
                     .builder
                     .build_pointer_cast(arr_ptr, elem_ptr_ty, "arr_data_cast")
@@ -354,7 +354,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
 
                 let idx_i64 = int_to_i64(ctx, idx_int)?;
                 let elem_llvm_ty = ctx.get_llvm_type(*elem_type);
-                let elem_ptr_ty = elem_llvm_ty.ptr_type(AddressSpace::default());
+                let elem_ptr_ty = ctx.ptr_type();
                 let base = ctx
                     .builder
                     .build_pointer_cast(arr_ptr, elem_ptr_ty, "arr_data_cast")
@@ -395,7 +395,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
 
                 let arr_ptr = arr.into_pointer_value();
                 let elem_llvm_ty = ctx.get_llvm_type(*elem_type);
-                let elem_ptr_ty = elem_llvm_ty.ptr_type(AddressSpace::default());
+                let elem_ptr_ty = ctx.ptr_type();
                 let base = ctx
                     .builder
                     .build_pointer_cast(arr_ptr, elem_ptr_ty, "arr_data_cast")
@@ -533,7 +533,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 }
 
                 // Append value
-                let elem_ptr_ty = elem_llvm_ty.ptr_type(AddressSpace::default());
+                let elem_ptr_ty = ctx.ptr_type();
                 let base = ctx
                     .builder
                     .build_pointer_cast(new_data, elem_ptr_ty, "arr_new_cast")
@@ -587,7 +587,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
 
                 // Copy/Memcpy second array data to new space
                 // Dest: new_data + len1 * stride
-                let elem_ptr_ty = elem_llvm_ty.ptr_type(AddressSpace::default());
+                let elem_ptr_ty = ctx.ptr_type();
                 let base = ctx
                     .builder
                     .build_pointer_cast(new_data, elem_ptr_ty, "arr_base")
@@ -646,7 +646,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 let new_data = alloc_with_header(ctx, len_i32, elem_llvm_ty, "slice")?;
 
                 // Source pointer: arr + start
-                let elem_ptr_ty = elem_llvm_ty.ptr_type(AddressSpace::default());
+                let elem_ptr_ty = ctx.ptr_type();
                 let src_base = ctx
                     .builder
                     .build_pointer_cast(arr, elem_ptr_ty, "src_base")
