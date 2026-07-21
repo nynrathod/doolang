@@ -17,16 +17,16 @@ use crate::framework::db_bridge::{
     execute_db_delete_by_id, execute_db_insert, execute_db_query, execute_db_query_by_id,
     is_pool_initialized, to_snake_case,
 };
-use crate::helpers::c_to_string;
 use crate::framework::metadata::get_struct_metadata;
 use crate::framework::rbac::{
     check_policy, extract_jwt_claims_from_request, filter_request_fields_rbac,
     filter_response_fields_rbac, get_jwt_role, get_resource_owner_from_row, is_authenticated,
 };
-use crate::router::{get_routes, CrudConfig};
-use crate::types::*;
 use crate::framework::validation::{validate_item_against_schema, validate_required_fields};
 use crate::framework::webhook_engine;
+use crate::helpers::c_to_string;
+use crate::router::{get_routes, CrudConfig};
+use crate::types::*;
 use crate::{make_err_http, make_ok_json, make_ok_void};
 
 // ============================================================================
@@ -286,7 +286,11 @@ extern "C" fn crud_create_handler(req: *const DooRequest) -> *mut DooResult {
                             );
 
                             // === WEBHOOK: fire "created" event (no-op if no webhooks registered) ===
-                            webhook_engine::fire(&format!("crud:{}", resource), "created", &created);
+                            webhook_engine::fire(
+                                &format!("crud:{}", resource),
+                                "created",
+                                &created,
+                            );
 
                             let response =
                                 serde_json::to_string(&serde_json::json!({ "data": filtered }))
@@ -505,7 +509,11 @@ extern "C" fn crud_update_handler(req: *const DooRequest) -> *mut DooResult {
                             );
 
                             // === WEBHOOK: fire "updated" event (no-op if no webhooks registered) ===
-                            webhook_engine::fire(&format!("crud:{}", resource), "updated", &updated);
+                            webhook_engine::fire(
+                                &format!("crud:{}", resource),
+                                "updated",
+                                &updated,
+                            );
 
                             let response =
                                 serde_json::to_string(&serde_json::json!({ "data": filtered }))
@@ -647,11 +655,7 @@ pub extern "C" fn doo_http_crud(
 /// Both `doo_http_crud` and `doo_http_crud_with_webhooks` call this.
 /// The handlers check webhook_engine internally — if webhooks are registered
 /// they fire; if not, it's a zero-cost no-op.
-fn register_crud_routes(
-    base_str: &str,
-    struct_name: &str,
-    resource_key: &str,
-) {
+fn register_crud_routes(base_str: &str, struct_name: &str, resource_key: &str) {
     // Register resource → struct mapping for CRUD handlers.
     // Table creation is handled by `doo migrate` or `doo run --migrate`.
     let mut tables = get_crud_db_tables()
@@ -684,13 +688,9 @@ fn register_crud_routes(
             "Auth configured — CRUD write routes for {} will require JWT",
             base_str
         );
-        let jwt_mw: Vec<DooMiddlewareFn> = vec![crate::framework::middleware::jwt_middleware_handler];
-        registry.register_with_middleware(
-            "POST",
-            base_str,
-            crud_create_handler,
-            jwt_mw.clone(),
-        );
+        let jwt_mw: Vec<DooMiddlewareFn> =
+            vec![crate::framework::middleware::jwt_middleware_handler];
+        registry.register_with_middleware("POST", base_str, crud_create_handler, jwt_mw.clone());
         registry.register_with_middleware(
             "PUT",
             &get_one_path,
@@ -748,11 +748,7 @@ pub extern "C" fn doo_http_crud_with_webhooks(
                 Ok(configs) if !configs.is_empty() => {
                     let engine_key = format!("crud:{}", resource_key);
                     webhook_engine::register(&engine_key, configs);
-                    ffi_debug!(
-                        "HTTP",
-                        "Registered webhooks for CRUD key '{}'",
-                        engine_key
-                    );
+                    ffi_debug!("HTTP", "Registered webhooks for CRUD key '{}'", engine_key);
                 }
                 Ok(_) => {
                     ffi_debug!("HTTP", "Empty webhook configs for '{}'", resource_key);
