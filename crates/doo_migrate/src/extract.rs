@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
-use doo_core::string::to_snake_case;
+use doo_ffi_core::to_snake_case;
 use doo_core::types::TypeRegistry;
 use doo_frontend::Parser;
 use doo_hir::{ConstValue, HirExpr, HirExprKind, HirItem, HirStmtKind, Lower};

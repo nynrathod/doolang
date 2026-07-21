@@ -11,6 +11,7 @@ members = [
 	"crates/doo_diagnostics",
 	"crates/doo_lsp",
 	"crates/doo_migrate",
+	"crates/doo_macro",
 	"ffi/doo_ffi_core",
 	"ffi/doo_ffi_json",
 	"ffi/doo_ffi_http",

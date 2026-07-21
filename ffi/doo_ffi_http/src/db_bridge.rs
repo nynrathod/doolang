@@ -231,10 +231,8 @@ pub(crate) fn call_db_query_with_params(sql: *const c_char, params: *const c_cha
 // SQL GENERATION HELPERS
 // ============================================================================
 
-// Re-export from doo_core — single source of truth for string case conversion.
-pub(crate) use doo_core::string::{to_pascal_case, to_snake_case};
-
-
+// Re-export from doo_ffi_core — single source of truth for string case conversion.
+pub(crate) use doo_ffi_core::{to_pascal_case, to_snake_case};
 
 // ============================================================================
 // DATABASE EXECUTION HELPERS - Using FFI calls to doo_db.dll

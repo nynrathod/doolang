@@ -22,6 +22,7 @@
 
 #[macro_use]
 pub mod macros;
+pub mod case;
 pub mod casts;
 pub mod config;
 pub mod constants;
@@ -36,6 +37,7 @@ pub mod rfc7807;
 pub mod string;
 pub mod validation;
 
+pub use case::{to_pascal_case, to_snake_case};
 pub use casts::{
     doo_cast_bool_to_str, doo_cast_float_to_str, doo_cast_int_to_str, doo_cast_str_to_float,
     doo_cast_str_to_int,

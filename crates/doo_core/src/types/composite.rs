@@ -57,6 +57,25 @@ pub struct FieldDef {
 }
 
 /// Definition of a decorator/annotation.
+///
+/// ## Invariant (Phase 0 — Compiler↔Framework Separation)
+///
+/// `DecoratorDef` is **opaque** to the compiler. The compiler stores
+/// decorator names and arguments but does NOT validate their meaning.
+/// Domain-specific validation (`@email`, `@table`, `@primary`, etc.)
+/// belongs to macro-provider crates (Level 3), not the compiler core.
+///
+/// The compiler ONLY:
+/// - Parses `@name(args)` syntax in the parser
+/// - Stores the parsed data in this struct
+/// - Attaches it to the relevant item (struct, field, etc.)
+/// - Passes it to macro expansion (Phase 6)
+///
+/// The compiler NEVER:
+/// - Validates decorator argument counts
+/// - Checks type constraints for specific decorators
+/// - Resolves decorator combinations or conflicts
+/// - Knows what `@email`, `@table`, or any other decorator means
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DecoratorDef {
     /// Decorator name (without @)

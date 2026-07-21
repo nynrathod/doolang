@@ -477,10 +477,10 @@ fn should_accept_from_request_rbac(
 }
 
 // ============================================================================
-// UTILITY — single source of truth: doo_core::string
+// UTILITY — single source of truth: doo_ffi_core::case
 // ============================================================================
 
-use doo_core::string::{to_pascal_case, to_snake_case};
+use doo_ffi_core::{to_pascal_case, to_snake_case};
 
 /// Extract the resource owner's user ID from a DB row.
 ///
