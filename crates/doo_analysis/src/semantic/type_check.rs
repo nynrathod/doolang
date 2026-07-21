@@ -962,12 +962,6 @@ impl TypeChecker {
                     return builtin::ANY; // Module type - resolved at codegen
                 }
 
-                // Query builder comparison operators (Gt, Lt, IsNull, Asc, Desc, etc.)
-                // are compile-time identifiers intercepted by the MIR query builder.
-                if doo_core::constants::ffi_names::is_query_operator(name) {
-                    return builtin::ANY;
-                }
-
                 if let Some(sym) = self.scopes.lookup(name) {
                     sym.type_id.unwrap_or(builtin::ANY)
                 } else if let Some(type_id) = self.registry.lookup(name) {
@@ -1026,9 +1020,7 @@ impl TypeChecker {
                         || name == "toString"
                         || name == "sleep"
                         || name == "typeOf"
-                        || name == "__black_box"
-                        // QB comparison operators used as functions: Gt(n), Lt(n), In([...]), etc.
-                        || doo_core::constants::ffi_names::is_query_operator(name);
+                        || name == "__black_box";
 
                     // Validate argument count and types against function signature
                     if let Some(param_types) = self.functions.get(name).cloned() {

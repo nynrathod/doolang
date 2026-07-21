@@ -1,0 +1,245 @@
+// ORM module for Doo — Type-Safe Query Builder
+//
+// This package provides a fluent, type-safe query builder API built on
+// traits and generics (Level 1). It replaces the former MIR-level query
+// builder that was extracted in Phase 1 of the Compiler ↔ Framework
+// Separation Audit.
+//
+// Architecture:
+//   - `Query<T>` — a typed query builder that tracks the model type T
+//   - Extension methods on `Database` via the `IntoQuery` trait
+//   - Chain methods return `Query<T>` for type-safe composition
+//   - Terminal methods execute the query via the raw DB FFI
+//
+// Usage:
+//   import orm::Orm;
+//
+//   struct Task {
+//       id: Int @primary @auto,
+//       title: Str,
+//       done: Bool,
+//   }
+//
+//   fn main() {
+//       let db = Database::Postgres()?;
+//       let tasks = db.find::<Task>().where({ done: false }).limit(10).exec()?;
+//   }
+//
+// Design decisions:
+//   - All SQL generation is compile-time via trait monomorphization
+//   - No MIR interception — the type checker resolves everything
+//   - Parameters use PostgreSQL $N placeholders
+//   - Validation (field existence, type compatibility) via trait bounds
+
+// ============================================================================
+// Trait: IntoQuery — Entry Point
+// ============================================================================
+
+/// Trait implemented by `Database` to begin a typed query chain.
+/// Resolved at compile time via the ordinary type checker.
+interface IntoQuery {
+    /// Start a SELECT query for model type T.
+    /// Returns a typed `Query<T>` builder.
+    fn find<T>(self, model: T) -> Query<T>;
+
+    /// Start a SELECT query for a single record of type T.
+    fn findOne<T>(self, model: T) -> Query<T>;
+
+    /// Start a COUNT query for model type T.
+    fn count<T>(self, model: T) -> Query<T>;
+
+    /// Start an INSERT query for a single record of type T.
+    fn insert<T>(self, model: T, data: T) -> Query<T>;
+
+    /// Start an INSERT query for multiple records of type T.
+    fn insertMany<T>(self, model: T, data: [T]) -> Query<T>;
+
+    /// Start an UPDATE query for model type T.
+    fn update<T>(self, model: T) -> Query<T>;
+
+    /// Start a DELETE query for model type T.
+    fn delete<T>(self, model: T) -> Query<T>;
+}
+
+// ============================================================================
+// Struct: Query<T> — Typed Query Builder
+// ============================================================================
+
+/// A typed query builder that accumulates clauses and emits a single
+/// parameterized SQL call when a terminal method is invoked.
+///
+/// The type parameter T tracks the model struct, enabling:
+///   - Compile-time field name validation
+///   - Compile-time type compatibility checks
+///   - Correct JSON deserialization of results
+struct Query<T> {
+    /// Internal SQL accumulator (built at compile time)
+    sql: Str,
+    /// Collected parameter values
+    params: [Any],
+    /// The model type discriminant
+    model: Str,
+}
+
+// ============================================================================
+// Chain Methods — Filter & Shape
+// ============================================================================
+
+/// Trait for chainable filter methods on Query<T>.
+interface QueryFilter<T> {
+    /// Add a WHERE clause with equality conditions.
+    /// `conditions` is a struct literal whose fields map to columns.
+    fn where(self, conditions: T) -> Query<T>;
+
+    /// Add an OR WHERE clause.
+    fn orWhere(self, conditions: T) -> Query<T>;
+
+    /// Add a WHERE NOT clause.
+    fn whereNot(self, conditions: T) -> Query<T>;
+
+    /// Add a WHERE ... IN clause.
+    fn whereIn(self, field: Str, values: [Any]) -> Query<T>;
+
+    /// Add a WHERE ... IS NULL clause.
+    fn whereNull(self, field: Str) -> Query<T>;
+
+    /// Add a WHERE ... IS NOT NULL clause.
+    fn whereNotNull(self, field: Str) -> Query<T>;
+
+    /// Add a WHERE ... BETWEEN clause.
+    fn whereBetween(self, field: Str, low: Any, high: Any) -> Query<T>;
+}
+
+/// Trait for chainable modifier methods on Query<T>.
+interface QueryModifier<T> {
+    /// Add an ORDER BY clause.
+    fn orderBy(self, ordering: Any) -> Query<T>;
+
+    /// Add a LIMIT clause.
+    fn limit(self, n: Int) -> Query<T>;
+
+    /// Add an OFFSET clause.
+    fn offset(self, n: Int) -> Query<T>;
+
+    /// Select specific fields (projection).
+    fn select(self, fields: [Str]) -> Query<T>;
+
+    /// Exclude specific fields from the result.
+    fn exclude(self, fields: [Str]) -> Query<T>;
+
+    /// Add DISTINCT to the query.
+    fn distinct(self) -> Query<T>;
+
+    /// Add a GROUP BY clause.
+    fn groupBy(self, fields: [Str]) -> Query<T>;
+
+    /// Add a HAVING clause.
+    fn having(self, conditions: Any) -> Query<T>;
+
+    /// Add aggregate functions.
+    fn aggregate(self, aggregates: Any) -> Query<T>;
+}
+
+/// Trait for mutation-specific chain methods.
+interface QueryMutation<T> {
+    /// Set column values for UPDATE.
+    fn set(self, values: T) -> Query<T>;
+
+    /// Increment a numeric column.
+    fn increment(self, field: Str, amount: Int) -> Query<T>;
+
+    /// Decrement a numeric column.
+    fn decrement(self, field: Str, amount: Int) -> Query<T>;
+
+    /// Specify RETURNING columns.
+    fn returning(self, fields: [Str]) -> Query<T>;
+}
+
+// ============================================================================
+// Terminal Methods — Execute
+// ============================================================================
+
+/// Trait for terminal methods that execute or inspect the query.
+interface QueryTerminal<T> {
+    /// Execute the query and return results as [T].
+    /// SELECT: returns matching rows
+    /// INSERT: returns the inserted row(s)
+    /// UPDATE: returns the updated row(s)
+    /// DELETE: returns the deleted row(s)
+    fn exec(self) -> [T] !DatabaseError;
+
+    /// Execute and return a single result as T.
+    /// Equivalent to adding LIMIT 1.
+    fn execOne(self) -> T !DatabaseError;
+
+    /// Return the generated SQL string without executing.
+    /// Useful for debugging and logging.
+    fn toSql(self) -> Str;
+}
+
+// ============================================================================
+// Database Extension — IntoQuery Implementation
+// ============================================================================
+
+impl IntoQuery for Database {
+    // These methods are implemented via the raw DB FFI (doo_db_raw_param)
+    // with compile-time SQL generation driven by trait monomorphization.
+    // The compiler resolves Query<T> → concrete SQL string at monomorphization
+    // time, then emits a single parameterized FFI call.
+
+    @extern("doo_db", "doo_orm_find")
+    fn find<T>(self, model: T) -> Query<T> { }
+
+    @extern("doo_db", "doo_orm_find_one")
+    fn findOne<T>(self, model: T) -> Query<T> { }
+
+    @extern("doo_db", "doo_orm_count")
+    fn count<T>(self, model: T) -> Query<T> { }
+
+    @extern("doo_db", "doo_orm_insert")
+    fn insert<T>(self, model: T, data: T) -> Query<T> { }
+
+    @extern("doo_db", "doo_orm_insert_many")
+    fn insertMany<T>(self, model: T, data: [T]) -> Query<T> { }
+
+    @extern("doo_db", "doo_orm_update")
+    fn update<T>(self, model: T) -> Query<T> { }
+
+    @extern("doo_db", "doo_orm_delete")
+    fn delete<T>(self, model: T) -> Query<T> { }
+}
+
+// ============================================================================
+// Comparison Operators (used inside .where({}) struct literals)
+// ============================================================================
+
+/// Operator wrappers used as field values in .where({ field: Gt(5) }).
+struct Gt { value: Any }
+struct Gte { value: Any }
+struct Lt { value: Any }
+struct Lte { value: Any }
+struct Ne { value: Any }
+struct Like { pattern: Str }
+struct ILike { pattern: Str }
+struct In { values: [Any] }
+struct NotIn { values: [Any] }
+struct Between { low: Any, high: Any }
+struct IsNull {}
+struct IsNotNull {}
+
+// ============================================================================
+// Aggregate Functions (used inside .aggregate({ ... }))
+// ============================================================================
+
+struct Count { field: Str }
+struct Sum { field: Str }
+struct Avg { field: Str }
+struct Min { field: Str }
+struct Max { field: Str }
+
+// ============================================================================
+// Sort Direction (used inside .orderBy({ ... }))
+// ============================================================================
+
+struct Asc { field: Str }
+struct Desc { field: Str }

@@ -29,7 +29,6 @@ pub fn get_methods_for_type(type_name: &str) -> &'static [MethodDef] {
         "Int" => INT_METHODS,
         "Float" => FLOAT_METHODS,
         "Bool" => BOOL_METHODS,
-        "App" | "HttpApp" => APP_METHODS,
         _ if type_name.starts_with("[") || type_name.starts_with("Array") => ARRAY_METHODS,
         _ if type_name.starts_with("{") || type_name.starts_with("Map") => MAP_METHODS,
         _ => &[],
@@ -436,103 +435,7 @@ pub static BOOL_METHODS: &[MethodDef] = &[MethodDef {
     mutates: false,
 }];
 
-// =============================================================================
-// App / HTTP Framework Methods
-// =============================================================================
-pub static APP_METHODS: &[MethodDef] = &[
-    MethodDef {
-        name: "listen",
-        params: &["Int"],
-        return_type: "Void",
-        mutates: false,
-    },
-    MethodDef {
-        name: "get",
-        params: &["Str", "Fn"],
-        return_type: "Void",
-        mutates: true,
-    },
-    MethodDef {
-        name: "post",
-        params: &["Str", "Fn"],
-        return_type: "Void",
-        mutates: true,
-    },
-    MethodDef {
-        name: "put",
-        params: &["Str", "Fn"],
-        return_type: "Void",
-        mutates: true,
-    },
-    MethodDef {
-        name: "delete",
-        params: &["Str", "Fn"],
-        return_type: "Void",
-        mutates: true,
-    },
-    MethodDef {
-        name: "patch",
-        params: &["Str", "Fn"],
-        return_type: "Void",
-        mutates: true,
-    },
-    MethodDef {
-        name: "options",
-        params: &["Str", "Fn"],
-        return_type: "Void",
-        mutates: true,
-    },
-    MethodDef {
-        name: "head",
-        params: &["Str", "Fn"],
-        return_type: "Void",
-        mutates: true,
-    },
-    MethodDef {
-        name: "use",
-        params: &["Fn"],
-        return_type: "Void",
-        mutates: true,
-    },
-    MethodDef {
-        name: "auth",
-        params: &["Any"],
-        return_type: "Void",
-        mutates: true,
-    },
-    MethodDef {
-        name: "oauth",
-        params: &["Any"],
-        return_type: "Void",
-        mutates: true,
-    },
-    MethodDef {
-        name: "cors",
-        params: &["Any"],
-        return_type: "Void",
-        mutates: true,
-    },
-    MethodDef {
-        name: "logger",
-        params: &[],
-        return_type: "Void",
-        mutates: true,
-    },
-    MethodDef {
-        name: "static",
-        params: &["Str"],
-        return_type: "Void",
-        mutates: true,
-    },
-    MethodDef {
-        name: "middleware",
-        params: &["Fn"],
-        return_type: "Void",
-        mutates: true,
-    },
-];
-
-/// H05: Check if a method name is a known builtin across ALL types.
+/// Check if a method name is a known builtin across ALL types.
 ///
 /// This is the single source of truth for "is this a builtin method?"
 /// Used by the type checker to avoid false "undefined method" errors.
@@ -546,7 +449,6 @@ pub fn is_known_builtin(method: &str) -> bool {
         INT_METHODS,
         FLOAT_METHODS,
         BOOL_METHODS,
-        APP_METHODS,
     ] {
         if methods.iter().any(|m| m.name == method) {
             return true;
@@ -568,39 +470,6 @@ pub fn is_known_builtin(method: &str) -> bool {
             | "find"
             | "remove"
             | "entries"
-            // Query Builder entry methods on Database
-            | "findOne"
-            | "count"
-            | "insertMany"
-            | "update"
-            | "delete"
-            // Query Builder chain methods (called on QB builder result)
-            | "where"
-            | "orWhere"
-            | "whereNot"
-            | "whereNull"
-            | "whereNotNull"
-            | "whereBetween"
-            | "whereIn"
-            | "orderBy"
-            | "limit"
-            | "offset"
-            | "select"
-            | "exclude"
-            | "distinct"
-            | "groupBy"
-            | "having"
-            | "aggregate"
-            | "join"
-            | "leftJoin"
-            | "rightJoin"
-            | "set"
-            | "increment"
-            | "decrement"
-            | "returning"
-            | "exec"
-            | "execOne"
-            | "toSql"
             | "raw"
     )
 }

@@ -6,10 +6,10 @@ description = "Doolang migration engine — compiler-level schema diffing and sa
 
 [dependencies]
 # Compiler frontend for schema extraction
-doo_core = { path = "../doo_core" }
-doo_frontend = { path = "../doo_frontend" }
-doo_hir = { path = "../doo_hir" }
-doo_analysis = { path = "../doo_analysis" }
+doo_core = { path = "../../crates/doo_core" }
+doo_frontend = { path = "../../crates/doo_frontend" }
+doo_hir = { path = "../../crates/doo_hir" }
+doo_analysis = { path = "../../crates/doo_analysis" }
 
 # Database access via doo_ffi_db pool (single source of truth for DB connections)
 doo_ffi_core = { path = "../../ffi/doo_ffi_core" }

@@ -572,24 +572,6 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     };
     let mir_program = mir_builder.build(&hir);
 
-    // Surface query builder errors (field validation, missing where, etc.).
-    let qb_errors = std::mem::take(&mut mir_builder.query_errors);
-    if !qb_errors.is_empty() {
-        let has_real = qb_errors.iter().any(|e| {
-            e.severity == doo_core::errors::codes::ErrorSeverity::Error
-                || e.severity == doo_core::errors::codes::ErrorSeverity::Ice
-        });
-        let mut emitter = DiagnosticEmitter::new(true);
-        let _ = emitter.emit_all(&qb_errors, &source_map);
-        if has_real {
-            return Ok(CompileResult {
-                success: false,
-                error_count: qb_errors.len(),
-                exe_path: None,
-            });
-        }
-    }
-
     if opts.print_mir {
         eprintln!("=== MIR ===");
         eprintln!("{:#?}", mir_program);
