@@ -15,10 +15,10 @@ use crate::helpers::{
     c_to_string, clear_last_error, get_current_request_path, set_current_request_path,
     set_last_error, string_to_c,
 };
-use crate::metadata::get_struct_metadata;
+use crate::framework::metadata::get_struct_metadata;
 use crate::router::get_frozen_routes;
 use crate::types::*;
-use crate::validation::validate_decorator;
+use crate::framework::validation::validate_decorator;
 
 // ============================================================================
 // REQUEST HELPERS

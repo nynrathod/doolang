@@ -11,11 +11,11 @@ use std::sync::Mutex as StdMutex;
 use doo_ffi_core::ffi_debug;
 use doo_ffi_core::DooResult;
 
-use crate::db_bridge::{
+use crate::framework::db_bridge::{
     execute_db_insert, execute_db_query_with_string_param, is_pool_initialized, to_snake_case,
 };
 use crate::helpers::c_to_string;
-use crate::metadata::get_struct_metadata;
+use crate::framework::metadata::get_struct_metadata;
 use crate::router::{get_routes, AuthConfig};
 use crate::types::*;
 use crate::{make_err_http, make_ok_json, make_ok_void};
@@ -201,7 +201,7 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
     // Validate extra fields (e.g. enum fields like Role) against struct metadata
     if let Some(struct_name) = get_auth_struct_name() {
         let full_body = serde_json::Value::Object(json.clone());
-        if let Err(e) = crate::validation::validate_item_against_struct(
+        if let Err(e) = crate::framework::validation::validate_item_against_struct(
             &full_body,
             &struct_name,
             "/auth/signup",
@@ -265,7 +265,7 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
                     let rows: Vec<serde_json::Value> =
                         serde_json::from_str(&json).unwrap_or_default();
                     if let Some(user_row) = rows.into_iter().next() {
-                        let user_id = crate::metadata::json_get_id(&user_row).unwrap_or(0);
+                        let user_id = crate::framework::metadata::json_get_id(&user_row).unwrap_or(0);
 
                         // Extract role value from the @role-decorated field if present
                         let role_value = extract_role_from_user_row(&user_row, &table_name);
@@ -276,7 +276,7 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
                         doo_ffi_core::cookies::push_auth_cookies(&token, None, 86400, 0);
 
                         // === WEBHOOK: fire "signup" event (no-op if no webhooks registered) ===
-                        crate::webhook_engine::fire("auth:signup", "signup", &user_row);
+                        crate::framework::webhook_engine::fire("auth:signup", "signup", &user_row);
 
                         let response = build_db_auth_response(&token, &user_row);
                         ffi_debug!("AUTH", "Signup success (DB): {}", response);
@@ -382,7 +382,7 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
                                     email
                                 );
 
-                                let user_id = crate::metadata::json_get_id(&user_row).unwrap_or(0);
+                                let user_id = crate::framework::metadata::json_get_id(&user_row).unwrap_or(0);
                                 // Extract role value from the @role-decorated field if present
                                 let role_value = extract_role_from_user_row(&user_row, &table_name);
                                 let token =
@@ -392,7 +392,7 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
                                 doo_ffi_core::cookies::push_auth_cookies(&token, None, 86400, 0);
 
                                 // === WEBHOOK: fire "login" event (no-op if no webhooks registered) ===
-                                crate::webhook_engine::fire("auth:login", "login", &user_row);
+                                crate::framework::webhook_engine::fire("auth:login", "login", &user_row);
 
                                 let response = build_db_auth_response(&token, &user_row);
                                 return make_ok_json(&response);
@@ -433,8 +433,8 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
 /// Given a user row and table name, find the field with @role decorator and return its value.
 /// Looks up the struct whose table name matches, checks field decorators for "role".
 fn extract_role_from_user_row(user_row: &serde_json::Value, table_name: &str) -> Option<String> {
-    use crate::db_bridge::to_pascal_case;
-    use crate::metadata::get_struct_metadata;
+    use crate::framework::db_bridge::to_pascal_case;
+    use crate::framework::metadata::get_struct_metadata;
     // Primary: use the registered auth struct name (e.g. "User") — single source of truth
     let auth_struct = get_auth_struct_name();
     let mut candidates: Vec<String> = Vec::new();
@@ -487,7 +487,7 @@ pub(crate) fn generate_jwt_token(sub: &str, user_id: i64, role: Option<&str>) ->
     }
 
     // Use the shared secret from middleware (cached OnceLock, read once)
-    let secret = crate::middleware::get_jwt_secret();
+    let secret = crate::framework::middleware::get_jwt_secret();
     if secret.is_empty() {
         #[cfg(debug_assertions)]
         {
@@ -702,7 +702,7 @@ pub extern "C" fn doo_http_auth(
             "GET",
             &me_path,
             auth_me_handler,
-            vec![crate::middleware::jwt_middleware_handler],
+            vec![crate::framework::middleware::jwt_middleware_handler],
         );
         ffi_debug!(
             "HTTP",
@@ -740,13 +740,13 @@ pub extern "C" fn doo_http_auth_with_webhooks(
         // Parse and register webhook configs with the generic engine
         let wh_json = c_to_string(webhooks_json);
         if !wh_json.is_empty() && wh_json != "[]" {
-            match crate::webhook_engine::parse_configs(&wh_json) {
+            match crate::framework::webhook_engine::parse_configs(&wh_json) {
                 Ok(configs) if !configs.is_empty() => {
                     // Register same configs for both signup and login keys.
                     // Users filter by event in the webhook config's Event field
                     // (e.g., Event: "signup" or Event: "login").
-                    crate::webhook_engine::register("auth:signup", configs.clone());
-                    crate::webhook_engine::register("auth:login", configs);
+                    crate::framework::webhook_engine::register("auth:signup", configs.clone());
+                    crate::framework::webhook_engine::register("auth:login", configs);
                     ffi_debug!(
                         "HTTP",
                         "Registered webhooks for auth events (signup + login)"

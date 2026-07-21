@@ -13,8 +13,8 @@ use std::sync::Mutex as StdMutex;
 use doo_ffi_core::ffi_debug;
 use doo_ffi_core::DooResult;
 
-use crate::auth::{get_auth_table_name, is_auth_db_backed};
-use crate::db_bridge::{execute_db_query_with_string_param, execute_db_statement};
+use crate::framework::auth::{get_auth_table_name, is_auth_db_backed};
+use crate::framework::db_bridge::{execute_db_query_with_string_param, execute_db_statement};
 use crate::helpers::c_to_string;
 use crate::router::get_routes;
 use crate::types::*;
@@ -122,7 +122,11 @@ extern "C" fn forgot_password_handler(req: *const DooRequest) -> *mut DooResult 
                         > 0;
                     if !exists {
                         // Don't reveal whether user exists — return success anyway
-                        ffi_debug!("AUTH", "User '{}' not found, returning silent success", email);
+                        ffi_debug!(
+                            "AUTH",
+                            "User '{}' not found, returning silent success",
+                            email
+                        );
                         return make_ok_json(
                             &serde_json::json!({
                                 "data": {
@@ -163,9 +167,7 @@ extern "C" fn forgot_password_handler(req: *const DooRequest) -> *mut DooResult 
         }
     } else {
         // In-memory fallback
-        let mut tokens = get_reset_tokens()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut tokens = get_reset_tokens().lock().unwrap_or_else(|e| e.into_inner());
         tokens.push(ResetToken {
             token: token.clone(),
             email: email.clone(),
@@ -299,9 +301,7 @@ extern "C" fn reset_password_handler(req: *const DooRequest) -> *mut DooResult {
         }
     } else {
         // In-memory fallback
-        let mut tokens = get_reset_tokens()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut tokens = get_reset_tokens().lock().unwrap_or_else(|e| e.into_inner());
 
         let found = tokens
             .iter()
@@ -348,7 +348,11 @@ pub extern "C" fn doo_http_forgot_password(
     ffi_safe_result!({
         let path_str = c_to_string(path);
 
-        ffi_debug!("HTTP", "Forgot password endpoint registered at POST {}", path_str);
+        ffi_debug!(
+            "HTTP",
+            "Forgot password endpoint registered at POST {}",
+            path_str
+        );
 
         let routes = get_routes();
         let mut registry = routes.lock().unwrap_or_else(|e| e.into_inner());
@@ -372,7 +376,11 @@ pub extern "C" fn doo_http_reset_password(
     ffi_safe_result!({
         let path_str = c_to_string(path);
 
-        ffi_debug!("HTTP", "Reset password endpoint registered at POST {}", path_str);
+        ffi_debug!(
+            "HTTP",
+            "Reset password endpoint registered at POST {}",
+            path_str
+        );
 
         let routes = get_routes();
         let mut registry = routes.lock().unwrap_or_else(|e| e.into_inner());

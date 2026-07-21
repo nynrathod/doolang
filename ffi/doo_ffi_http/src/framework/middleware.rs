@@ -375,10 +375,10 @@ fn jwt_middleware_inner(req: *const DooRequest, next: DooNextFn) -> *mut DooResu
 /// Gets auth table name from configuration (set by app.auth()).
 fn lookup_user_id_by_email(email: &str) -> Option<i64> {
     // Get auth table name dynamically from auth config
-    let table_name = crate::auth::get_auth_table_name().unwrap_or_else(|| "users".to_string());
+    let table_name = crate::framework::auth::get_auth_table_name().unwrap_or_else(|| "users".to_string());
 
     let sql = format!("SELECT id FROM {} WHERE email = $1 LIMIT 1", table_name);
-    let result_json = crate::db_bridge::execute_db_query_with_string_param(&sql, email).ok()?;
+    let result_json = crate::framework::db_bridge::execute_db_query_with_string_param(&sql, email).ok()?;
 
     let result: serde_json::Value = serde_json::from_str(&result_json).ok()?;
     result.as_array()?.first()?.get("id")?.as_i64()
@@ -393,7 +393,7 @@ fn lookup_user_id_by_email(email: &str) -> Option<i64> {
 /// Uses centralized db_bridge for cached DB library access.
 fn ensure_user_in_db(email: &str, data_json: Option<&str>) -> Option<i64> {
     // Get auth table name from config
-    let table_name = crate::auth::get_auth_table_name().unwrap_or_else(|| "users".to_string());
+    let table_name = crate::framework::auth::get_auth_table_name().unwrap_or_else(|| "users".to_string());
 
     // Parse JWT data claim into a key-value map
     let data_map: HashMap<String, serde_json::Value> = data_json
@@ -408,7 +408,7 @@ fn ensure_user_in_db(email: &str, data_json: Option<&str>) -> Option<i64> {
          WHERE table_name = $1 AND table_schema = current_schema() \
          ORDER BY ordinal_position";
     let schema_json =
-        crate::db_bridge::execute_db_query_with_string_param(schema_sql, &table_name).ok()?;
+        crate::framework::db_bridge::execute_db_query_with_string_param(schema_sql, &table_name).ok()?;
 
     let column_rows: Vec<serde_json::Value> = serde_json::from_str(&schema_json).ok()?;
     if column_rows.is_empty() {
@@ -450,14 +450,14 @@ fn ensure_user_in_db(email: &str, data_json: Option<&str>) -> Option<i64> {
         }
 
         // Try to find a value for this column from email param or JWT data
-        let value = if crate::metadata::field_names_match(col_name, "email") {
+        let value = if crate::framework::metadata::field_names_match(col_name, "email") {
             email_col = col_name.to_string();
             Some(email.to_string())
         } else {
             // Search JWT data keys for a match (case-insensitive field name matching)
             data_map
                 .iter()
-                .find(|(k, _)| crate::metadata::field_names_match(k, col_name))
+                .find(|(k, _)| crate::framework::metadata::field_names_match(k, col_name))
                 .and_then(|(_, v)| match v {
                     serde_json::Value::String(s) => Some(s.clone()),
                     serde_json::Value::Bool(b) => Some(b.to_string()),
@@ -502,7 +502,7 @@ fn ensure_user_in_db(email: &str, data_json: Option<&str>) -> Option<i64> {
     );
 
     // Execute the INSERT via centralized db_bridge
-    let _ = crate::db_bridge::execute_db_insert(&insert_sql, &values);
+    let _ = crate::framework::db_bridge::execute_db_insert(&insert_sql, &values);
 
     // Now look up the user ID (the INSERT may have been a no-op if user already existed)
     let select_sql = format!(
@@ -510,7 +510,7 @@ fn ensure_user_in_db(email: &str, data_json: Option<&str>) -> Option<i64> {
         table_name, email_col
     );
     let select_json =
-        crate::db_bridge::execute_db_query_with_string_param(&select_sql, email).ok()?;
+        crate::framework::db_bridge::execute_db_query_with_string_param(&select_sql, email).ok()?;
 
     let result: serde_json::Value = serde_json::from_str(&select_json).ok()?;
     result.as_array()?.first()?.get("id")?.as_i64()

@@ -13,11 +13,11 @@ use doo_ffi_core::{ffi_safe_cstr, ffi_safe_ptr, ffi_safe_void};
 
 use crate::helpers::{c_to_string, string_to_c};
 use crate::make_ok_void;
-use crate::map_ops::{
+use crate::framework::map_ops::{
     doo_map_get_str, parse_json_bool_or_default, parse_json_i64_or_default,
     parse_json_string_or_default,
 };
-use crate::middleware::*;
+use crate::framework::middleware::*;
 use crate::router::get_routes;
 use crate::types::*;
 

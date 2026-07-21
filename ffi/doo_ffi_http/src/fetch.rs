@@ -41,7 +41,7 @@ use std::time::Duration;
 use doo_ffi_core::ffi_debug;
 
 use crate::helpers::{c_to_string, string_to_c};
-use crate::map_ops::{doo_map_get_str, parse_json_i64_or_default, parse_json_string_or_default};
+use crate::framework::map_ops::{doo_map_get_str, parse_json_i64_or_default, parse_json_string_or_default};
 
 // ============================================================================
 // Configuration Constants

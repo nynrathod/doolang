@@ -30,7 +30,7 @@ use doo_ffi_core::DooResult;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
-use crate::db_bridge::{
+use crate::framework::db_bridge::{
     execute_db_insert, execute_db_query_with_string_param, is_pool_initialized, to_snake_case,
 };
 use crate::helpers::{c_to_string, make_redirect};
@@ -185,7 +185,7 @@ extern "C" fn oauth_callback_handler(req: *const DooRequest) -> *mut DooResult {
             // === WEBHOOK: fire "oauth_login" event (no-op if no webhooks registered) ===
             // Parse the JSON to get user data for the webhook payload
             if let Ok(user_data) = serde_json::from_str::<serde_json::Value>(&json) {
-                crate::webhook_engine::fire(
+                crate::framework::webhook_engine::fire(
                     &format!("oauth:{}", provider),
                     "oauth_login",
                     &user_data,
@@ -402,12 +402,12 @@ pub extern "C" fn doo_http_oauth_with_webhooks(
         // Parse and register webhook configs with the generic engine
         let wh_json = c_to_string(webhooks_json);
         if !wh_json.is_empty() && wh_json != "[]" {
-            match crate::webhook_engine::parse_configs(&wh_json) {
+            match crate::framework::webhook_engine::parse_configs(&wh_json) {
                 Ok(configs) if !configs.is_empty() => {
                     for provider in &providers {
                         let provider_lower = provider.to_lowercase();
                         let engine_key = format!("oauth:{}", provider_lower);
-                        crate::webhook_engine::register(&engine_key, configs.clone());
+                        crate::framework::webhook_engine::register(&engine_key, configs.clone());
                         ffi_debug!(
                             "HTTP",
                             "Registered webhooks for OAuth provider '{}'",
@@ -561,7 +561,7 @@ fn exchange_oauth_code(provider: &str, code: &str, state: &str) -> Result<String
         .get("Email")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let access_token = crate::auth::generate_jwt_token(email, user_id, None);
+    let access_token = crate::framework::auth::generate_jwt_token(email, user_id, None);
 
     // Build result — returns OUR JWT token + user info + timestamps
     let result = serde_json::json!({

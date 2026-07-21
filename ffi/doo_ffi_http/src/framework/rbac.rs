@@ -31,7 +31,7 @@ use std::sync::{Mutex as StdMutex, OnceLock};
 use doo_ffi_core::ffi_safe_void;
 
 use crate::helpers::c_to_string;
-use crate::metadata::{field_names_match, get_struct_metadata, should_include_in_response};
+use crate::framework::metadata::{field_names_match, get_struct_metadata, should_include_in_response};
 
 // ============================================================================
 // GLOBAL REGISTRIES
@@ -441,7 +441,7 @@ fn should_accept_from_request_rbac(
     field_name: &str,
     jwt_role: Option<&str>,
 ) -> bool {
-    use crate::metadata::should_accept_from_request;
+    use crate::framework::metadata::should_accept_from_request;
 
     // First apply the existing readOnly/internal logic
     if !should_accept_from_request(struct_name, field_name) {
@@ -535,7 +535,7 @@ pub(crate) fn get_resource_owner_from_row(
 /// This avoids duplicating the secret handling logic in every CRUD handler.
 ///
 /// If you want strict per-request verification, replace with a proper
-/// `jsonwebtoken::decode` call using `crate::middleware::get_jwt_secret()`.
+/// `jsonwebtoken::decode` call using `crate::framework::middleware::get_jwt_secret()`.
 pub(crate) fn extract_jwt_claims_from_request(
     req: *const crate::types::DooRequest,
 ) -> serde_json::Value {

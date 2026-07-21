@@ -20,7 +20,7 @@ use std::sync::OnceLock;
 
 use serde::Serialize;
 
-use crate::db_bridge;
+use crate::framework::db_bridge;
 
 /// Maximum number of records kept in the in-memory ring buffer.
 const MAX_RECORDS: usize = 1000;
@@ -358,4 +358,45 @@ pub fn query_deliveries(
             "[]".to_string()
         }
     }
+}
+
+// ============================================================================
+// WEBHOOK AUDIT LOG — FFI EXPORTS
+// ============================================================================
+
+/// Return recent webhook dispatch records from in-memory ring buffer.
+#[no_mangle]
+pub extern "C" fn doo_http_webhooks_recent(limit: i32) -> *mut crate::DooResult {
+    let l = if limit <= 0 { 0 } else { limit as usize };
+    let json = get_recent_records(l);
+    crate::make_ok_json(&json)
+}
+
+/// Query webhook deliveries from DB with filters.
+/// Params: resource, event, webhook_id, status, limit, offset (all strings).
+/// Empty string = no filter. Returns JSON array of delivery records.
+#[no_mangle]
+pub extern "C" fn doo_http_webhooks_deliveries(
+    resource: *const std::os::raw::c_char,
+    event: *const std::os::raw::c_char,
+    webhook_id: *const std::os::raw::c_char,
+    status: *const std::os::raw::c_char,
+    limit: i32,
+    offset: i32,
+) -> *mut crate::DooResult {
+    let r = crate::helpers::c_to_string(resource);
+    let e = crate::helpers::c_to_string(event);
+    let w = crate::helpers::c_to_string(webhook_id);
+    let s = crate::helpers::c_to_string(status);
+    let l = if limit <= 0 { 0 } else { limit as usize };
+    let o = if offset < 0 { 0 } else { offset as usize };
+    let json = query_deliveries(&r, &e, &w, &s, l, o);
+    crate::make_ok_json(&json)
+}
+
+/// Clear in-memory webhook dispatch records.
+#[no_mangle]
+pub extern "C" fn doo_http_webhooks_log_clear() -> *mut crate::DooResult {
+    clear_log();
+    crate::make_ok_void()
 }

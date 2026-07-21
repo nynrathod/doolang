@@ -18,7 +18,7 @@ use doo_ffi_core::ffi_debug;
 
 use crate::driver::{BoxFuture, DbDriver, DriverResult};
 use crate::limits::MAX_ROWS;
-use crate::migrate::TableSchema;
+use crate::schema_types::TableSchema;
 
 pub use pool::{get_client, init_pool, is_pool_initialized};
 

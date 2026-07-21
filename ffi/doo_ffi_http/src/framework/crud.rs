@@ -13,20 +13,20 @@ use std::sync::Mutex as StdMutex;
 use doo_ffi_core::ffi_debug;
 use doo_ffi_core::DooResult;
 
-use crate::db_bridge::{
+use crate::framework::db_bridge::{
     execute_db_delete_by_id, execute_db_insert, execute_db_query, execute_db_query_by_id,
     is_pool_initialized, to_snake_case,
 };
 use crate::helpers::c_to_string;
-use crate::metadata::get_struct_metadata;
-use crate::rbac::{
+use crate::framework::metadata::get_struct_metadata;
+use crate::framework::rbac::{
     check_policy, extract_jwt_claims_from_request, filter_request_fields_rbac,
     filter_response_fields_rbac, get_jwt_role, get_resource_owner_from_row, is_authenticated,
 };
 use crate::router::{get_routes, CrudConfig};
 use crate::types::*;
-use crate::validation::{validate_item_against_schema, validate_required_fields};
-use crate::webhook_engine;
+use crate::framework::validation::{validate_item_against_schema, validate_required_fields};
+use crate::framework::webhook_engine;
 use crate::{make_err_http, make_ok_json, make_ok_void};
 
 // ============================================================================
@@ -103,7 +103,7 @@ fn fetch_item_by_id(resource: &str, id: i64) -> Option<serde_json::Value> {
 
 /// Check if a struct has at least one field decorated with @primary.
 fn struct_has_primary(struct_name: &str) -> bool {
-    crate::metadata::get_struct_metadata(struct_name)
+    crate::framework::metadata::get_struct_metadata(struct_name)
         .map(|meta| {
             meta.fields
                 .iter()
@@ -225,7 +225,7 @@ extern "C" fn crud_create_handler(req: *const DooRequest) -> *mut DooResult {
 
     // Auto-fill @owner field with the JWT user_id so users cannot forge ownership.
     // Only applied when the user is authenticated and the struct has an @owner field.
-    if let Some(user_id) = crate::rbac::get_jwt_user_id(&jwt_claims) {
+    if let Some(user_id) = crate::framework::rbac::get_jwt_user_id(&jwt_claims) {
         if let Some(meta) = get_struct_metadata(&struct_name_for_rbac) {
             for field in &meta.fields {
                 if field.decorators.iter().any(|d| d == "owner") {
@@ -365,7 +365,7 @@ extern "C" fn crud_get_handler(req: *const DooRequest) -> *mut DooResult {
                     // Determine ownership for field-level visibility
                     let owner_id = get_resource_owner_from_row(&item, &struct_name);
                     let is_owner = is_authenticated(&jwt_claims)
-                        && owner_id == crate::rbac::get_jwt_user_id(&jwt_claims);
+                        && owner_id == crate::framework::rbac::get_jwt_user_id(&jwt_claims);
                     let filtered = filter_response_fields_rbac(
                         &item,
                         &struct_name,
@@ -496,7 +496,7 @@ extern "C" fn crud_update_handler(req: *const DooRequest) -> *mut DooResult {
                             let sn = get_crud_struct_name(&resource).unwrap_or_default();
                             let owner_id = get_resource_owner_from_row(&updated, &sn);
                             let is_owner = is_authenticated(&jwt_claims)
-                                && owner_id == crate::rbac::get_jwt_user_id(&jwt_claims);
+                                && owner_id == crate::framework::rbac::get_jwt_user_id(&jwt_claims);
                             let filtered = filter_response_fields_rbac(
                                 &updated,
                                 &sn,
@@ -684,7 +684,7 @@ fn register_crud_routes(
             "Auth configured — CRUD write routes for {} will require JWT",
             base_str
         );
-        let jwt_mw: Vec<DooMiddlewareFn> = vec![crate::middleware::jwt_middleware_handler];
+        let jwt_mw: Vec<DooMiddlewareFn> = vec![crate::framework::middleware::jwt_middleware_handler];
         registry.register_with_middleware(
             "POST",
             base_str,

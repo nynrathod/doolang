@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use doo_ffi_core::FieldError;
 
 use crate::error::*;
-use crate::metadata::{get_enum_variants, get_struct_metadata};
+use crate::framework::metadata::{get_enum_variants, get_struct_metadata};
 use crate::router::get_frozen_routes;
 
 // ============================================================================

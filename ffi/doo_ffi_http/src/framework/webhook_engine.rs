@@ -38,7 +38,7 @@ use serde::Deserialize;
 
 use doo_ffi_core::ffi_debug;
 
-use crate::webhook_log;
+use crate::framework::webhook_log;
 
 // ============================================================================
 // WEBHOOK CONFIG TYPES — Single Definition, Used Everywhere
