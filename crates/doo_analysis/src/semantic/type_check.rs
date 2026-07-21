@@ -110,8 +110,6 @@ pub struct TypeChecker {
     current_return_type: Option<TypeId>,
     /// Current function name (for error messages).
     current_function: String,
-    /// Routes seen for DuplicateRoute detection: (method, path).
-    routes_seen: HashSet<(String, String)>,
     /// Span of `app.auth()` call (tracking only, both auth methods allowed).
     auth_call_span: Option<Span>,
     /// Span of `app.oauth()` call (tracking only, both auth methods allowed).
@@ -138,7 +136,6 @@ impl TypeChecker {
             direct_errors: Vec::new(),
             current_return_type: None,
             current_function: String::new(),
-            routes_seen: HashSet::new(),
             auth_call_span: None,
             oauth_call_span: None,
             functions: HashMap::new(),
@@ -1175,28 +1172,6 @@ impl TypeChecker {
                         self.oauth_call_span = Some(expr.span);
                     }
                     _ => {}
-                }
-
-                // Compile-time route validation: detect duplicate routes
-                let is_http_method = matches!(
-                    method.as_str(),
-                    "get" | "post" | "put" | "delete" | "patch" | "options" | "head"
-                );
-                if is_http_method && !args.is_empty() {
-                    // First arg is typically the route path (a string literal)
-                    if let HirExprKind::Const(doo_hir::ConstValue::Str(ref path)) = args[0].kind {
-                        let route_key = (method.to_uppercase(), path.to_string());
-                        if !self.routes_seen.insert(route_key) {
-                            self.direct_errors.push(
-                                doo_core::errors::codes::CompilerError::new(
-                                    ErrorCode::DuplicateRoute,
-                                    format!("duplicate route: {} {}", method.to_uppercase(), path),
-                                    expr.span,
-                                )
-                                .with_suggestion("each route path+method must be unique"),
-                            );
-                        }
-                    }
                 }
 
                 expr.type_id.unwrap_or(builtin::ANY)

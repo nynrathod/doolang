@@ -15,7 +15,6 @@
 //! - **Error Flow**: Track Result flows, ensure errors are handled
 //! - **Method Resolution**: Resolve methods by receiver type (TASK-017)
 
-pub mod decorators;
 pub mod error_flow;
 pub mod exhaustiveness;
 pub mod resolve;
@@ -23,7 +22,6 @@ pub mod scope;
 pub mod type_check;
 pub mod visibility;
 
-pub use decorators::{DecoratorError, DecoratorKind, DecoratorValidator};
 pub use error_flow::{ErrorFlowChecker, ErrorFlowError, ErrorFlowErrorKind};
 pub use exhaustiveness::{ExhaustivenessChecker, ExhaustivenessError, ExhaustivenessErrorKind};
 pub use resolve::{

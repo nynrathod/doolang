@@ -29,10 +29,6 @@ pub use semantic::{
     CircularImportError,
     // Cross-module resolution
     CrossModuleResolver,
-    // Decorator validation
-    DecoratorError,
-    DecoratorKind,
-    DecoratorValidator,
     // Error flow analysis
     ErrorFlowChecker,
     ErrorFlowError,

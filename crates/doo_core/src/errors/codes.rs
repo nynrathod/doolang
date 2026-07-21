@@ -8,9 +8,9 @@
 //! - E0300-E0399: Name resolution errors (analyzer)
 //! - E0400-E0499: Declaration / error-flow errors (analyzer)
 //! - E0500-E0599: Import errors
-//! - E0600-E0699: HTTP/FFI errors
-//! - E0700-E0799: Database errors
-//! - E0800-E0899: Validation errors
+//! - E0600-E0699: Reserved for framework (HTTP/FFI)
+//! - E0700-E0799: Reserved for framework (Database)
+//! - E0800-E0899: Reserved for framework (Validation)
 //! - E0900-E0999: Internal errors
 
 use crate::span::Span;
@@ -115,34 +115,6 @@ pub enum ErrorCode {
     InvalidImportPath, // E0503
     PrivateImport,     // E0504
 
-    // === HTTP/FFI Errors (E0600-E0699) ===
-    InvalidRouteHandler, // E0600
-    DuplicateRoute,      // E0601
-    InvalidMiddleware,   // E0602
-    InvalidCorsConfig,   // E0603
-    InvalidRateLimit,    // E0604
-    FfiFunctionNotFound, // E0605
-    FfiTypeMismatch,     // E0606
-
-    // === Database Errors (E0700-E0799) ===
-    DatabaseNotConnected,     // E0700
-    InvalidSqlQuery,          // E0701
-    ModelNotFound,            // E0702
-    MigrationFailed,          // E0703
-    InvalidDatabaseUrl,       // E0704
-    QueryBuilderUnknownModel, // E0705
-    QueryBuilderUnknownField, // E0706
-    QueryBuilderMissingWhere, // E0707
-    QueryBuilderInvalidChain, // E0708
-
-    // === Validation Errors (E0800-E0899) ===
-    InvalidEmail,         // E0800
-    InvalidUrl,           // E0801
-    BelowMinimum,         // E0802
-    AboveMaximum,         // E0803
-    PatternNotMatched,    // E0804
-    RequiredFieldMissing, // E0805
-
     // === Internal Errors (E0900-E0999) ===
     InternalError, // E0900
     CodegenFailed, // E0901
@@ -243,31 +215,6 @@ impl ErrorCode {
             Self::InvalidImportPath => "E0503",
             Self::PrivateImport => "E0504",
 
-            Self::InvalidRouteHandler => "E0600",
-            Self::DuplicateRoute => "E0601",
-            Self::InvalidMiddleware => "E0602",
-            Self::InvalidCorsConfig => "E0603",
-            Self::InvalidRateLimit => "E0604",
-            Self::FfiFunctionNotFound => "E0605",
-            Self::FfiTypeMismatch => "E0606",
-
-            Self::DatabaseNotConnected => "E0700",
-            Self::InvalidSqlQuery => "E0701",
-            Self::ModelNotFound => "E0702",
-            Self::MigrationFailed => "E0703",
-            Self::InvalidDatabaseUrl => "E0704",
-            Self::QueryBuilderUnknownModel => "E0705",
-            Self::QueryBuilderUnknownField => "E0706",
-            Self::QueryBuilderMissingWhere => "E0707",
-            Self::QueryBuilderInvalidChain => "E0708",
-
-            Self::InvalidEmail => "E0800",
-            Self::InvalidUrl => "E0801",
-            Self::BelowMinimum => "E0802",
-            Self::AboveMaximum => "E0803",
-            Self::PatternNotMatched => "E0804",
-            Self::RequiredFieldMissing => "E0805",
-
             Self::InternalError => "E0900",
             Self::CodegenFailed => "E0901",
             Self::LlvmError => "E0902",
@@ -366,31 +313,6 @@ impl ErrorCode {
             "E0502" => Some(Self::CircularImport),
             "E0503" => Some(Self::InvalidImportPath),
             "E0504" => Some(Self::PrivateImport),
-
-            "E0600" => Some(Self::InvalidRouteHandler),
-            "E0601" => Some(Self::DuplicateRoute),
-            "E0602" => Some(Self::InvalidMiddleware),
-            "E0603" => Some(Self::InvalidCorsConfig),
-            "E0604" => Some(Self::InvalidRateLimit),
-            "E0605" => Some(Self::FfiFunctionNotFound),
-            "E0606" => Some(Self::FfiTypeMismatch),
-
-            "E0700" => Some(Self::DatabaseNotConnected),
-            "E0701" => Some(Self::InvalidSqlQuery),
-            "E0702" => Some(Self::ModelNotFound),
-            "E0703" => Some(Self::MigrationFailed),
-            "E0704" => Some(Self::InvalidDatabaseUrl),
-            "E0705" => Some(Self::QueryBuilderUnknownModel),
-            "E0706" => Some(Self::QueryBuilderUnknownField),
-            "E0707" => Some(Self::QueryBuilderMissingWhere),
-            "E0708" => Some(Self::QueryBuilderInvalidChain),
-
-            "E0800" => Some(Self::InvalidEmail),
-            "E0801" => Some(Self::InvalidUrl),
-            "E0802" => Some(Self::BelowMinimum),
-            "E0803" => Some(Self::AboveMaximum),
-            "E0804" => Some(Self::PatternNotMatched),
-            "E0805" => Some(Self::RequiredFieldMissing),
 
             "E0900" => Some(Self::InternalError),
             "E0901" => Some(Self::CodegenFailed),
@@ -493,31 +415,6 @@ impl ErrorCode {
             Self::InvalidImportPath => "INVALID IMPORT",
             Self::PrivateImport => "PRIVATE IMPORT",
 
-            Self::InvalidRouteHandler => "INVALID HANDLER",
-            Self::DuplicateRoute => "DUPLICATE ROUTE",
-            Self::InvalidMiddleware => "INVALID MIDDLEWARE",
-            Self::InvalidCorsConfig => "INVALID CORS",
-            Self::InvalidRateLimit => "INVALID RATE LIMIT",
-            Self::FfiFunctionNotFound => "FFI NOT FOUND",
-            Self::FfiTypeMismatch => "FFI TYPE MISMATCH",
-
-            Self::DatabaseNotConnected => "DB NOT CONNECTED",
-            Self::InvalidSqlQuery => "INVALID SQL",
-            Self::ModelNotFound => "MODEL NOT FOUND",
-            Self::MigrationFailed => "MIGRATION FAILED",
-            Self::InvalidDatabaseUrl => "INVALID DB URL",
-            Self::QueryBuilderUnknownModel => "QB UNKNOWN MODEL",
-            Self::QueryBuilderUnknownField => "QB UNKNOWN FIELD",
-            Self::QueryBuilderMissingWhere => "QB MISSING WHERE",
-            Self::QueryBuilderInvalidChain => "QB INVALID CHAIN",
-
-            Self::InvalidEmail => "INVALID EMAIL",
-            Self::InvalidUrl => "INVALID URL",
-            Self::BelowMinimum => "BELOW MINIMUM",
-            Self::AboveMaximum => "ABOVE MAXIMUM",
-            Self::PatternNotMatched => "PATTERN NOT MATCHED",
-            Self::RequiredFieldMissing => "REQUIRED FIELD",
-
             Self::InternalError => "INTERNAL ERROR",
             Self::CodegenFailed => "CODEGEN FAILED",
             Self::LlvmError => "LLVM ERROR",
@@ -545,9 +442,6 @@ impl ErrorCode {
             300..=399 => ErrorCategory::Name,
             400..=499 => ErrorCategory::Declaration,
             500..=599 => ErrorCategory::Import,
-            600..=699 => ErrorCategory::Http,
-            700..=799 => ErrorCategory::Database,
-            800..=899 => ErrorCategory::Validation,
             _ => ErrorCategory::Internal,
         }
     }
@@ -745,9 +639,6 @@ pub enum ErrorCategory {
     Name,
     Declaration,
     Import,
-    Http,
-    Database,
-    Validation,
     Internal,
 }
 

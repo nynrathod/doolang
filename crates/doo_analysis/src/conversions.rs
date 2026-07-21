@@ -8,7 +8,6 @@ use doo_core::errors::codes::{CompilerError, ErrorCode};
 
 use crate::borrow::{BorrowError, BorrowErrorKind};
 use crate::ownership::OwnershipError;
-use crate::semantic::decorators::DecoratorError;
 use crate::semantic::error_flow::{ErrorFlowError, ErrorFlowErrorKind};
 use crate::semantic::exhaustiveness::{ExhaustivenessError, ExhaustivenessErrorKind};
 use crate::semantic::resolve::{CircularImportError, ResolveError};
@@ -396,17 +395,6 @@ impl From<VisibilityError> for CompilerError {
 }
 
 // ============================================================================
-// DecoratorError → CompilerError
-// Delegates to decorators::to_compiler_error (single source of truth).
-// ============================================================================
-
-impl From<DecoratorError> for CompilerError {
-    fn from(e: DecoratorError) -> Self {
-        crate::semantic::decorators::to_compiler_error(&e, doo_core::Span::dummy())
-    }
-}
-
-// ============================================================================
 // CircularImportError → CompilerError
 // ============================================================================
 
@@ -462,10 +450,6 @@ pub fn scope_errors_to_compiler(errors: Vec<ScopeError>) -> Vec<CompilerError> {
 }
 
 pub fn visibility_errors_to_compiler(errors: Vec<VisibilityError>) -> Vec<CompilerError> {
-    errors.into_iter().map(CompilerError::from).collect()
-}
-
-pub fn decorator_errors_to_compiler(errors: Vec<DecoratorError>) -> Vec<CompilerError> {
     errors.into_iter().map(CompilerError::from).collect()
 }
 

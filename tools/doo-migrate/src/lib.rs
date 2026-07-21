@@ -643,7 +643,7 @@ fn resolve_database_url(opts: &MigrateOptions) -> Result<String, String> {
     }
 
     // 2. Environment variable
-    if let Ok(url) = std::env::var(doo_core::constants::env_vars::DATABASE_URL) {
+    if let Ok(url) = std::env::var("DATABASE_URL") {
         return Ok(url);
     }
 
@@ -669,7 +669,7 @@ fn resolve_database_url(opts: &MigrateOptions) -> Result<String, String> {
                     }
                     if let Some((key, value)) = line.split_once('=') {
                         let key = key.trim().trim_start_matches("export ").trim();
-                        if key == doo_core::constants::env_vars::DATABASE_URL {
+                        if key == "DATABASE_URL" {
                             let value = value.trim();
                             // Strip surrounding quotes
                             let value = if value.len() >= 2 {
@@ -698,7 +698,7 @@ fn resolve_database_url(opts: &MigrateOptions) -> Result<String, String> {
 
     Err(format!(
         "{} not found. Set it in .env, environment, or use --database-url",
-        doo_core::constants::env_vars::DATABASE_URL
+        "DATABASE_URL"
     ))
 }
 
