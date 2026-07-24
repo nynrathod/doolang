@@ -741,7 +741,7 @@ mod tests {
     #[test]
     fn test_public_access() {
         let mut checker = VisibilityChecker::new();
-        let span = Span::new(0, 0, 0);
+        let span = Span::dummy();
 
         checker.register_public("foo", "module_a", span);
         checker.set_current_module("module_b");
@@ -752,7 +752,7 @@ mod tests {
     #[test]
     fn test_private_same_module() {
         let mut checker = VisibilityChecker::new();
-        let span = Span::new(0, 0, 0);
+        let span = Span::dummy();
 
         checker.register_private("foo", "module_a", span);
         checker.set_current_module("module_a");
@@ -763,7 +763,7 @@ mod tests {
     #[test]
     fn test_private_cross_module() {
         let mut checker = VisibilityChecker::new();
-        let span = Span::new(0, 0, 0);
+        let span = Span::dummy();
 
         checker.register_private("foo", "module_a", span);
         checker.set_current_module("module_b");
@@ -774,7 +774,7 @@ mod tests {
     #[test]
     fn test_is_accessible() {
         let mut checker = VisibilityChecker::new();
-        let span = Span::new(0, 0, 0);
+        let span = Span::dummy();
 
         checker.register_public("pub_fn", "module_a", span);
         checker.register_private("priv_fn", "module_a", span);

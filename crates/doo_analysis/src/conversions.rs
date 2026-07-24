@@ -470,7 +470,7 @@ mod tests {
     fn test_type_error_conversion() {
         let err = TypeError {
             kind: TypeErrorKind::Undefined("foo".into(), None),
-            span: Span::new(0, 10, 13),
+            span: Span::new(10, 13),
         };
         let ce: CompilerError = err.into();
         assert_eq!(ce.code, ErrorCode::UndefinedVariable);
@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn test_borrow_error_conversion() {
-        let err = BorrowError::concurrent_mut("x".into(), Span::new(0, 5, 6), Span::new(0, 20, 21));
+        let err = BorrowError::concurrent_mut("x".into(), Span::new(5, 6), Span::new(20, 21));
         let ce: CompilerError = err.into();
         assert_eq!(ce.code, ErrorCode::ConcurrentMutableBorrow);
         assert_eq!(ce.labels.len(), 1);
@@ -487,7 +487,7 @@ mod tests {
 
     #[test]
     fn test_error_flow_conversion() {
-        let err = ErrorFlowError::new(ErrorFlowErrorKind::PanicWithoutMessage, Span::new(0, 0, 2));
+        let err = ErrorFlowError::new(ErrorFlowErrorKind::PanicWithoutMessage, Span::new(0, 2));
         let ce: CompilerError = err.into();
         assert_eq!(ce.code, ErrorCode::PanicWithoutMessage);
     }
@@ -498,7 +498,7 @@ mod tests {
             kind: ExhaustivenessErrorKind::NonExhaustive {
                 missing: vec!["Color::Blue".into(), "Color::Green".into()],
             },
-            span: Span::new(0, 0, 10),
+            span: Span::new(0, 10),
         };
         let ce: CompilerError = err.into();
         assert_eq!(ce.code, ErrorCode::NonExhaustiveMatch);
@@ -509,8 +509,8 @@ mod tests {
     fn test_scope_error_redeclaration() {
         let err = ScopeError::Redeclaration {
             name: "x".into(),
-            original: Span::new(0, 0, 1),
-            redeclared: Span::new(0, 10, 11),
+            original: Span::new(0, 1),
+            redeclared: Span::new(10, 11),
         };
         let ce: CompilerError = err.into();
         assert_eq!(ce.code, ErrorCode::NameAlreadyDefined);
@@ -524,7 +524,7 @@ mod tests {
             symbol: "helper".into(),
             defined_in: "utils".into(),
             accessed_from: "main".into(),
-            span: Span::new(0, 5, 11),
+            span: Span::new(5, 11),
         };
         let ce: CompilerError = err.into();
         assert_eq!(ce.code, ErrorCode::PrivateItemAccess);
@@ -535,7 +535,7 @@ mod tests {
     fn test_circular_import_conversion() {
         let err = CircularImportError {
             cycle: vec!["a".into(), "b".into(), "c".into(), "a".into()],
-            span: Span::new(0, 0, 10),
+            span: Span::new(0, 10),
         };
         let ce: CompilerError = err.into();
         assert_eq!(ce.code, ErrorCode::CircularImport);

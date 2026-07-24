@@ -395,7 +395,12 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     imported.sort_by_key(|(fid, _, _)| *fid);
     for (expected_id, name, src) in &imported {
         let actual_id = source_map.add_file(name, src);
-        debug_assert_eq!(actual_id, *expected_id, "file_id mismatch for {}", name);
+        debug_assert_eq!(
+            actual_id,
+            doo_core::FileId(*expected_id),
+            "file_id mismatch for {}",
+            name
+        );
     }
 
     let mut hir = hir; // Make HIR mutable for drop insertion
@@ -508,7 +513,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
                     std::mem::discriminant(&e.code),
                     e.span.start,
                     e.span.end,
-                    e.span.file_id,
+                    e.file_id,
                 );
                 seen.insert(key)
             })
@@ -1741,7 +1746,7 @@ mod tests {
 
     // Helper to create a test span
     fn test_span() -> Span {
-        Span::new(0, 0, 10)
+        Span::new(0, 10)
     }
 
     // Helper to create an empty HIR program
@@ -1797,8 +1802,8 @@ mod tests {
         use doo_core::errors::codes::ErrorCode;
 
         let errors = vec![
-            BorrowError::concurrent_mut("x".into(), Span::new(0, 0, 5), Span::new(0, 10, 15)),
-            BorrowError::borrow_while_mut("y".into(), Span::new(0, 0, 5), Span::new(0, 10, 15)),
+            BorrowError::concurrent_mut("x".into(), Span::new(0, 5), Span::new(10, 15)),
+            BorrowError::borrow_while_mut("y".into(), Span::new(0, 5), Span::new(10, 15)),
         ];
         let compiler_errors = borrow_errors_to_compiler(errors);
         assert_eq!(compiler_errors.len(), 2);
@@ -1860,12 +1865,12 @@ mod tests {
         use doo_diagnostics::{DiagnosticEmitter, SourceMap};
 
         let mut sm = SourceMap::new();
-        let fid = sm.add_file("test.doo", "let age: Int = \"twenty\"");
+        let _fid = sm.add_file("test.doo", "let age: Int = \"twenty\"");
 
         let err = CompilerError::new(
             ErrorCode::TypeMismatch,
             "Str, expected Int",
-            Span::new(fid, 15, 23),
+            Span::new(15, 23),
         )
         .with_suggestion("use: 20");
 

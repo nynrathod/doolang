@@ -15,7 +15,7 @@
 //! Delegates to the global shared interner in `doo_core::intern` so that
 //! symbols interned in any compiler phase share a single namespace.
 
-use doo_core::intern::Symbol;
+use doo_core::symbol::Symbol;
 
 /// A MIR symbol — a 4-byte interned string ID.
 /// `Copy + Clone + Eq + Hash` — cloning is a simple integer copy (zero cost).
@@ -25,14 +25,14 @@ pub type Sym = Symbol;
 /// If the string was already interned, returns the existing handle.
 #[inline]
 pub fn sym(s: &str) -> Sym {
-    doo_core::intern::sym(s)
+    doo_core::intern::intern(s) // Changed from sym(s) to intern(s)
 }
 
 /// Resolve a `Sym` back to its string value.
 /// Panics if the symbol was never interned (should never happen in practice).
 #[inline]
 pub fn resolve(s: Sym) -> String {
-    doo_core::intern::resolve(s)
+    doo_core::intern::resolve(s).to_string() // Added .to_string()
 }
 
 /// Resolve a `Sym` to a string reference via callback.

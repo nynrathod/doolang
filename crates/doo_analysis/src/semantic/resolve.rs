@@ -1216,7 +1216,7 @@ mod tests {
     use doo_core::Span;
 
     fn span() -> Span {
-        Span::new(0, 0, 0)
+        Span::dummy()
     }
 
     #[test]

@@ -54,7 +54,7 @@ impl From<LinkError> for doo_core::errors::codes::CompilerError {
                 format!("module not found: {}", n),
             ),
         };
-        doo_core::errors::codes::CompilerError::new(code, msg, doo_core::Span::new(0, 0, 0))
+        doo_core::errors::codes::CompilerError::new(code, msg, doo_core::Span::dummy())
     }
 }
 

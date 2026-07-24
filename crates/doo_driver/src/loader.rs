@@ -511,7 +511,7 @@ pub fn resolve_imports(
                 result.errors.push(CompilerError::new(
                     code,
                     format!("failed to load '{}': {}", module_key, e),
-                    doo_core::Span::new(0, 0, 0),
+                    doo_core::Span::dummy(),
                 ));
                 continue;
             }
@@ -827,7 +827,7 @@ pub fn resolve_imports(
                 result.errors.push(CompilerError::new(
                     ErrorCode::ModuleNotFound,
                     format!("failed to read module '{}': {}", module_path.display(), e),
-                    doo_core::Span::new(0, 0, 0),
+                    doo_core::Span::dummy(),
                 ));
                 continue;
             }
@@ -845,7 +845,7 @@ pub fn resolve_imports(
                 result.errors.push(CompilerError::new(
                     ErrorCode::IoError,
                     format!("failed to parse module '{}': {}", module_path.display(), e),
-                    doo_core::Span::new(0, 0, 0),
+                    doo_core::Span::dummy(),
                 ));
                 continue;
             }
@@ -1176,7 +1176,7 @@ pub fn resolve_imports(
                     result.errors.push(CompilerError::new(
                         code,
                         format!("failed to load '{}': {}", module_key, e),
-                        doo_core::Span::new(0, 0, 0),
+                        doo_core::Span::dummy(),
                     ));
                     continue;
                 }
@@ -1345,16 +1345,10 @@ fn capitalize_first(s: &str) -> String {
 /// e.g. `import defs::types::internalState;` -> caret on `internalState` only.
 fn narrow_span_to_symbol(full_span: &Span, sym_name: &str) -> Span {
     let sym_len = sym_name.len() as u32;
-    // The symbol is near the end of the span (before the `;`)
-    // Approximate: end of span - 1 (semicolon) - sym_len
     let span_len = full_span.end.saturating_sub(full_span.start);
     if span_len > sym_len + 1 {
         let sym_start = full_span.end.saturating_sub(sym_len).saturating_sub(1);
-        Span::new(
-            full_span.file_id,
-            sym_start,
-            full_span.end.saturating_sub(1),
-        )
+        Span::new(sym_start, full_span.end.saturating_sub(1))
     } else {
         *full_span
     }
