@@ -153,7 +153,7 @@ impl ParserItems for Parser {
         }
 
         let end = self.prev_span();
-        Ok(Decorator::with_args(name, args, start.merge(&end)))
+        Ok(Decorator::with_args(name, args, start.merge(end)))
     }
 
     // === Declarations ===
@@ -201,7 +201,7 @@ impl ParserItems for Parser {
         })?;
 
         let end = self.prev_span();
-        Ok(ConstDecl::new(name, value, start.merge(&end)))
+        Ok(ConstDecl::new(name, value, start.merge(end)))
     }
 
     /// Parse `static Name: Type` — runtime global variable declaration.
@@ -240,7 +240,7 @@ impl ParserItems for Parser {
         let type_expr = self.parse_type_expr()?;
 
         let end = self.prev_span();
-        Ok(StaticDecl::new(name, type_expr, start.merge(&end)))
+        Ok(StaticDecl::new(name, type_expr, start.merge(end)))
     }
 
     fn parse_function(&mut self) -> ParseResult<FunctionDecl> {
@@ -296,7 +296,7 @@ impl ParserItems for Parser {
                     Some(types.remove(0))
                 } else {
                     let end = self.prev_span();
-                    Some(TypeExpr::new(TypeExprKind::Tuple(types), start.merge(&end)))
+                    Some(TypeExpr::new(TypeExprKind::Tuple(types), start.merge(end)))
                 };
 
                 // Check for error type after return type
@@ -364,7 +364,7 @@ impl ParserItems for Parser {
             associated_type,
             is_expr_fn,
             is_async,
-            span: start.merge(&end),
+            span: start.merge(end),
         })
     }
 
@@ -440,7 +440,7 @@ impl ParserItems for Parser {
             params.push(TypeParam {
                 name,
                 constraint,
-                span: param_span.merge(&end),
+                span: param_span.merge(end),
             });
 
             if !self.check(TokenKind::Gt) {
@@ -541,7 +541,7 @@ impl ParserItems for Parser {
             type_params,
             fields,
             decorators: Vec::new(),
-            span: start.merge(&end),
+            span: start.merge(end),
         })
     }
 
@@ -586,7 +586,7 @@ impl ParserItems for Parser {
             is_optional,
             default,
             decorators,
-            span: start.merge(&end),
+            span: start.merge(end),
         })
     }
 
@@ -666,7 +666,7 @@ impl ParserItems for Parser {
             struct_name,
             methods,
             decorators: Vec::new(),
-            span: start.merge(&end),
+            span: start.merge(end),
         })
     }
 
@@ -749,7 +749,7 @@ impl ParserItems for Parser {
             name,
             is_public,
             variants,
-            span: start.merge(&end),
+            span: start.merge(end),
         })
     }
 
@@ -772,7 +772,7 @@ impl ParserItems for Parser {
                 Some(types.remove(0))
             } else {
                 let end = self.prev_span();
-                Some(TypeExpr::new(TypeExprKind::Tuple(types), start.merge(&end)))
+                Some(TypeExpr::new(TypeExprKind::Tuple(types), start.merge(end)))
             }
         } else {
             None
@@ -786,7 +786,7 @@ impl ParserItems for Parser {
             name,
             payload,
             decorators,
-            span: start.merge(&end),
+            span: start.merge(end),
         })
     }
 
@@ -825,7 +825,7 @@ impl ParserItems for Parser {
             name,
             is_public,
             methods,
-            span: start.merge(&end),
+            span: start.merge(end),
         })
     }
 
@@ -858,7 +858,7 @@ impl ParserItems for Parser {
                     Some(types.remove(0))
                 } else {
                     let end = self.prev_span();
-                    Some(TypeExpr::new(TypeExprKind::Tuple(types), start.merge(&end)))
+                    Some(TypeExpr::new(TypeExprKind::Tuple(types), start.merge(end)))
                 };
                 let err_type = if self.check(TokenKind::Bang) {
                     self.advance();
@@ -887,7 +887,7 @@ impl ParserItems for Parser {
             params,
             return_type,
             error_type,
-            span: start.merge(&end),
+            span: start.merge(end),
         })
     }
 
@@ -908,7 +908,7 @@ impl ParserItems for Parser {
                     items: Vec::new(),
                     alias: None,
                     wildcard: true,
-                    span: start.merge(&end),
+                    span: start.merge(end),
                 });
             }
 
@@ -933,7 +933,7 @@ impl ParserItems for Parser {
                 items: Vec::new(),
                 alias,
                 wildcard: false,
-                span: start.merge(&end),
+                span: start.merge(end),
             });
         }
 
@@ -971,7 +971,7 @@ impl ParserItems for Parser {
             items,
             alias: None,
             wildcard: false,
-            span: start.merge(&end),
+            span: start.merge(end),
         })
     }
 
@@ -1011,7 +1011,7 @@ impl ParserItems for Parser {
         self.expect(TokenKind::RBrace)?;
         let end = self.prev_span();
 
-        let mut decl = PolicyDecl::new(name, for_struct, start.merge(&end));
+        let mut decl = PolicyDecl::new(name, for_struct, start.merge(end));
         decl.rules = rules;
         Ok(decl)
     }

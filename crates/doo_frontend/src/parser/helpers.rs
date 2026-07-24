@@ -44,7 +44,7 @@ impl Parser {
                     op_span,
                 )
             })?;
-            let span = left.span.merge(&right.span);
+            let span = left.span.merge(right.span);
             left = Expr::new(
                 ExprKind::Binary {
                     left: Box::new(left),
@@ -66,7 +66,7 @@ impl Parser {
         let inclusive = self.check(TokenKind::DotDotEq);
         self.advance();
         let end = self.parse_expression_prec(8)?;
-        let span = left.span.merge(&end.span);
+        let span = left.span.merge(end.span);
 
         Ok(Expr::new(
             ExprKind::Range {

@@ -154,7 +154,7 @@ impl Parser {
         }
 
         let end = self.current_span();
-        Ok(Program::new(items, start.merge(&end)))
+        Ok(Program::new(items, start.merge(end)))
     }
 
     // === Helpers (Internal logic exposed to submodules) ===

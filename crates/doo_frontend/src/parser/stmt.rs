@@ -40,13 +40,13 @@ impl ParserStmt for Parser {
                 let start = self.current_span();
                 let decl = self.parse_struct()?;
                 let end = self.prev_span();
-                Ok(Stmt::new(StmtKind::StructDecl(decl), start.merge(&end)))
+                Ok(Stmt::new(StmtKind::StructDecl(decl), start.merge(end)))
             }
             TokenKind::Enum => {
                 let start = self.current_span();
                 let decl = self.parse_enum()?;
                 let end = self.prev_span();
-                Ok(Stmt::new(StmtKind::EnumDecl(decl), start.merge(&end)))
+                Ok(Stmt::new(StmtKind::EnumDecl(decl), start.merge(end)))
             }
             _ => self.parse_expr_or_assign(),
         }
@@ -114,7 +114,7 @@ impl ParserStmt for Parser {
                     } else {
                         let ok_start = patterns.first().map(|p| p.span).unwrap_or(start);
                         let ok_end = patterns.last().map(|p| p.span).unwrap_or(start);
-                        Pattern::new(PatternKind::Tuple(patterns), ok_start.merge(&ok_end))
+                        Pattern::new(PatternKind::Tuple(patterns), ok_start.merge(ok_end))
                     };
 
                     return Ok(Stmt::new(
@@ -123,7 +123,7 @@ impl ParserStmt for Parser {
                             ok_pattern,
                             error_var,
                         },
-                        start.merge(&end),
+                        start.merge(end),
                     ));
                 }
 
@@ -136,7 +136,7 @@ impl ParserStmt for Parser {
             let pattern_end = patterns.last().map(|p| p.span).unwrap_or(start);
             let pattern = Pattern::new(
                 PatternKind::Tuple(patterns),
-                pattern_start.merge(&pattern_end),
+                pattern_start.merge(pattern_end),
             );
 
             let type_ann = if self.check(TokenKind::Colon) {
@@ -157,7 +157,7 @@ impl ParserStmt for Parser {
                     type_ann,
                     value,
                 },
-                start.merge(&end),
+                start.merge(end),
             ));
         }
 
@@ -202,7 +202,7 @@ impl ParserStmt for Parser {
                     ok_pattern: first_pattern,
                     error_var,
                 },
-                start.merge(&end),
+                start.merge(end),
             ));
         }
 
@@ -226,7 +226,7 @@ impl ParserStmt for Parser {
                 type_ann,
                 value,
             },
-            start.merge(&end),
+            start.merge(end),
         ))
     }
 
@@ -255,7 +255,7 @@ impl ParserStmt for Parser {
                 then_block,
                 else_branch,
             },
-            start.merge(&end),
+            start.merge(end),
         ))
     }
 
@@ -275,7 +275,7 @@ impl ParserStmt for Parser {
                     iterable: None,
                     body,
                 },
-                start.merge(&end),
+                start.merge(end),
             ));
         }
 
@@ -297,7 +297,7 @@ impl ParserStmt for Parser {
 
             let p_start = patterns.first().map(|p| p.span).unwrap_or(start);
             let p_end = patterns.last().map(|p| p.span).unwrap_or(start);
-            Pattern::new(PatternKind::Tuple(patterns), p_start.merge(&p_end))
+            Pattern::new(PatternKind::Tuple(patterns), p_start.merge(p_end))
         } else {
             first_pattern
         };
@@ -335,7 +335,7 @@ impl ParserStmt for Parser {
                 iterable,
                 body,
             },
-            start.merge(&end),
+            start.merge(end),
         ))
     }
 
@@ -362,7 +362,7 @@ impl ParserStmt for Parser {
         }
 
         let end = self.prev_span();
-        Ok(Stmt::new(StmtKind::Return(values), start.merge(&end)))
+        Ok(Stmt::new(StmtKind::Return(values), start.merge(end)))
     }
 
     fn parse_break(&mut self) -> ParseResult<Stmt> {
@@ -408,7 +408,7 @@ impl ParserStmt for Parser {
 
         self.expect(TokenKind::RParen)?;
         let end = self.prev_span();
-        Ok(Stmt::new(StmtKind::Print(exprs), start.merge(&end)))
+        Ok(Stmt::new(StmtKind::Print(exprs), start.merge(end)))
     }
 
     fn parse_block(&mut self) -> ParseResult<Vec<Stmt>> {
@@ -455,7 +455,7 @@ impl ParserStmt for Parser {
         let start = self.current_span();
         let stmts = self.parse_block()?;
         let end = self.prev_span();
-        Ok(Stmt::new(StmtKind::Block(stmts), start.merge(&end)))
+        Ok(Stmt::new(StmtKind::Block(stmts), start.merge(end)))
     }
 
     fn parse_expr_or_assign(&mut self) -> ParseResult<Stmt> {
@@ -475,7 +475,7 @@ impl ParserStmt for Parser {
                     target: pattern,
                     value,
                 },
-                start.merge(&end),
+                start.merge(end),
             ));
         }
 
@@ -491,7 +491,7 @@ impl ParserStmt for Parser {
                     op,
                     value,
                 },
-                start.merge(&end),
+                start.merge(end),
             ));
         }
 
@@ -505,13 +505,13 @@ impl ParserStmt for Parser {
                         variable: name.clone(),
                         op,
                     },
-                    start.merge(&end),
+                    start.merge(end),
                 ));
             }
         }
 
         let end = self.prev_span();
-        Ok(Stmt::new(StmtKind::Expr(expr), start.merge(&end)))
+        Ok(Stmt::new(StmtKind::Expr(expr), start.merge(end)))
     }
 
     fn expr_to_pattern(&self, expr: &Expr) -> ParseResult<Pattern> {

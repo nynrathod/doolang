@@ -39,7 +39,7 @@ impl ParserExpr for Parser {
             })?;
             // Apply postfix to get correct precedence: !t.IsDone() -> !(t.IsDone())
             expr = self.parse_postfix(expr)?;
-            let span = start.merge(&expr.span);
+            let span = start.merge(expr.span);
             return Ok(Expr::new(
                 ExprKind::Unary {
                     op,
@@ -155,7 +155,7 @@ impl ParserExpr for Parser {
                 let expr = self.parse_postfix(expr)?;
                 Ok(Expr::new(
                     ExprKind::Await(Box::new(expr)),
-                    start.merge(&self.prev_span()),
+                    start.merge(self.prev_span()),
                 ))
             }
             TokenKind::Go => {
@@ -165,7 +165,7 @@ impl ParserExpr for Parser {
                     ExprKind::GoSpawn {
                         body: Box::new(body),
                     },
-                    start.merge(&self.prev_span()),
+                    start.merge(self.prev_span()),
                 ))
             }
             TokenKind::Scope => {
@@ -178,7 +178,7 @@ impl ParserExpr for Parser {
                 self.expect(TokenKind::RBrace)?;
                 Ok(Expr::new(
                     ExprKind::ScopeBlock { body: stmts },
-                    start.merge(&self.prev_span()),
+                    start.merge(self.prev_span()),
                 ))
             }
 
@@ -240,7 +240,7 @@ impl ParserExpr for Parser {
                             let message = Box::new(self.parse_expression()?);
                             self.expect(TokenKind::RParen)?;
 
-                            let span = start.merge(&self.prev_span());
+                            let span = start.merge(self.prev_span());
                             expr = Expr::new(
                                 ExprKind::UnwrapOrPanic {
                                     expr: Box::new(expr),
@@ -259,7 +259,7 @@ impl ParserExpr for Parser {
                     // Error propagation operator: expr?
                     let start = expr.span;
                     self.advance();
-                    let span = start.merge(&self.prev_span());
+                    let span = start.merge(self.prev_span());
                     expr = Expr::new(ExprKind::Try(Box::new(expr)), span);
                 }
                 _ => break,
@@ -292,7 +292,7 @@ fn parse_ident(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
                 variant,
                 payload,
             },
-            start.merge(&parser.prev_span()),
+            start.merge(parser.prev_span()),
         ));
     }
 
@@ -317,7 +317,7 @@ fn parse_ident(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
             parser.expect(TokenKind::RBrace)?;
             return Ok(Expr::new(
                 ExprKind::StructLit { name, fields },
-                start.merge(&parser.prev_span()),
+                start.merge(parser.prev_span()),
             ));
         }
     }
@@ -342,7 +342,7 @@ fn parse_group_or_tuple(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
         parser.expect(TokenKind::RParen)?;
         Ok(Expr::new(
             ExprKind::TupleLit(elements),
-            start.merge(&parser.prev_span()),
+            start.merge(parser.prev_span()),
         ))
     } else {
         parser.expect(TokenKind::RParen)?;
@@ -365,7 +365,7 @@ fn parse_array(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
     parser.expect(TokenKind::RBracket)?;
     Ok(Expr::new(
         ExprKind::ArrayLit(elements),
-        start.merge(&parser.prev_span()),
+        start.merge(parser.prev_span()),
     ))
 }
 
@@ -390,7 +390,7 @@ fn parse_map(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
     parser.expect(TokenKind::RBrace)?;
     Ok(Expr::new(
         ExprKind::MapLit(entries),
-        start.merge(&parser.prev_span()),
+        start.merge(parser.prev_span()),
     ))
 }
 
@@ -405,7 +405,7 @@ fn parse_object(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
     parser.expect(TokenKind::RBrace)?;
     Ok(Expr::new(
         ExprKind::ObjectLit(entries),
-        start.merge(&parser.prev_span()),
+        start.merge(parser.prev_span()),
     ))
 }
 
@@ -433,7 +433,7 @@ fn parse_block(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
     parser.expect(TokenKind::RBrace)?;
     Ok(Expr::new(
         ExprKind::Block(stmts, final_expr),
-        start.merge(&parser.prev_span()),
+        start.merge(parser.prev_span()),
     ))
 }
 
@@ -448,7 +448,7 @@ fn parse_route_block(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
     parser.expect(TokenKind::RBrace)?;
     Ok(Expr::new(
         ExprKind::RouteBlock { routes },
-        start.merge(&parser.prev_span()),
+        start.merge(parser.prev_span()),
     ))
 }
 
@@ -472,7 +472,7 @@ fn parse_if_expr(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
             then_branch: Box::new(then_branch),
             else_branch,
         },
-        start.merge(&parser.prev_span()),
+        start.merge(parser.prev_span()),
     ))
 }
 
@@ -504,7 +504,7 @@ fn parse_match(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
     })?;
     Ok(Expr::new(
         ExprKind::Match { values, arms },
-        start.merge(&parser.prev_span()),
+        start.merge(parser.prev_span()),
     ))
 }
 
@@ -565,7 +565,7 @@ fn parse_match_arm(parser: &mut Parser) -> ParseResult<MatchArm> {
         // Parse as a statement and wrap in a Block expression
         let body_start = parser.current_span();
         let stmt = parser.parse_statement()?;
-        let body_span = body_start.merge(&parser.prev_span());
+        let body_span = body_start.merge(parser.prev_span());
         Expr::new(ExprKind::Block(vec![stmt], None), body_span)
     } else {
         // Parse as a regular expression
@@ -576,7 +576,7 @@ fn parse_match_arm(parser: &mut Parser) -> ParseResult<MatchArm> {
         pattern,
         guard,
         body,
-        span: start.merge(&parser.prev_span()),
+        span: start.merge(parser.prev_span()),
     })
 }
 
@@ -702,7 +702,7 @@ fn parse_closure(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
             return_type,
             error_type,
         },
-        start.merge(&parser.prev_span()),
+        start.merge(parser.prev_span()),
     ))
 }
 
@@ -730,7 +730,7 @@ fn parse_ok(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
     };
     Ok(Expr::new(
         ExprKind::Ok(values),
-        start.merge(&parser.prev_span()),
+        start.merge(parser.prev_span()),
     ))
 }
 
@@ -746,7 +746,7 @@ fn parse_err(parser: &mut Parser, start: Span) -> ParseResult<Expr> {
     };
     Ok(Expr::new(
         ExprKind::Err(Box::new(value)),
-        start.merge(&parser.prev_span()),
+        start.merge(parser.prev_span()),
     ))
 }
 
@@ -762,7 +762,7 @@ fn parse_call(parser: &mut Parser, func: Expr) -> ParseResult<Expr> {
             func: Box::new(func),
             args,
         },
-        start.merge(&parser.prev_span()),
+        start.merge(parser.prev_span()),
     ))
 }
 
@@ -780,7 +780,7 @@ fn parse_field_or_method(parser: &mut Parser, object: Expr) -> ParseResult<Expr>
                 method: field,
                 args,
             },
-            start.merge(&parser.prev_span()),
+            start.merge(parser.prev_span()),
         ))
     } else {
         Ok(Expr::new(
@@ -788,7 +788,7 @@ fn parse_field_or_method(parser: &mut Parser, object: Expr) -> ParseResult<Expr>
                 object: Box::new(object),
                 field,
             },
-            start.merge(&parser.prev_span()),
+            start.merge(parser.prev_span()),
         ))
     }
 }
@@ -803,7 +803,7 @@ fn parse_index(parser: &mut Parser, object: Expr) -> ParseResult<Expr> {
             object: Box::new(object),
             index: Box::new(index),
         },
-        start.merge(&parser.prev_span()),
+        start.merge(parser.prev_span()),
     ))
 }
 
@@ -816,7 +816,7 @@ fn parse_cast(parser: &mut Parser, expr: Expr) -> ParseResult<Expr> {
             expr: Box::new(expr),
             target,
         },
-        start.merge(&parser.prev_span()),
+        start.merge(parser.prev_span()),
     ))
 }
 

@@ -888,22 +888,27 @@ impl<'a> Lexer<'a> {
     }
 
     fn make_token(&self, kind: TokenKind, text: &str) -> Token {
-        let span = Span::new(
-            self.file_id,
-            self.byte_offset,
-            self.byte_offset + text.len() as u32,
-        );
-        Token::new(kind, text, span)
+        Token {
+            kind,
+            text: text.to_string(),
+            span: Span::new(self.byte_offset, self.byte_offset + text.len() as u32),
+        }
     }
 
     fn make_token_at(&self, kind: TokenKind, text: &str, start_offset: u32) -> Token {
-        let span = Span::new(self.file_id, start_offset, self.byte_offset);
-        Token::new(kind, text, span)
+        Token {
+            kind,
+            text: text.to_string(),
+            span: Span::new(start_offset, self.byte_offset),
+        }
     }
 
     fn error_token(&self, message: &str) -> Token {
-        let span = Span::new(self.file_id, self.byte_offset, self.byte_offset);
-        Token::new(TokenKind::Error, message, span)
+        Token {
+            kind: TokenKind::Error,
+            text: message.to_string(),
+            span: Span::new(self.byte_offset, self.byte_offset),
+        }
     }
 }
 

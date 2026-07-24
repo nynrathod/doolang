@@ -21,7 +21,7 @@ impl ParserTypes for Parser {
             let element = self.parse_type_expr()?;
             self.expect(TokenKind::RBracket)?;
             let end = self.prev_span();
-            TypeExpr::array(element, start.merge(&end))
+            TypeExpr::array(element, start.merge(end))
 
         // Map type: {K: V} or {K: V}?
         } else if self.check(TokenKind::LBrace) {
@@ -33,7 +33,7 @@ impl ParserTypes for Parser {
             let end = self.prev_span();
             TypeExpr::new(
                 TypeExprKind::Map(Box::new(key), Box::new(value)),
-                start.merge(&end),
+                start.merge(end),
             )
 
         // Tuple type: (T1, T2, ...) or (T1, T2)?
@@ -48,7 +48,7 @@ impl ParserTypes for Parser {
             }
             self.expect(TokenKind::RParen)?;
             let end = self.prev_span();
-            TypeExpr::new(TypeExprKind::Tuple(types), start.merge(&end))
+            TypeExpr::new(TypeExprKind::Tuple(types), start.merge(end))
 
         // Function type: fn(T) -> U  or  fn(T1, T2) -> U  or  fn() -> U
         } else if self.check(TokenKind::Fn) {
@@ -76,7 +76,7 @@ impl ParserTypes for Parser {
                     params,
                     returns: Box::new(returns),
                 },
-                start.merge(&end),
+                start.merge(end),
             )
 
         // Named type: T or T?
@@ -91,14 +91,14 @@ impl ParserTypes for Parser {
             })?;
 
             let end = self.prev_span();
-            TypeExpr::named(name, start.merge(&end))
+            TypeExpr::named(name, start.merge(end))
         };
 
         // Check for optional suffix: T?, [T]?, {K: V}?, (T1, T2)?
         if self.check(TokenKind::Question) {
             self.advance();
             let end = self.prev_span();
-            return Ok(TypeExpr::optional(base, start.merge(&end)));
+            return Ok(TypeExpr::optional(base, start.merge(end)));
         }
 
         Ok(base)
@@ -127,12 +127,12 @@ impl ParserTypes for Parser {
             let end = self.prev_span();
             return Ok(Pattern::new(
                 PatternKind::Tuple(patterns),
-                start.merge(&end),
+                start.merge(end),
             ));
         }
 
         let name = self.expect_ident()?;
         let end = self.prev_span();
-        Ok(Pattern::ident(name, start.merge(&end)))
+        Ok(Pattern::ident(name, start.merge(end)))
     }
 }
