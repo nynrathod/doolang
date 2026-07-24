@@ -1,264 +1,119 @@
-//! # Symbol Table
+//! Symbol — an interned string identifier.
 //!
-//! Manages symbols (variables, functions, types) in scopes.
-//!
-//! ## Design
-//!
-//! - Scope stack for proper variable shadowing
-//! - Fast lookup with HashMap
-//! - Tracks mutability and ownership state
+//! A [`Symbol`] is a compact (4-byte) handle to an interned string. Symbols
+//! are used throughout the compiler for identifiers, keywords, and other
+//! string data that needs fast comparison and low memory overhead.
 
-use crate::types::TypeId;
-use crate::span::Span;
-use std::collections::HashMap;
+use std::fmt;
+
+use crate::intern;
 
 // ============================================================================
-// Symbol Info
+// Symbol
 // ============================================================================
 
-/// Information about a symbol (variable, function, type).
-#[derive(Debug, Clone)]
-pub struct SymbolInfo {
-    /// Symbol name
-    pub name: String,
-    /// Symbol kind
-    pub kind: SymbolKind,
-    /// Type of the symbol
-    pub type_id: TypeId,
-    /// Whether the symbol is mutable
-    pub mutable: bool,
-    /// Where the symbol was defined
-    pub span: Span,
+/// An interned string symbol — a 4-byte handle to a unique string.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Symbol(pub u32);
+
+impl Symbol {
+    /// Create a symbol from a raw index.
+    pub const fn new(idx: u32) -> Self {
+        Self(idx)
+    }
+
+    /// Get the raw `u32` index.
+    #[inline]
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+
+    /// Intern a string into the global interner and return its symbol.
+    #[inline]
+    pub fn intern(s: &str) -> Self {
+        intern::intern(s)
+    }
+
+    /// Resolve this symbol to its string via the global interner.
+    #[inline]
+    pub fn resolve(self) -> &'static str {
+        intern::resolve(self)
+    }
+
+    /// A dummy symbol (index 0).
+    pub const DUMMY: Self = Self(0);
 }
 
-/// What kind of symbol this is.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SymbolKind {
-    /// Local variable
-    Variable,
-    /// Function parameter
-    Parameter,
-    /// Function definition
-    Function,
-    /// Struct type
-    Struct,
-    /// Enum type
-    Enum,
-    /// Constant
-    Constant,
-}
-
-// ============================================================================
-// Scope
-// ============================================================================
-
-/// A single scope level.
-#[derive(Debug, Clone, Default)]
-pub struct Scope {
-    /// Symbols in this scope
-    symbols: HashMap<String, SymbolInfo>,
-}
-
-impl Scope {
-    pub fn new() -> Self {
-        Self {
-            symbols: HashMap::new(),
-        }
-    }
-    
-    /// Define a symbol in this scope
-    pub fn define(&mut self, symbol: SymbolInfo) {
-        self.symbols.insert(symbol.name.clone(), symbol);
-    }
-    
-    /// Lookup a symbol in this scope only
-    pub fn lookup(&self, name: &str) -> Option<&SymbolInfo> {
-        self.symbols.get(name)
-    }
-}
-
-// ============================================================================
-// Symbol Table
-// ============================================================================
-
-/// The symbol table with scope stack.
-#[derive(Debug)]
-pub struct SymbolTable {
-    /// Stack of scopes (innermost last)
-    scopes: Vec<Scope>,
-}
-
-impl SymbolTable {
-    /// Create new symbol table with global scope
-    pub fn new() -> Self {
-        Self {
-            scopes: vec![Scope::new()],
-        }
-    }
-    
-    /// Push a new scope
-    pub fn push_scope(&mut self) {
-        self.scopes.push(Scope::new());
-    }
-    
-    /// Pop the current scope
-    pub fn pop_scope(&mut self) -> Option<Scope> {
-        if self.scopes.len() > 1 {
-            self.scopes.pop()
-        } else {
-            None // Never pop global scope
-        }
-    }
-    
-    /// Current scope depth
-    pub fn depth(&self) -> usize {
-        self.scopes.len()
-    }
-    
-    /// Define a symbol in the current scope
-    pub fn define(&mut self, symbol: SymbolInfo) -> Result<(), SymbolError> {
-        let current = self.scopes.last_mut().unwrap();
-        
-        // Check for redefinition in same scope
-        if current.lookup(&symbol.name).is_some() {
-            return Err(SymbolError::Redefinition {
-                name: symbol.name.clone(),
-                span: symbol.span,
-            });
-        }
-        
-        current.define(symbol);
-        Ok(())
-    }
-    
-    /// Lookup a symbol, searching from innermost to outermost scope
-    pub fn lookup(&self, name: &str) -> Option<&SymbolInfo> {
-        for scope in self.scopes.iter().rev() {
-            if let Some(sym) = scope.lookup(name) {
-                return Some(sym);
-            }
-        }
-        None
-    }
-    
-    /// Check if a symbol exists
-    pub fn contains(&self, name: &str) -> bool {
-        self.lookup(name).is_some()
-    }
-    
-    /// Lookup only in current scope
-    pub fn lookup_current(&self, name: &str) -> Option<&SymbolInfo> {
-        self.scopes.last().and_then(|s| s.lookup(name))
-    }
-}
-
-impl Default for SymbolTable {
+impl Default for Symbol {
     fn default() -> Self {
-        Self::new()
+        Self::DUMMY
+    }
+}
+
+impl fmt::Display for Symbol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.resolve())
+    }
+}
+
+impl AsRef<str> for Symbol {
+    fn as_ref(&self) -> &str {
+        self.resolve()
+    }
+}
+
+impl From<&str> for Symbol {
+    #[inline]
+    fn from(s: &str) -> Self {
+        Self::intern(s)
+    }
+}
+
+impl From<&String> for Symbol {
+    #[inline]
+    fn from(s: &String) -> Self {
+        Self::intern(s)
     }
 }
 
 // ============================================================================
-// Errors
+// Pre-interned Keywords
 // ============================================================================
 
-/// Symbol table errors
-#[derive(Debug, Clone)]
-pub enum SymbolError {
-    /// Symbol already defined in this scope
-    Redefinition { name: String, span: Span },
-    /// Symbol not found
-    NotFound { name: String, span: Span },
-}
+/// Pre-interned keyword symbols for the Doo language.
+pub mod keywords {
+    use super::Symbol;
+    use crate::intern::Interner;
 
-impl std::fmt::Display for SymbolError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Redefinition { name, .. } => {
-                write!(f, "symbol '{}' already defined in this scope", name)
-            }
-            Self::NotFound { name, .. } => {
-                write!(f, "symbol '{}' not found", name)
-            }
+    /// All keyword strings in the Doo language.
+    pub const KEYWORD_STRS: &[&str] = &[
+        "fn", "let", "const", "static", "mut", "if", "else", "return", "for", "while", "in",
+        "match", "break", "continue", "struct", "enum", "use", "import", "as", "true", "false",
+        "null", "async", "await", "go", "try", "catch", "throw", "scope", "route", "ws",
+    ];
+
+    /// Pre-intern all keywords into the given interner.
+    pub(crate) fn pre_intern(interner: &Interner) {
+        for &kw in KEYWORD_STRS {
+            interner.intern_static(kw);
         }
     }
-}
 
-impl std::error::Error for SymbolError {}
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::types::builtin;
-
-    #[test]
-    fn test_scope_stack() {
-        let mut table = SymbolTable::new();
-        assert_eq!(table.depth(), 1);
-        
-        table.push_scope();
-        assert_eq!(table.depth(), 2);
-        
-        table.pop_scope();
-        assert_eq!(table.depth(), 1);
+    /// Check if a symbol corresponds to a Doo keyword.
+    pub fn is_keyword(sym: Symbol) -> bool {
+        KEYWORD_STRS
+            .iter()
+            .any(|&kw| crate::intern::intern_static(kw) == sym)
     }
 
-    #[test]
-    fn test_symbol_lookup() {
-        let mut table = SymbolTable::new();
-        
-        let sym = SymbolInfo {
-            name: "x".to_string(),
-            kind: SymbolKind::Variable,
-            type_id: builtin::INT,
-            mutable: false,
-            span: Span::empty(),
-        };
-        
-        table.define(sym).unwrap();
-        
-        assert!(table.lookup("x").is_some());
-        assert!(table.lookup("y").is_none());
+    /// Check if a string is a Doo keyword.
+    pub fn is_keyword_str(s: &str) -> bool {
+        KEYWORD_STRS.contains(&s)
     }
 
-    #[test]
-    fn test_shadowing() {
-        let mut table = SymbolTable::new();
-        
-        // Define x in global scope
-        table.define(SymbolInfo {
-            name: "x".to_string(),
-            kind: SymbolKind::Variable,
-            type_id: builtin::INT,
-            mutable: false,
-            span: Span::empty(),
-        }).unwrap();
-        
-        // Push scope and shadow x
-        table.push_scope();
-        table.define(SymbolInfo {
-            name: "x".to_string(),
-            kind: SymbolKind::Variable,
-            type_id: builtin::STR, // Different type
-            mutable: true,
-            span: Span::empty(),
-        }).unwrap();
-        
-        // Lookup finds inner x
-        let inner = table.lookup("x").unwrap();
-        assert_eq!(inner.type_id, builtin::STR);
-        assert!(inner.mutable);
-        
-        // Pop scope
-        table.pop_scope();
-        
-        // Lookup finds outer x
-        let outer = table.lookup("x").unwrap();
-        assert_eq!(outer.type_id, builtin::INT);
-        assert!(!outer.mutable);
+    /// Get the symbol for a keyword.
+    #[inline]
+    pub fn get(s: &'static str) -> Symbol {
+        crate::intern::kw(s)
     }
 }
