@@ -388,10 +388,10 @@ impl<'ctx> CodegenContext<'ctx> {
         let type_info = self.type_registry.get(type_id)?;
 
         // Extract variants from the enum type
-        if let TypeKind::Enum { variants, .. } = &type_info.kind {
+        if let TypeKind::Enum { def } = &type_info.kind {
             // Find the variant by name and return its index
-            for (idx, (vname, _payload)) in variants.iter().enumerate() {
-                if vname == variant_name {
+            for (idx, variant) in def.variants.iter().enumerate() {
+                if variant.name.as_ref() == variant_name {
                     return Some(idx as u32);
                 }
             }
@@ -411,11 +411,11 @@ impl<'ctx> CodegenContext<'ctx> {
         let type_info = self.type_registry.get(type_id)?;
 
         // Extract variants from the enum type
-        if let TypeKind::Enum { variants, .. } = &type_info.kind {
+        if let TypeKind::Enum { def } = &type_info.kind {
             // Find the variant by name and return its payload type
-            for (vname, payload) in variants.iter() {
-                if vname == variant_name {
-                    return payload.clone();
+            for variant in def.variants.iter() {
+                if variant.name.as_ref() == variant_name {
+                    return variant.payload;
                 }
             }
         }

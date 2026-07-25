@@ -117,8 +117,14 @@ impl CoveredPatterns {
 
         // Check enums
         if let Some(info) = registry.get(type_id) {
-            if let TypeKind::Enum { name, variants } = &info.kind {
-                return self.check_enum_exhaustive(name, variants);
+            if let TypeKind::Enum { def } = &info.kind {
+                let name = def.name.resolve();
+                let variants: Vec<(String, Option<TypeId>)> = def
+                    .variants
+                    .iter()
+                    .map(|v| (v.name.resolve().to_string(), v.payload))
+                    .collect();
+                return self.check_enum_exhaustive(name, &variants);
             }
         }
 
@@ -200,7 +206,11 @@ impl<'a> ExhaustivenessChecker<'a> {
         match item {
             HirItem::Const(_) | HirItem::Static(_) => {}
             HirItem::Function(func) => self.check_function(func),
-            HirItem::Struct(_) | HirItem::Enum(_) | HirItem::Import(_) | HirItem::Policy(_) | HirItem::Interface(_) => {}
+            HirItem::Struct(_)
+            | HirItem::Enum(_)
+            | HirItem::Import(_)
+            | HirItem::Policy(_)
+            | HirItem::Interface(_) => {}
         }
     }
 
@@ -235,12 +245,12 @@ impl<'a> ExhaustivenessChecker<'a> {
                 // For struct field access, get the field type
                 let obj_type = object.type_id.or_else(|| self.infer_expr_type(object))?;
                 if let Some(info) = self.registry.get(obj_type) {
-                    if let TypeKind::Struct { fields, .. } = &info.kind {
-                        for (name, type_id, _) in fields {
-                            if name == field {
-                                return Some(*type_id);
-                            }
-                        }
+                    if let TypeKind::Struct { def, .. } = &info.kind {
+                        return def
+                            .fields
+                            .iter()
+                            .find(|f| f.name.resolve() == field)
+                            .map(|f| f.type_id);
                     }
                 }
                 None

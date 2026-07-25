@@ -2,6 +2,10 @@
 
 use super::Lower;
 use crate::types::*;
+use doo_core::symbol::Symbol;
+use doo_core::types::composite::{
+    EnumDef, FieldDef, InterfaceDef, MethodSig, StructDef, VariantDef,
+};
 use doo_core::types::{builtin, TypeId, TypeKind, TypeRegistry};
 use doo_frontend::ast::{
     self, Decorator, EnumDecl, FunctionDecl, ImportDecl, InterfaceDecl, Item, StaticDecl,
@@ -162,7 +166,7 @@ impl Lower {
         f: &FunctionDecl,
         registry: &mut TypeRegistry,
     ) -> HirFunction {
-        for (i, stmt) in f.body.iter().enumerate() {}
+        for (_i, _stmt) in f.body.iter().enumerate() {}
         // Clear variable types for new function scope
         self.var_types.clear();
 
@@ -335,14 +339,25 @@ impl Lower {
             }
         }
 
-        registry.define_struct(
-            &s.name,
-            fields
+        let struct_def = StructDef {
+            name: Symbol::intern(&s.name),
+            fields: fields
                 .iter()
-                .filter_map(|f| f.type_id.map(|id| (f.name.clone(), id, f.is_public)))
+                .filter_map(|f| {
+                    f.type_id.map(|id| FieldDef {
+                        name: Symbol::intern(&f.name),
+                        type_id: id,
+                        is_public: f.is_public,
+                        is_optional: f.is_optional,
+                        default_value: None,
+                        decorators: vec![],
+                    })
+                })
                 .collect(),
-            field_json_names,
-        );
+            is_public: s.name.chars().next().map_or(false, |c| c.is_uppercase()),
+            decorators: vec![],
+        };
+        registry.define_struct(struct_def);
 
         let decorators = s
             .decorators
@@ -405,13 +420,23 @@ impl Lower {
             })
             .collect();
 
-        registry.define_enum(
-            &e.name,
-            variants
+        let enum_def = EnumDef {
+            name: Symbol::intern(&e.name),
+            variants: e
+                .variants
                 .iter()
-                .map(|v| (v.name.clone(), v.payload))
+                .map(|v| VariantDef {
+                    name: Symbol::intern(&v.name),
+                    payload: v
+                        .payload
+                        .as_ref()
+                        .map(|t| self.resolve_type_expr(t, registry)),
+                    decorators: vec![],
+                })
                 .collect(),
-        );
+            is_public: e.name.chars().next().map_or(false, |c| c.is_uppercase()),
+        };
+        registry.define_enum(enum_def);
 
         HirEnum {
             name: e.name.clone(),
@@ -453,7 +478,7 @@ impl Lower {
         i: &InterfaceDecl,
         registry: &mut TypeRegistry,
     ) -> HirInterface {
-        let methods: Vec<HirInterfaceMethod> = i
+        let hir_methods: Vec<HirInterfaceMethod> = i
             .methods
             .iter()
             .map(|m| {
@@ -489,22 +514,26 @@ impl Lower {
             .collect();
 
         // Register the interface type in the registry
-        let method_sigs: Vec<(String, Vec<TypeId>, Option<TypeId>, Option<TypeId>)> = methods
+        let registry_methods: Vec<MethodSig> = hir_methods
             .iter()
-            .map(|m| {
-                (
-                    m.name.clone(),
-                    m.params.iter().filter_map(|p| p.type_id).collect(),
-                    m.return_type,
-                    m.error_type,
-                )
+            .map(|m| MethodSig {
+                name: Symbol::intern(&m.name),
+                params: m.params.iter().filter_map(|p| p.type_id).collect(),
+                return_type: m.return_type.unwrap_or(builtin::VOID),
+                error_type: m.error_type,
             })
             .collect();
-        registry.define_interface(&i.name, method_sigs);
+
+        let interface_def = InterfaceDef {
+            name: Symbol::intern(&i.name),
+            methods: registry_methods,
+            is_public: i.name.chars().next().map_or(false, |c| c.is_uppercase()),
+        };
+        registry.define_interface(interface_def);
 
         HirInterface {
             name: i.name.clone(),
-            methods,
+            methods: hir_methods,
             span: i.span,
         }
     }

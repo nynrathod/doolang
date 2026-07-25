@@ -413,7 +413,7 @@ fn emit_enum_payload<'ctx>(
                 }
                 // Value types - need to load from the heap-allocated payload
                 doo_core::types::TypeKind::Int
-                | doo_core::types::TypeKind::Float
+                | doo_core::types::TypeKind::Float32 | doo_core::types::TypeKind::Float64
                 | doo_core::types::TypeKind::Bool => {
                     // Fall through to load logic below
                 }
@@ -675,7 +675,7 @@ fn emit_enum_get_payload<'ctx>(
                 | doo_core::types::TypeKind::Enum { .. } => payload_ptr.into(),
                 // Value types - load from the heap-allocated payload
                 doo_core::types::TypeKind::Int
-                | doo_core::types::TypeKind::Float
+                | doo_core::types::TypeKind::Float32 | doo_core::types::TypeKind::Float64
                 | doo_core::types::TypeKind::Bool => {
                     let llvm_type = ctx.get_llvm_type(type_id);
                     ctx.builder

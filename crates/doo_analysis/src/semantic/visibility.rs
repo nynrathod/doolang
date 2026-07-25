@@ -292,12 +292,9 @@ impl<'a> FieldVisibilityChecker<'a> {
                     // Try to determine struct type from type_id first
                     if let Some(tid) = type_id {
                         if let Some(info) = self.type_registry.get(*tid) {
-                            if let TypeKind::Struct {
-                                name: struct_name, ..
-                            } = &info.kind
-                            {
+                            if let TypeKind::Struct { def, .. } = &info.kind {
                                 self.local_struct_types
-                                    .insert(name.clone(), struct_name.clone());
+                                    .insert(name.clone(), def.name.resolve().to_string());
                             }
                         }
                     } else {
@@ -389,8 +386,8 @@ impl<'a> FieldVisibilityChecker<'a> {
                 // First, try to get struct type from the Try expression's type_id (the unwrapped ok type)
                 if let Some(type_id) = expr.type_id {
                     if let Some(info) = self.type_registry.get(type_id) {
-                        if let TypeKind::Struct { name, .. } = &info.kind {
-                            return Some(name.clone());
+                        if let TypeKind::Struct { def, .. } = &info.kind {
+                            return Some(def.name.resolve().to_string());
                         }
                     }
                 }
@@ -399,8 +396,8 @@ impl<'a> FieldVisibilityChecker<'a> {
                     if let Some(info) = self.type_registry.get(inner_type_id) {
                         if let TypeKind::Result { ok, .. } = &info.kind {
                             if let Some(ok_info) = self.type_registry.get(*ok) {
-                                if let TypeKind::Struct { name, .. } = &ok_info.kind {
-                                    return Some(name.clone());
+                                if let TypeKind::Struct { def, .. } = &ok_info.kind {
+                                    return Some(def.name.resolve().to_string());
                                 }
                             }
                         }
@@ -417,14 +414,14 @@ impl<'a> FieldVisibilityChecker<'a> {
                 // First check the expression's type_id directly
                 if let Some(type_id) = expr.type_id {
                     if let Some(info) = self.type_registry.get(type_id) {
-                        if let TypeKind::Struct { name, .. } = &info.kind {
-                            return Some(name.clone());
+                        if let TypeKind::Struct { def, .. } = &info.kind {
+                            return Some(def.name.resolve().to_string());
                         }
                         // Handle Result type (for failable methods)
                         if let TypeKind::Result { ok, .. } = &info.kind {
                             if let Some(ok_info) = self.type_registry.get(*ok) {
-                                if let TypeKind::Struct { name, .. } = &ok_info.kind {
-                                    return Some(name.clone());
+                                if let TypeKind::Struct { def, .. } = &ok_info.kind {
+                                    return Some(def.name.resolve().to_string());
                                 }
                             }
                         }
@@ -502,8 +499,8 @@ impl<'a> FieldVisibilityChecker<'a> {
                     // Try to get struct name from type_id first
                     let struct_name = if let Some(type_id) = object.type_id {
                         if let Some(info) = self.type_registry.get(type_id) {
-                            if let TypeKind::Struct { name, .. } = &info.kind {
-                                Some(name.clone())
+                            if let TypeKind::Struct { def, .. } = &info.kind {
+                                Some(def.name.resolve().to_string())
                             } else {
                                 None
                             }
@@ -523,9 +520,10 @@ impl<'a> FieldVisibilityChecker<'a> {
                             // Verify field is actually private in type registry
                             if let Some(struct_type_id) = self.type_registry.lookup(&struct_name) {
                                 if let Some(info) = self.type_registry.get(struct_type_id) {
-                                    if let TypeKind::Struct { fields, .. } = &info.kind {
-                                        for (fname, _ftype, is_public) in fields {
-                                            if fname == field && !is_public {
+                                    if let TypeKind::Struct { def, .. } = &info.kind {
+                                        for field_def in &def.fields {
+                                            let fname = field_def.name.resolve();
+                                            if fname == field.as_str() && !field_def.is_public {
                                                 if std::env::var(
                                                     doo_core::constants::env_vars::DOO_DEBUG,
                                                 )

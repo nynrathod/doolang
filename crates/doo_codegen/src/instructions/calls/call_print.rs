@@ -252,8 +252,10 @@ pub(super) fn emit_print_value<'ctx>(
 
     // Handle enum as StructValue (inline { i32, ptr }) - must check BEFORE pointer check
     if val.is_struct_value() {
-        if let Some(TypeKind::Enum { name, variants }) = ctx.get_type_kind(type_id) {
-            emit_print_enum_value(ctx, printf, val.into_struct_value(), &name, &variants);
+        if let Some(TypeKind::Enum { def }) = ctx.get_type_kind(type_id) {
+            let variant_pairs: Vec<(String, Option<doo_core::types::TypeId>)> = def.variants.iter()
+                .map(|v| (v.name.resolve().to_string(), v.payload)).collect();
+            emit_print_enum_value(ctx, printf, val.into_struct_value(), def.name.resolve(), &variant_pairs);
             if newline {
                 let nl = ctx.const_string("\n");
                 ctx.builder
@@ -279,11 +281,12 @@ pub(super) fn emit_print_value<'ctx>(
                     }
                     return;
                 }
-                TypeKind::Struct { name, fields, .. } => {
+                TypeKind::Struct { def } => {
                     // Extract just name and type for printing (visibility not needed)
+                    let struct_name = def.name.resolve().to_string();
                     let field_pairs: Vec<_> =
-                        fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
-                    emit_print_struct(ctx, printf, ptr, &name, &field_pairs);
+                        def.fields.iter().map(|f| (f.name.resolve().to_string(), f.type_id)).collect();
+                    emit_print_struct(ctx, printf, ptr, &struct_name, &field_pairs);
                     if newline {
                         let nl = ctx.const_string("\n");
                         ctx.builder
@@ -292,8 +295,10 @@ pub(super) fn emit_print_value<'ctx>(
                     }
                     return;
                 }
-                TypeKind::Enum { name, variants } => {
-                    emit_print_enum(ctx, printf, ptr, &name, &variants);
+                TypeKind::Enum { def } => {
+                    let variant_pairs: Vec<(String, Option<doo_core::types::TypeId>)> = def.variants.iter()
+                        .map(|v| (v.name.resolve().to_string(), v.payload)).collect();
+                    emit_print_enum(ctx, printf, ptr, def.name.resolve(), &variant_pairs);
                     if newline {
                         let nl = ctx.const_string("\n");
                         ctx.builder

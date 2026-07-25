@@ -59,25 +59,38 @@ impl<'ctx> CodegenContext<'ctx> {
                 TypeKind::Void => self.context.i8_type().into(),
                 TypeKind::Bool => self.context.i8_type().into(),
                 TypeKind::Int => self.context.i64_type().into(),
-                TypeKind::Float => self.context.f64_type().into(),
+                TypeKind::Float32 | TypeKind::Float64 => self.context.f64_type().into(),
                 TypeKind::Str => self
                     .context
                     .ptr_type(AddressSpace::default())
                     .into(),
-                TypeKind::Any | TypeKind::Error => self
-                    .context
-                    .ptr_type(AddressSpace::default())
-                    .into(),
+
 
                 TypeKind::Array { .. }
                 | TypeKind::Map { .. }
+                | TypeKind::Set { .. }
                 | TypeKind::Optional { .. }
                 | TypeKind::Result { .. }
+                | TypeKind::Box { .. }
                 | TypeKind::Tuple { .. }
                 | TypeKind::Struct { .. }
                 | TypeKind::Function { .. }
                 | TypeKind::TypeRef { .. }
-                | TypeKind::TypeParam { .. } => self
+                | TypeKind::TypeParam { .. }
+                | TypeKind::Never
+                | TypeKind::Char
+                | TypeKind::Int8
+                | TypeKind::Int16
+                | TypeKind::Int32
+                | TypeKind::Int64
+                | TypeKind::UInt8
+                | TypeKind::UInt16
+                | TypeKind::UInt32
+                | TypeKind::UInt64
+                | TypeKind::UInt
+                | TypeKind::SelfType
+                | TypeKind::Any
+                | TypeKind::Error => self
                     .context
                     .ptr_type(AddressSpace::default())
                     .into(),
@@ -217,15 +230,12 @@ impl<'ctx> CodegenContext<'ctx> {
             let mut found = None;
             for type_id in self.type_registry.all_type_ids() {
                 if let Some(info) = self.type_registry.get(type_id) {
-                    if let TypeKind::Struct {
-                        name: sname,
-                        fields, ..
-                    } = &info.kind
+                    if let TypeKind::Struct { def } = &info.kind
                     {
-                        if sname == name {
-                            let ids: Vec<TypeId> = fields.iter().map(|(_, tid, _)| *tid).collect();
+                        if def.name.as_ref() == name {
+                            let ids: Vec<TypeId> = def.fields.iter().map(|f| f.type_id).collect();
                             let names: Vec<String> =
-                                fields.iter().map(|(n, _, _)| n.clone()).collect();
+                                def.fields.iter().map(|f| f.name.resolve().to_string()).collect();
                             found = Some((ids, names));
                             break;
                         }
@@ -252,13 +262,10 @@ impl<'ctx> CodegenContext<'ctx> {
     fn find_struct_field_names(&self, name: &str) -> Option<Vec<String>> {
         for type_id in self.type_registry.all_type_ids() {
             if let Some(info) = self.type_registry.get(type_id) {
-                if let TypeKind::Struct {
-                    name: sname,
-                    fields, ..
-                } = &info.kind
+                if let TypeKind::Struct { def } = &info.kind
                 {
-                    if sname == name {
-                        return Some(fields.iter().map(|(n, _, _)| n.clone()).collect());
+                    if def.name.as_ref() == name {
+                        return Some(def.fields.iter().map(|f| f.name.resolve().to_string()).collect());
                     }
                 }
             }

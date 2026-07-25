@@ -14,6 +14,7 @@
 //! let doubled = nums.map((x) => x * 2);  // x: Int inferred, return Int inferred
 //! ```
 
+use doo_core::types::composite::FunctionSig;
 use doo_core::types::{builtin, TypeId, TypeKind, TypeRegistry};
 use doo_hir::{HirBinOp, HirExpr, HirExprKind, HirStmt, HirStmtKind, HirUnaryOp};
 use std::collections::HashMap;
@@ -126,7 +127,12 @@ impl TypeInference {
             }
 
             // 6. Create function type and set on closure expression
-            let fn_type = registry.register_function(param_types, return_type);
+            let fn_type = registry.register_function(FunctionSig {
+                params: param_types,
+                return_type: return_type,
+                error_type: None,
+                is_closure: false,
+            });
             expr.type_id = Some(fn_type);
 
             Ok(return_type)
@@ -134,8 +140,8 @@ impl TypeInference {
             // Not a closure - try to get return type from existing function type
             if let Some(type_id) = expr.type_id {
                 if let Some(info) = registry.get(type_id) {
-                    if let TypeKind::Function { returns, .. } = &info.kind {
-                        return Ok(*returns);
+                    if let TypeKind::Function { sig, .. } = &info.kind {
+                        return Ok(sig.return_type);
                     }
                 }
             }
@@ -314,15 +320,12 @@ impl TypeInference {
                 let object_type = self.infer_expr_type(object, registry);
                 if let Some(info) = registry.get(object_type) {
                     match &info.kind {
-                        TypeKind::Struct {
-                            name: struct_name,
-                            fields,
-                            ..
-                        } => {
-                            for (fname, ftype, is_public) in fields {
-                                if fname == field {
+                        TypeKind::Struct { def, .. } => {
+                            for field_def in &def.fields {
+                                let fname = field_def.name.resolve();
+                                if fname == field.as_str() {
                                     // Check visibility: private fields (camelCase) cannot be accessed from outside
-                                    if !is_public {
+                                    if !field_def.is_public {
                                         // Field is private - report error
                                         // For now, we'll still return the type but the codegen/semantic
                                         // analysis should catch this. We could add an error here later.
@@ -330,7 +333,7 @@ impl TypeInference {
                                             .is_ok()
                                         {}
                                     }
-                                    return *ftype;
+                                    return field_def.type_id;
                                 }
                             }
                         }
@@ -409,7 +412,12 @@ impl TypeInference {
                     .map(|(_, t)| t.unwrap_or(builtin::ANY))
                     .collect();
                 let return_type = self.infer_expr_type(body, registry);
-                registry.register_function(param_types, return_type)
+                registry.register_function(FunctionSig {
+                    params: param_types,
+                    return_type,
+                    error_type: None,
+                    is_closure: false,
+                })
             }
 
             // Tuple

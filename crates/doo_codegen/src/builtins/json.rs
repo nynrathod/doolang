@@ -18,7 +18,7 @@ impl JsonBuiltins {
         let kind = ctx.get_type_kind(ty);
         if let Some(TypeKind::TypeRef { ref name }) = kind {
             // Try to resolve through the type registry
-            if let Some(resolved_tid) = ctx.type_registry.lookup(name) {
+            if let Some(resolved_tid) = ctx.type_registry.lookup(name.resolve()) {
                 let resolved_kind = ctx.get_type_kind(resolved_tid);
                 if resolved_kind.is_some() {
                     return (resolved_tid, resolved_kind);
@@ -26,10 +26,10 @@ impl JsonBuiltins {
             }
             // Fallback: return the TypeRef as-is (name may match a primitive)
             // Try to match well-known type names to built-in types
-            match name.as_str() {
+            match name.as_ref() {
                 "Str" => return (ty, Some(TypeKind::Str)),
                 "Int" => return (ty, Some(TypeKind::Int)),
-                "Float" => return (ty, Some(TypeKind::Float)),
+                "Float" => return (ty, Some(TypeKind::Float64)),
                 "Bool" => return (ty, Some(TypeKind::Bool)),
                 _ => {}
             }
@@ -51,7 +51,7 @@ impl JsonBuiltins {
         // Structs: fields * 20 + 16 (key+value+separators per field)
         // Default: 64 bytes (covers most small JSON responses)
         let estimated_cap = match Self::resolve_type_ref(ctx, val_type).1 {
-            Some(TypeKind::Struct { fields, .. }) => fields.len() * 20 + 16,
+            Some(TypeKind::Struct { def, .. }) => def.fields.len() * 20 + 16,
             _ => 0, // 0 signals: use default capacity
         };
 
@@ -94,6 +94,21 @@ impl JsonBuiltins {
         Some(result_str_ptr)
     }
 
+    /// Extract field JSON names from @json decorators on struct fields.
+    fn build_field_json_names(def: &doo_core::types::composite::StructDef) -> std::collections::HashMap<String, String> {
+        let mut map = std::collections::HashMap::new();
+        for field in &def.fields {
+            for decorator in &field.decorators {
+                if decorator.name.resolve() == "json" {
+                    if let Some(json_name) = decorator.args.first() {
+                        map.insert(field.name.resolve().to_string(), json_name.clone());
+                    }
+                }
+            }
+        }
+        map
+    }
+
     /// Provide `JSON.parse(str)` support.
     /// Uses type-specific FFI functions based on target return type.
     pub fn emit_parse<'ctx>(
@@ -119,53 +134,52 @@ impl JsonBuiltins {
             let (resolved_ty, resolved_kind) = Self::resolve_type_ref(ctx, ty);
             let kind = resolved_kind;
             match kind {
-                Some(TypeKind::Struct {
-                    name,
-                    fields,
-                    field_json_names,
-                }) => {
+                Some(TypeKind::Struct { def }) => {
                     if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
-                    // Extract just name and type for parsing (visibility not needed)
+                    let struct_name = def.name.resolve().to_string();
                     let field_pairs: Vec<_> =
-                        fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
+                        def.fields.iter().map(|f| (f.name.resolve().to_string(), f.type_id)).collect();
+                    let field_json_names = Self::build_field_json_names(&def);
                     return Self::emit_parse_struct(
                         ctx,
                         val,
                         ty,
-                        &name,
+                        &struct_name,
                         &field_pairs,
                         &field_json_names,
                     );
                 }
-                Some(TypeKind::Enum { name, variants }) => {
+                Some(TypeKind::Enum { def }) => {
                     if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
-                    return Self::emit_parse_enum(ctx, val, ty, &name, &variants);
+                    let enum_name = def.name.resolve().to_string();
+                    let variant_pairs: Vec<_> = def.variants.iter().map(|v| (v.name.resolve().to_string(), v.payload)).collect();
+                    return Self::emit_parse_enum(ctx, val, ty, &enum_name, &variant_pairs);
                 }
                 Some(TypeKind::Array { element: elem_type }) => {
                     let (_resolved_elem, resolved_elem_kind) =
                         Self::resolve_type_ref(ctx, elem_type);
                     match resolved_elem_kind {
-                        Some(TypeKind::Struct {
-                            name,
-                            fields,
-                            field_json_names,
-                        }) => {
+                        Some(TypeKind::Struct { def }) => {
                             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
+                            let struct_name = def.name.resolve().to_string();
                             let field_pairs: Vec<_> =
-                                fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
+                                def.fields.iter().map(|f| (f.name.resolve().to_string(), f.type_id)).collect();
+                            let field_json_names = Self::build_field_json_names(&def);
                             return Self::emit_parse_array_struct(
                                 ctx,
                                 val,
                                 elem_type,
-                                &name,
+                                &struct_name,
                                 &field_pairs,
                                 &field_json_names,
                             );
                         }
-                        Some(TypeKind::Enum { name, variants }) => {
+                        Some(TypeKind::Enum { def }) => {
                             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
+                            let enum_name = def.name.resolve().to_string();
+                            let variant_pairs: Vec<_> = def.variants.iter().map(|v| (v.name.resolve().to_string(), v.payload)).collect();
                             return Self::emit_parse_array_enum(
-                                ctx, val, elem_type, &name, &variants,
+                                ctx, val, elem_type, &enum_name, &variant_pairs,
                             );
                         }
                         _ => {} // Fall through to FFI dispatch for primitive arrays
@@ -181,7 +195,7 @@ impl JsonBuiltins {
                 let (_resolved_ty, resolved_kind) = Self::resolve_type_ref(ctx, ty);
                 match resolved_kind {
                     Some(TypeKind::Int) => (ffi_names::DOO_JSON_PARSE_INT, ctx.i64_type().into()),
-                    Some(TypeKind::Float) => {
+                    Some(TypeKind::Float32 | TypeKind::Float64) => {
                         (ffi_names::DOO_JSON_PARSE_FLOAT, ctx.f64_type().into())
                     }
                     Some(TypeKind::Bool) => (
@@ -195,7 +209,7 @@ impl JsonBuiltins {
                             Some(TypeKind::Int) => {
                                 (ffi_names::DOO_JSON_PARSE_ARRAY_INT, i8_ptr.into())
                             }
-                            Some(TypeKind::Float) => {
+                            Some(TypeKind::Float32 | TypeKind::Float64) => {
                                 (ffi_names::DOO_JSON_PARSE_ARRAY_FLOAT, i8_ptr.into())
                             }
                             Some(TypeKind::Bool) => {
@@ -217,7 +231,7 @@ impl JsonBuiltins {
                             (Some(TypeKind::Str), Some(TypeKind::Int)) => {
                                 (ffi_names::DOO_JSON_PARSE_MAP_STR_INT, i8_ptr.into())
                             }
-                            (Some(TypeKind::Str), Some(TypeKind::Float)) => {
+                            (Some(TypeKind::Str), Some(TypeKind::Float32 | TypeKind::Float64)) => {
                                 (ffi_names::DOO_JSON_PARSE_MAP_STR_FLOAT, i8_ptr.into())
                             }
                             (Some(TypeKind::Str), Some(TypeKind::Bool)) => {
@@ -229,7 +243,7 @@ impl JsonBuiltins {
                             (Some(TypeKind::Int), Some(TypeKind::Int)) => {
                                 (ffi_names::DOO_JSON_PARSE_MAP_INT_INT, i8_ptr.into())
                             }
-                            (Some(TypeKind::Int), Some(TypeKind::Float)) => {
+                            (Some(TypeKind::Int), Some(TypeKind::Float32 | TypeKind::Float64)) => {
                                 (ffi_names::DOO_JSON_PARSE_MAP_INT_FLOAT, i8_ptr.into())
                             }
                             (Some(TypeKind::Int), Some(TypeKind::Bool)) => {
@@ -238,22 +252,22 @@ impl JsonBuiltins {
                             (Some(TypeKind::Int), Some(TypeKind::Str)) => {
                                 (ffi_names::DOO_JSON_PARSE_MAP_INT_STR, i8_ptr.into())
                             }
-                            (Some(TypeKind::Float), Some(TypeKind::Int)) => {
+                            (Some(TypeKind::Float32 | TypeKind::Float64), Some(TypeKind::Int)) => {
                                 (ffi_names::DOO_JSON_PARSE_MAP_FLOAT_INT, i8_ptr.into())
                             }
-                            (Some(TypeKind::Float), Some(TypeKind::Float)) => {
+                            (Some(TypeKind::Float32 | TypeKind::Float64), Some(TypeKind::Float32 | TypeKind::Float64)) => {
                                 (ffi_names::DOO_JSON_PARSE_MAP_FLOAT_FLOAT, i8_ptr.into())
                             }
-                            (Some(TypeKind::Float), Some(TypeKind::Bool)) => {
+                            (Some(TypeKind::Float32 | TypeKind::Float64), Some(TypeKind::Bool)) => {
                                 (ffi_names::DOO_JSON_PARSE_MAP_FLOAT_BOOL, i8_ptr.into())
                             }
-                            (Some(TypeKind::Float), Some(TypeKind::Str)) => {
+                            (Some(TypeKind::Float32 | TypeKind::Float64), Some(TypeKind::Str)) => {
                                 (ffi_names::DOO_JSON_PARSE_MAP_FLOAT_STR, i8_ptr.into())
                             }
                             (Some(TypeKind::Bool), Some(TypeKind::Int)) => {
                                 (ffi_names::DOO_JSON_PARSE_MAP_BOOL_INT, i8_ptr.into())
                             }
-                            (Some(TypeKind::Bool), Some(TypeKind::Float)) => {
+                            (Some(TypeKind::Bool), Some(TypeKind::Float32 | TypeKind::Float64)) => {
                                 (ffi_names::DOO_JSON_PARSE_MAP_BOOL_FLOAT, i8_ptr.into())
                             }
                             (Some(TypeKind::Bool), Some(TypeKind::Bool)) => {
@@ -416,7 +430,7 @@ impl JsonBuiltins {
                         .basic()?;
                     ctx.builder.build_store(field_ptr, val).ok()?;
                 }
-                Some(TypeKind::Float) => {
+                Some(TypeKind::Float32 | TypeKind::Float64) => {
                     let val = ctx
                         .builder
                         .build_call(
@@ -482,7 +496,7 @@ impl JsonBuiltins {
                                 .basic()?;
                             ctx.builder.build_store(field_ptr, val).ok()?;
                         }
-                        Some(TypeKind::Float) => {
+                        Some(TypeKind::Float32 | TypeKind::Float64) => {
                             let val = ctx
                                 .builder
                                 .build_call(
@@ -1042,7 +1056,7 @@ impl JsonBuiltins {
                     .build_call(func, &[writer.into(), val_i64.into()], "")
                     .ok()?;
             }
-            TypeKind::Float => {
+            TypeKind::Float32 | TypeKind::Float64 => {
                 // Float keys need to be written as quoted strings
                 let func = Self::get_or_declare_write_key_float(ctx);
                 let val_f64 = ctx
@@ -1099,7 +1113,7 @@ impl JsonBuiltins {
                     .build_call(func, &[writer.into(), val_i64.into()], "")
                     .ok()?;
             }
-            TypeKind::Float => {
+            TypeKind::Float32 | TypeKind::Float64 => {
                 let func = Self::get_or_declare_write_float(ctx);
                 let val_f64 = if val.is_float_value() {
                     ctx.builder
@@ -1290,11 +1304,9 @@ impl JsonBuiltins {
 
                 ctx.builder.build_call(end_fn, &[writer.into()], "").ok()?;
             }
-            TypeKind::Struct {
-                name: struct_name,
-                fields,
-                field_json_names,
-            } => {
+            TypeKind::Struct { def } => {
+                let struct_name = def.name.resolve().to_string();
+                let field_json_names = Self::build_field_json_names(&def);
                 let start_fn = Self::get_or_declare_start_object(ctx);
                 let end_fn = Self::get_or_declare_end_object(ctx);
                 let key_fn = Self::get_or_declare_write_key(ctx);
@@ -1312,26 +1324,28 @@ impl JsonBuiltins {
 
                 // Use the cached struct type if available (P06: has reordered fields),
                 // otherwise create one from field types in logical order.
-                let field_types_logical: Vec<_> = fields
+                let field_types_logical: Vec<_> = def
+                    .fields
                     .iter()
-                    .map(|(_, t, _)| ctx.get_llvm_type(*t).into())
+                    .map(|f| ctx.get_llvm_type(f.type_id).into())
                     .collect();
                 let struct_llvm_type = ctx
                     .lookup_struct_type(&struct_name)
                     .unwrap_or_else(|| ctx.context.struct_type(&field_types_logical, false));
 
-                for (i, (fname, fty, _)) in fields.iter().enumerate() {
+                for (i, f) in def.fields.iter().enumerate() {
                     if i > 0 {
                         ctx.builder
                             .build_call(comma_fn, &[writer.into()], "")
                             .ok()?;
                     }
 
+                    let fname = f.name.resolve();
                     // Write Key — use @json name if present, else Doo field name
                     let json_key = field_json_names
                         .get(fname)
                         .cloned()
-                        .unwrap_or_else(|| fname.clone());
+                        .unwrap_or_else(|| fname.to_string());
                     let key_str = ctx.const_string(&json_key);
                     ctx.builder
                         .build_call(key_fn, &[writer.into(), key_str.into()], "")
@@ -1347,14 +1361,14 @@ impl JsonBuiltins {
                         .builder
                         .build_struct_gep(struct_llvm_type, struct_ptr, physical_i, "field_ptr")
                         .ok()?;
-                    let field_ty = ctx.get_llvm_type(*fty);
+                    let field_ty = ctx.get_llvm_type(f.type_id);
                     let field_val = ctx
                         .builder
                         .build_load(field_ty, field_ptr, "field_val")
                         .ok()?;
 
                     // Write Value
-                    Self::emit_write_value(ctx, writer, field_val, *fty)?;
+                    Self::emit_write_value(ctx, writer, field_val, f.type_id)?;
                 }
 
                 ctx.builder.build_call(end_fn, &[writer.into()], "").ok()?;
@@ -1410,7 +1424,11 @@ impl JsonBuiltins {
 
                 ctx.builder.build_call(end_fn, &[writer.into()], "").ok()?;
             }
-            TypeKind::Enum { name: _, variants } => {
+            TypeKind::Enum { def } => {
+                let variant_pairs: Vec<(String, Option<doo_core::types::TypeId>)> = def.variants
+                    .iter()
+                    .map(|v| (v.name.resolve().to_string(), v.payload))
+                    .collect();
                 // Enum -> {"Variant": Payload} or "Variant"
                 let start_fn = Self::get_or_declare_start_object(ctx);
                 let end_fn = Self::get_or_declare_end_object(ctx);
@@ -1485,10 +1503,10 @@ impl JsonBuiltins {
                     .context
                     .append_basic_block(current_fn, "json_enum_default"); // Should not happen
 
-                let mut switch_cases = Vec::with_capacity(variants.len());
-                let mut variant_bbs = Vec::with_capacity(variants.len());
+                let mut switch_cases = Vec::with_capacity(variant_pairs.len());
+                let mut variant_bbs = Vec::with_capacity(variant_pairs.len());
 
-                for i in 0..variants.len() {
+                for i in 0..variant_pairs.len() {
                     let bb = ctx
                         .context
                         .append_basic_block(current_fn, &format!("json_enum_var_{}", i));
@@ -1503,7 +1521,7 @@ impl JsonBuiltins {
                 ctx.builder.position_at_end(default_bb);
                 ctx.builder.build_unconditional_branch(merge_bb).ok()?; // Ignore invalid tag
 
-                for (i, (vname, payload)) in variants.iter().enumerate() {
+                for (i, (vname, payload)) in variant_pairs.iter().enumerate() {
                     ctx.builder.position_at_end(variant_bbs[i]);
 
                     // If payload is None: just string "Variant"

@@ -154,10 +154,10 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                         .type_registry
                         .get(receiver_type)
                         .map(|info| {
-                            if let TypeKind::Interface { methods, .. } = &info.kind {
-                                methods
+                            if let TypeKind::Interface { def, .. } = &info.kind {
+                                def.methods
                                     .iter()
-                                    .any(|(mname, _, _, err)| mname == method && err.is_some())
+                                    .any(|m| m.name.resolve() == method && m.error_type.is_some())
                             } else {
                                 false
                             }
@@ -213,12 +213,12 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                             .type_registry
                             .get(receiver_type)
                             .and_then(|info| {
-                                if let TypeKind::Interface { methods, .. } = &info.kind {
-                                    methods.iter().find(|(mname, _, _, _)| mname == method).map(
-                                        |(_, _, ret, err)| {
+                                if let TypeKind::Interface { def, .. } = &info.kind {
+                                    def.methods.iter().find(|m| m.name.resolve() == method).map(
+                                        |m| {
                                             (
-                                                ret.unwrap_or(builtin::ANY),
-                                                err.unwrap_or(builtin::ANY),
+                                                m.return_type,
+                                                m.error_type.unwrap_or(builtin::ANY),
                                                 false, // interface methods are never FFI
                                             )
                                         },
@@ -753,12 +753,12 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                         .type_registry
                         .get(receiver_type)
                         .and_then(|info| {
-                            if let TypeKind::Interface { methods, .. } = &info.kind {
-                                methods.iter().find(|(mname, _, _, _)| mname == method).map(
-                                    |(_, _, ret, err)| {
+                            if let TypeKind::Interface { def, .. } = &info.kind {
+                                def.methods.iter().find(|m| m.name.resolve() == method).map(
+                                    |m| {
                                         (
-                                            ret.unwrap_or(builtin::ANY),
-                                            err.unwrap_or(builtin::ANY),
+                                            m.return_type,
+                                            m.error_type.unwrap_or(builtin::ANY),
                                             false,
                                         )
                                     },

@@ -130,7 +130,7 @@ pub fn emit_eq<'ctx>(
                     .build_int_compare(IntPredicate::EQ, lhs_int, rhs_int, "eq")
                     .ok()
             }
-            TypeKind::Float => ctx
+            TypeKind::Float32 | TypeKind::Float64 => ctx
                 .builder
                 .build_float_compare(
                     inkwell::FloatPredicate::OEQ,

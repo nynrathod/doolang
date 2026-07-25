@@ -588,7 +588,7 @@ async fn count_affected_rows(
                     .await
                     .map(|row| row.get::<_, i64>(0))
             }
-            SchemaChange::DropNotNull { table, column, .. } => {
+            SchemaChange::DropNotNull { table, column: _, .. } => {
                 // Total rows in table — all will now allow nulls
                 let query = format!(
                     "SELECT COALESCE(reltuples::bigint, 0) FROM pg_class WHERE relname = '{}'",

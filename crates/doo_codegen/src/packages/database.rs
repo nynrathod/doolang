@@ -98,10 +98,11 @@ fn try_convert_enum_to_json_string<'ctx>(
     let type_info = ctx.type_registry.get(type_id)?;
 
     let variants: Vec<(String, u32)> = match &type_info.kind {
-        doo_core::types::TypeKind::Enum { variants, .. } => variants
+        doo_core::types::TypeKind::Enum { def } => def
+            .variants
             .iter()
             .enumerate()
-            .map(|(i, (name, _))| (name.clone(), i as u32))
+            .map(|(i, v)| (v.name.resolve().to_string(), i as u32))
             .collect(),
         _ => return None,
     };
@@ -216,9 +217,9 @@ fn try_convert_enum_array_to_json_string<'ctx>(
 
     // Try homogeneous enum array first
     if let Some(info) = &type_info {
-        if let doo_core::types::TypeKind::Enum { name, variants, .. } = &info.kind {
+        if let doo_core::types::TypeKind::Enum { def } = &info.kind {
             let variant_names: Vec<String> =
-                variants.iter().map(|(vname, _)| vname.clone()).collect();
+                def.variants.iter().map(|v| v.name.resolve().to_string()).collect();
 
             if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
             }
@@ -290,11 +291,12 @@ fn try_convert_mixed_enum_array_to_json_string<'ctx>(
             let type_id = ctx.type_registry.lookup(enum_name)?;
             let type_info = ctx.type_registry.get(type_id)?;
 
-            if let doo_core::types::TypeKind::Enum { variants, .. } = &type_info.kind {
-                let variant_list: Vec<(String, u32)> = variants
+            if let doo_core::types::TypeKind::Enum { def } = &type_info.kind {
+                let variant_list: Vec<(String, u32)> = def
+                    .variants
                     .iter()
                     .enumerate()
-                    .map(|(i, (name, _))| (name.clone(), i as u32))
+                    .map(|(i, v)| (v.name.resolve().to_string(), i as u32))
                     .collect();
                 enum_infos.push((enum_name.clone(), variant_list));
             } else {

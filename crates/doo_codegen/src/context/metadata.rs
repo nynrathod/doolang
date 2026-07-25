@@ -51,11 +51,12 @@ impl<'ctx> CodegenContext<'ctx> {
         // This handles TypeRef cases where lookup returns the TypeRef, not the actual struct
         for type_id in self.type_registry.all_type_ids() {
             if let Some(info) = self.type_registry.get(type_id) {
-                if let TypeKind::Struct { name, fields, .. } = &info.kind {
-                    if name == struct_name {
-                        let logical = fields
+                if let TypeKind::Struct { def } = &info.kind {
+                    if def.name.as_ref() == struct_name {
+                        let logical = def
+                            .fields
                             .iter()
-                            .position(|(n, _, _)| n == field_name)
+                            .position(|f| f.name.as_ref() == field_name)
                             .map(|idx| idx as u32)?;
                         // Apply P06 remapping
                         if let Some(remap) = self.struct_field_remap.get(struct_name) {
@@ -77,12 +78,13 @@ impl<'ctx> CodegenContext<'ctx> {
         // This handles TypeRef cases where lookup returns the TypeRef, not the actual struct
         for type_id in self.type_registry.all_type_ids() {
             if let Some(info) = self.type_registry.get(type_id) {
-                if let TypeKind::Struct { name, fields, .. } = &info.kind {
-                    if name == struct_name {
-                        return fields
+                if let TypeKind::Struct { def } = &info.kind {
+                    if def.name.as_ref() == struct_name {
+                        return def
+                            .fields
                             .iter()
-                            .find(|(n, _, _)| n == field_name)
-                            .map(|(_, type_id, _)| *type_id);
+                            .find(|f| f.name.as_ref() == field_name)
+                            .map(|f| f.type_id);
                     }
                 }
             }
@@ -94,8 +96,8 @@ impl<'ctx> CodegenContext<'ctx> {
     /// Returns None if the TypeId doesn't refer to a struct.
     pub fn get_struct_name_from_type_id(&self, type_id: TypeId) -> Option<String> {
         let type_info = self.type_registry.get(type_id)?;
-        if let TypeKind::Struct { name, .. } = &type_info.kind {
-            Some(name.clone())
+        if let TypeKind::Struct { def } = &type_info.kind {
+            Some(def.name.resolve().to_string())
         } else {
             None
         }
@@ -108,9 +110,9 @@ impl<'ctx> CodegenContext<'ctx> {
         // This handles TypeRef cases where lookup returns the TypeRef, not the actual struct
         for type_id in self.type_registry.all_type_ids() {
             if let Some(info) = self.type_registry.get(type_id) {
-                if let TypeKind::Struct { name, fields, .. } = &info.kind {
-                    if name == struct_name {
-                        return Some(fields.iter().map(|(_, type_id, _)| *type_id).collect());
+                if let TypeKind::Struct { def } = &info.kind {
+                    if def.name.as_ref() == struct_name {
+                        return Some(def.fields.iter().map(|f| f.type_id).collect());
                     }
                 }
             }

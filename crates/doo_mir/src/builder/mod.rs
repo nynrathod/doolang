@@ -984,10 +984,10 @@ impl<'a> MirBuilder<'a> {
         self.type_registry
             .get(struct_type)
             .and_then(|info| match &info.kind {
-                TypeKind::Struct { fields, .. } => fields
+                TypeKind::Struct { def, .. } => def.fields
                     .iter()
-                    .find(|(name, _, _)| name == field_name)
-                    .map(|(_, t, _)| *t),
+                    .find(|f| f.name.resolve() == field_name)
+                    .map(|f| f.type_id),
                 _ => None,
             })
     }
@@ -1004,10 +1004,10 @@ impl<'a> MirBuilder<'a> {
         let type_info = self.type_registry.get(type_id)?;
 
         // Extract the variant's payload type from the enum definition
-        if let TypeKind::Enum { variants, .. } = &type_info.kind {
-            for (vname, payload_type) in variants {
-                if vname == variant_name {
-                    return *payload_type;
+        if let TypeKind::Enum { def, .. } = &type_info.kind {
+            for variant_def in &def.variants {
+                if variant_def.name.resolve() == variant_name {
+                    return variant_def.payload;
                 }
             }
         }
@@ -1122,7 +1122,7 @@ impl<'a> MirBuilder<'a> {
         let type_name: &str = match self.type_registry.get(receiver_type).map(|info| &info.kind) {
             Some(TypeKind::Str) => "Str",
             Some(TypeKind::Int) => "Int",
-            Some(TypeKind::Float) => "Float",
+            Some(TypeKind::Float32) | Some(TypeKind::Float64) => "Float",
             Some(TypeKind::Bool) => "Bool",
             Some(TypeKind::Array { .. }) => "[T]",
             Some(TypeKind::Map { .. }) => "{K:V}",
@@ -1166,10 +1166,10 @@ impl<'a> MirBuilder<'a> {
                 // Get U from closure's function return type
                 if let Some(closure_tid) = closure_type {
                     if let Some(info) = self.type_registry.get(closure_tid) {
-                        if let TypeKind::Function { returns, .. } = &info.kind {
+                        if let TypeKind::Function { sig, .. } = &info.kind {
                             // Look up the array type [U] by name
                             // Array type names are formatted as "[ElementName]"
-                            if let Some(elem_info) = self.type_registry.get(*returns) {
+                            if let Some(elem_info) = self.type_registry.get(sig.return_type) {
                                 let array_name = format!("[{}]", elem_info.name);
                                 if let Some(array_tid) = self.type_registry.lookup(&array_name) {
                                     return Some(array_tid);
@@ -1178,7 +1178,7 @@ impl<'a> MirBuilder<'a> {
                             // If U is same as receiver element type, return receiver type
                             if let Some(recv_info) = self.type_registry.get(receiver_type) {
                                 if let TypeKind::Array { element } = &recv_info.kind {
-                                    if *element == *returns {
+                                    if *element == sig.return_type {
                                         return Some(receiver_type);
                                     }
                                 }
@@ -1199,8 +1199,8 @@ impl<'a> MirBuilder<'a> {
                 // Get U from closure's function return type
                 if let Some(closure_tid) = closure_type {
                     if let Some(info) = self.type_registry.get(closure_tid) {
-                        if let TypeKind::Function { returns, .. } = &info.kind {
-                            return Some(*returns);
+                        if let TypeKind::Function { sig, .. } = &info.kind {
+                            return Some(sig.return_type);
                         }
                     }
                 }

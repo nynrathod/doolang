@@ -1,15 +1,13 @@
 //! Pattern matching, operators, and utility methods.
 
+use super::Lower;
+use crate::types::*;
+use doo_core::types::composite::FunctionSig;
 use doo_core::{
     types::{builtin, TypeId, TypeKind, TypeRegistry},
     Span,
 };
-use doo_frontend::ast::{
-    self, BinaryOp, CompoundOp, Pattern, PatternKind,
-    TypeExpr, UnaryOp,
-};
-use crate::types::*;
-use super::Lower;
+use doo_frontend::ast::{self, BinaryOp, CompoundOp, Pattern, PatternKind, TypeExpr, UnaryOp};
 
 impl Lower {
     pub(crate) fn pattern_to_name(&self, pattern: &Pattern) -> String {
@@ -210,7 +208,11 @@ impl Lower {
         HirMatchPattern::Condition(Box::new(result))
     }
 
-    pub(crate) fn resolve_type_expr(&mut self, ty: &TypeExpr, registry: &mut TypeRegistry) -> TypeId {
+    pub(crate) fn resolve_type_expr(
+        &mut self,
+        ty: &TypeExpr,
+        registry: &mut TypeRegistry,
+    ) -> TypeId {
         match &ty.kind {
             doo_frontend::ast::TypeExprKind::Named(name) => {
                 // Check if this name is a registered type parameter first.
@@ -255,7 +257,12 @@ impl Lower {
                     .map(|p| self.resolve_type_expr(p, registry))
                     .collect();
                 let returns_id = self.resolve_type_expr(returns, registry);
-                registry.register_function(params_ids, returns_id)
+                registry.register_function(FunctionSig {
+                    params: params_ids,
+                    return_type: returns_id,
+                    error_type: None,
+                    is_closure: false,
+                })
             }
             doo_frontend::ast::TypeExprKind::Range(_inner) => registry.declare_named("Range"),
             doo_frontend::ast::TypeExprKind::Any => builtin::ANY,
@@ -266,7 +273,11 @@ impl Lower {
 
     /// Determine the common element type for an array literal.
     /// Handles Spread elements by extracting the element type from the spread source.
-    pub(crate) fn common_array_elem_type(&self, elements: &[HirExpr], registry: &TypeRegistry) -> TypeId {
+    pub(crate) fn common_array_elem_type(
+        &self,
+        elements: &[HirExpr],
+        registry: &TypeRegistry,
+    ) -> TypeId {
         let mut current: Option<TypeId> = None;
         for e in elements {
             // For Spread elements, extract the element type from the inner array

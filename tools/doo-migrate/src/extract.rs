@@ -780,17 +780,19 @@ fn resolve_sql_type(
     // Check type registry for struct/enum types
     if let Some(type_info) = type_registry.get(tid) {
         match &type_info.kind {
-            TypeKind::Struct { name, .. } => {
+            TypeKind::Struct { def, .. } => {
                 // If the struct name matches an enum, treat it as an enum type
-                if enum_map.contains_key(name.as_str()) {
+                let name = def.name.resolve();
+                if enum_map.contains_key(name) {
                     referenced_enums.insert(name.to_string());
                     return SqlType::Enum(to_snake_case(name));
                 }
                 SqlType::Jsonb // Nested struct → store as JSONB
             }
-            TypeKind::Enum { name, .. } => {
+            TypeKind::Enum { def, .. } => {
                 // Enum types — map to PostgreSQL ENUM
-                if enum_map.contains_key(name.as_str()) {
+                let name = def.name.resolve();
+                if enum_map.contains_key(name) {
                     referenced_enums.insert(name.to_string());
                     return SqlType::Enum(to_snake_case(name));
                 }
@@ -852,11 +854,12 @@ fn resolve_transitive_deps(
 
     match &type_info.kind {
         // ── Enum ────────────────────────────────────────────────────────
-        TypeKind::Enum { name, .. } => {
-            if enum_map.contains_key(name.as_str()) {
+        TypeKind::Enum { def, .. } => {
+            let name = def.name.resolve();
+            if enum_map.contains_key(name) {
                 let sql_name = to_snake_case(name);
                 if !transitive_enum_refs.contains(&sql_name) {
-                    referenced_enums.insert(name.clone());
+                    referenced_enums.insert(name.to_string());
                     transitive_enum_refs.push(sql_name);
                 }
             }
@@ -865,13 +868,14 @@ fn resolve_transitive_deps(
         // ── Struct (could be @table struct, non-table struct, or enum) ──
         // IMPORTANT: In Doo's type registry, enums may be represented as
         // TypeKind::Struct (not TypeKind::Enum). Both arms must handle enums.
-        TypeKind::Struct { name, fields, .. } => {
+        TypeKind::Struct { def, .. } => {
+            let name = def.name.resolve();
             // Check if this is actually an enum type (represented as Struct
             // in the type registry). If so, mark it as referenced.
-            if enum_map.contains_key(name.as_str()) {
+            if enum_map.contains_key(name) {
                 let sql_name = to_snake_case(name);
                 if !transitive_enum_refs.contains(&sql_name) {
-                    referenced_enums.insert(name.clone());
+                    referenced_enums.insert(name.to_string());
                     transitive_enum_refs.push(sql_name);
                 }
                 return;
@@ -884,11 +888,11 @@ fn resolve_transitive_deps(
             if visited_structs.contains(name) {
                 return;
             }
-            visited_structs.insert(name.clone());
+            visited_structs.insert(name.to_string());
 
             // Record this non-table struct reference
-            if !struct_refs.contains(name) {
-                struct_refs.push(name.clone());
+            if !struct_refs.contains(&name.to_string()) {
+                struct_refs.push(name.to_string());
             }
 
             // Look up the HirStruct for decorator info (like @foreign)
@@ -901,9 +905,11 @@ fn resolve_transitive_deps(
             let hir_field_map: HashMap<&str, &doo_hir::HirField> =
                 hir_fields.iter().map(|f| (f.name.as_str(), *f)).collect();
 
-            for (field_name, field_tid, _) in fields {
+            for field_def in &def.fields {
+                let field_name = field_def.name.resolve();
+                let field_tid = field_def.type_id;
                 // Check if this field has a @foreign decorator → FK dependency
-                if let Some(hir_field) = hir_field_map.get(field_name.as_str()) {
+                if let Some(hir_field) = hir_field_map.get(field_name) {
                     for dec in &hir_field.decorators {
                         if dec.name == "foreign" {
                             if let Some(arg) = dec.args.first() {
@@ -928,7 +934,7 @@ fn resolve_transitive_deps(
 
                 // Recursively resolve transitive deps from this field's type
                 resolve_transitive_deps(
-                    Some(*field_tid),
+                    Some(field_tid),
                     type_registry,
                     all_structs,
                     table_struct_names,
@@ -1153,7 +1159,7 @@ mod doo_driver_loader {
         project_root: &Path,
     ) -> Result<ImportResolution, String> {
         let mut items = Vec::new();
-        let mut errors = Vec::new();
+        let errors = Vec::new();
         let mut queue: VecDeque<Vec<String>> = VecDeque::new();
 
         // Collect import paths

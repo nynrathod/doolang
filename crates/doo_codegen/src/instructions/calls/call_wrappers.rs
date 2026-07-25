@@ -106,7 +106,7 @@ pub(crate) fn get_or_generate_ws_handler_wrapper<'ctx>(
                 let type_name = ctx
                     .get_type_kind(*param_tid)
                     .map(|tk| match tk {
-                        TypeKind::Struct { ref name, .. } => name.clone(),
+                        TypeKind::Struct { def } => def.name.resolve().to_string(),
                         _ => "Unknown".to_string(),
                     })
                     .unwrap_or_else(|| "Unknown".to_string());
@@ -204,7 +204,7 @@ pub(crate) fn get_or_generate_ws_event_handler_wrapper<'ctx>(
                 let type_name = ctx
                     .get_type_kind(*param_tid)
                     .map(|tk| match tk {
-                        TypeKind::Struct { ref name, .. } => name.clone(),
+                        TypeKind::Struct { def } => def.name.resolve().to_string(),
                         TypeKind::Str => "Str".to_string(),
                         _ => "Unknown".to_string(),
                     })
@@ -301,7 +301,7 @@ pub(crate) fn get_or_generate_ws_lifecycle_handler_wrapper<'ctx>(
                 let type_name = ctx
                     .get_type_kind(*param_tid)
                     .map(|tk| match tk {
-                        TypeKind::Struct { ref name, .. } => name.clone(),
+                        TypeKind::Struct { def } => def.name.resolve().to_string(),
                         _ => "Unknown".to_string(),
                     })
                     .unwrap_or_else(|| "Unknown".to_string());
@@ -432,11 +432,11 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
         ctx.get_type_kind(tid).map(|tk| match tk {
             TypeKind::Str => "Str".to_string(),
             TypeKind::Int => "Int".to_string(),
-            TypeKind::Float => "Float".to_string(),
+            TypeKind::Float32 | TypeKind::Float64 => "Float".to_string(),
             TypeKind::Bool => "Bool".to_string(),
             TypeKind::Void => "Void".to_string(),
-            TypeKind::Struct { name, .. } => name.clone(),
-            TypeKind::Enum { name, .. } => name.clone(),
+            TypeKind::Struct { def } => def.name.resolve().to_string(),
+            TypeKind::Enum { def } => def.name.resolve().to_string(),
             TypeKind::Array { .. } => "Array".to_string(),
             _ => "Unknown".to_string(),
         })
@@ -466,8 +466,8 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
         all_param_types
             .get(1)
             .map_or(false, |tid| match ctx.get_type_kind(*tid) {
-                Some(doo_core::types::TypeKind::Struct { name, .. }) => {
-                    name == "Next" || name == "DooNext"
+                Some(doo_core::types::TypeKind::Struct { def }) => {
+                    def.name.as_ref() == "Next" || def.name.as_ref() == "DooNext"
                 }
                 _ => false,
             })
@@ -792,11 +792,11 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
 
         // Check if the first parameter is a special "Request" type that receives raw pointer
         let is_raw_request = first_param_type.map_or(false, |tid| match ctx.get_type_kind(tid) {
-            Some(doo_core::types::TypeKind::Struct { name, .. }) => {
-                name == "Request" || name == "DooRequest"
+            Some(doo_core::types::TypeKind::Struct { def }) => {
+                def.name.as_ref() == "Request" || def.name.as_ref() == "DooRequest"
             }
             Some(doo_core::types::TypeKind::TypeRef { name }) => {
-                name == "Request" || name == "DooRequest"
+                name.as_ref() == "Request" || name.as_ref() == "DooRequest"
             }
             _ => false,
         });
@@ -872,7 +872,7 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                 // Check if this param is a Server type — inject global server instance
                 let is_server_param = ctx
                     .get_type_kind(*param_type)
-                    .map(|k| matches!(k, TypeKind::Struct { ref name, .. } if name == "Server" || name == "DooServer"))
+                    .map(|k| matches!(k, TypeKind::Struct { ref def } if def.name.as_ref() == "Server" || def.name.as_ref() == "DooServer"))
                     .unwrap_or(false);
 
                 if is_server_param {
@@ -997,9 +997,9 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
 
         // Get the error type info for this middleware function (if it returns Result)
         let error_type_id = ctx.get_function_error_type(user_func_name);
-        let error_type_name = error_type_id.and_then(|tid| {
+        let error_type_name: Option<String> = error_type_id.and_then(|tid| {
             ctx.get_type_kind(tid).map(|tk| match tk {
-                TypeKind::Enum { name, .. } => name.clone(),
+                TypeKind::Enum { def } => def.name.resolve().to_string(),
                 _ => String::new(),
             })
         });
@@ -1269,12 +1269,12 @@ pub(crate) fn get_or_generate_handler_wrapper_with_context<'ctx>(
                     let enum_name_str = error_type_name
                         .as_ref()
                         .expect("ICE: error type has no name — cannot generate error handler");
-                    let variant_names = if let Some(TypeKind::Enum { variants, .. }) =
+                    let variant_names = if let Some(TypeKind::Enum { def }) =
                         error_type_id.and_then(|tid| ctx.get_type_kind(tid))
                     {
-                        variants
+                        def.variants
                             .iter()
-                            .map(|(name, _)| name.clone())
+                            .map(|v| v.name.resolve().to_string())
                             .collect::<Vec<_>>()
                     } else {
                         vec!["Unknown".to_string()]

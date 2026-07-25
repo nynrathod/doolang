@@ -393,8 +393,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 // Set return type on dest if we can infer it from the function type
                 if let Some(func_type) = func.type_id {
                     if let Some(info) = builder.type_registry.get(func_type) {
-                        if let TypeKind::Function { returns, .. } = &info.kind {
-                            builder.set_temp_type(dest, *returns);
+                        if let TypeKind::Function { sig, .. } = &info.kind {
+                            builder.set_temp_type(dest, sig.return_type);
                         }
                     }
                 }
@@ -719,9 +719,9 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 // Get type name from receiver_type (already computed with all fallbacks)
                 builder.type_registry.get(receiver_type).and_then(|info| {
                     match &info.kind {
-                        TypeKind::Struct { name, .. } => Some(name.clone()),
+                        TypeKind::Struct { def, .. } => Some(def.name.resolve().to_string()),
                         // Handle TypeRef: resolve through to the struct name
-                        TypeKind::TypeRef { name } => Some(name.clone()),
+                        TypeKind::TypeRef { name } => Some(name.to_string()),
                         _ => None,
                     }
                 })
@@ -732,8 +732,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         if let Some(&static_tid) = builder.static_types.get(name) {
                             builder.type_registry.get(static_tid).and_then(|info| {
                                 match &info.kind {
-                                    TypeKind::Struct { name, .. } => Some(name.clone()),
-                                    TypeKind::TypeRef { name } => Some(name.clone()),
+                                    TypeKind::Struct { def, .. } => Some(def.name.resolve().to_string()),
+                                    TypeKind::TypeRef { name } => Some(name.to_string()),
                                     _ => None,
                                 }
                             })
@@ -791,24 +791,26 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 
                 // For interface receivers, extract return type from the interface definition
                 if let Some(info) = builder.type_registry.get(receiver_type) {
-                    if let TypeKind::Interface { methods, .. } = &info.kind {
-                        for (mname, _params, ret, err) in methods {
+                    if let TypeKind::Interface { def, .. } = &info.kind {
+                        for method_sig in &def.methods {
+                            let mname = method_sig.name.resolve();
                             if mname == method {
-                                if let (Some(ok_type), Some(err_type)) = (ret, err) {
+                                let ok_type = method_sig.return_type;
+                                if let Some(err_type) = method_sig.error_type {
                                     // Fallible method: return type is Result<ok, err>
                                     // Look up the registered Result type
-                                    let ok_name = builder.type_registry.get(*ok_type)
+                                    let ok_name = builder.type_registry.get(ok_type)
                                         .map(|t| t.name.clone()).unwrap_or_else(|| "?".to_string());
-                                    let err_name = builder.type_registry.get(*err_type)
+                                    let err_name = builder.type_registry.get(err_type)
                                         .map(|t| t.name.clone()).unwrap_or_else(|| "?".to_string());
                                     let result_name = format!("{} ! {}", ok_name, err_name);
                                     if let Some(result_tid) = builder.type_registry.lookup(&result_name) {
                                         return Some(result_tid);
                                     }
                                     // Fallback: return just the Ok type
-                                    return ret.clone();
+                                    return Some(ok_type);
                                 }
-                                return ret.clone();
+                                return Some(ok_type);
                             }
                         }
                     }
@@ -816,8 +818,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 
                 let type_name = receiver_type_name.as_ref().cloned().or_else(|| {
                     builder.type_registry.get(receiver_type).and_then(|info| {
-                        if let TypeKind::Struct { name, .. } = &info.kind {
-                            Some(name.clone())
+                        if let TypeKind::Struct { def, .. } = &info.kind {
+                            Some(def.name.resolve().to_string())
                         } else {
                             None
                         }
@@ -1657,8 +1659,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                                 builder.static_types.get(name)
                                     .and_then(|&tid| builder.type_registry.get(tid))
                                     .and_then(|info| match &info.kind {
-                                        TypeKind::Struct { name: type_name, .. } => Some(type_name.clone()),
-                                        TypeKind::TypeRef { name: type_name } => Some(type_name.clone()),
+                                        TypeKind::Struct { def, .. } => Some(def.name.resolve().to_string()),
+                                        TypeKind::TypeRef { name: type_name } => Some(type_name.to_string()),
                                         _ => None,
                                     })
                                     .or_else(|| Some(name.clone()))
@@ -1672,8 +1674,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                             builder.get_temp_type(sym(name))
                                 .and_then(|tid| builder.type_registry.get(tid))
                                 .and_then(|info| {
-                                    if let TypeKind::Struct { name: type_name, .. } = &info.kind {
-                                        Some(type_name.clone())
+                                    if let TypeKind::Struct { def, .. } = &info.kind {
+                                        Some(def.name.resolve().to_string())
                                     } else {
                                         None
                                     }
@@ -1683,8 +1685,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                                     receiver.type_id
                                         .and_then(|tid| builder.type_registry.get(tid))
                                         .and_then(|info| {
-                                            if let TypeKind::Struct { name: type_name, .. } = &info.kind {
-                                                Some(type_name.clone())
+                                            if let TypeKind::Struct { def, .. } = &info.kind {
+                                                Some(def.name.resolve().to_string())
                                             } else {
                                                 None
                                             }
@@ -1696,8 +1698,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         receiver.type_id
                             .and_then(|tid| builder.type_registry.get(tid))
                             .and_then(|info| {
-                                if let TypeKind::Struct { name, .. } = &info.kind {
-                                    Some(name.clone())
+                                if let TypeKind::Struct { def, .. } = &info.kind {
+                                    Some(def.name.resolve().to_string())
                                 } else {
                                     None
                                 }

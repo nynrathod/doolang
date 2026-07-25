@@ -579,14 +579,10 @@ fn clone_capture_for_spawn<'ctx>(
     if let Some(type_id) = ctx.variable_types.get(cap_name).copied() {
         if let Some(kind) = ctx.get_type_kind(type_id) {
             match kind {
-                TypeKind::Struct {
-                    ref name,
-                    ref fields,
-                    ..
-                } => {
+                TypeKind::Struct { def } => {
+                    let sname = def.name.resolve().to_string();
                     let field_pairs: Vec<_> =
-                        fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
-                    let sname = name.clone();
+                        def.fields.iter().map(|f| (f.name.resolve().to_string(), f.type_id)).collect();
                     return clone_struct(ctx, src_ptr, &sname, &field_pairs);
                 }
                 TypeKind::Str => {
@@ -599,8 +595,8 @@ fn clone_capture_for_spawn<'ctx>(
     // Fallback: check temp_struct_types for struct captures not in variable_types
     if let Some(struct_name) = ctx.temp_struct_types.get(cap_name).cloned() {
         if let Some(type_id) = ctx.variable_types.get(cap_name).copied() {
-            if let Some(TypeKind::Struct { ref fields, .. }) = ctx.get_type_kind(type_id) {
-                let field_pairs: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
+            if let Some(TypeKind::Struct { def }) = ctx.get_type_kind(type_id) {
+                let field_pairs: Vec<_> = def.fields.iter().map(|f| (f.name.resolve().to_string(), f.type_id)).collect();
                 return clone_struct(ctx, src_ptr, &struct_name, &field_pairs);
             }
         }

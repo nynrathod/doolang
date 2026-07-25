@@ -448,7 +448,7 @@ impl TypeChecker {
                 let interface_key = format!("__interface_{}", name);
                 // Skip built-in / FFI types that are always available
                 let is_builtin = matches!(
-                    name.as_str(),
+                    name.resolve(),
                     "Fn" | "Function"
                         | "Callback"
                         | "Handler"
@@ -458,14 +458,14 @@ impl TypeChecker {
                         | "Json"
                         | "File"
                         | "Database"
-                ) || name.starts_with("__");
+                ) || name.resolve().starts_with("__");
                 if !is_builtin
                     && self.scopes.lookup(&struct_key).is_none()
                     && self.scopes.lookup(&enum_key).is_none()
                     && self.scopes.lookup(&interface_key).is_none()
                 {
                     self.errors.push(TypeError {
-                        kind: TypeErrorKind::Undefined(name.clone(), None),
+                        kind: TypeErrorKind::Undefined(name.resolve().to_string(), None),
                         span,
                     });
                 }
@@ -612,7 +612,7 @@ impl TypeChecker {
     fn type_name(&self, id: TypeId) -> String {
         self.registry
             .get(id)
-            .map(|t| t.kind.to_string())
+            .map(|t| t.name.clone())
             .unwrap_or_else(|| format!("{}", id))
     }
 
@@ -1335,14 +1335,13 @@ impl TypeChecker {
                 let mut resolved_field_type = None;
                 if obj_type != builtin::ANY {
                     if let Some(info) = self.registry.get(obj_type) {
-                        if let TypeKind::Struct {
-                            fields: declared, ..
-                        } = &info.kind
-                        {
-                            if let Some((_, field_tid, _)) =
-                                declared.iter().find(|(n, _, _)| n == field)
+                        if let TypeKind::Struct { def, .. } = &info.kind {
+                            if let Some(field_def) = def
+                                .fields
+                                .iter()
+                                .find(|f| f.name.resolve() == field.as_str())
                             {
-                                resolved_field_type = Some(*field_tid);
+                                resolved_field_type = Some(field_def.type_id);
                             } else {
                                 let type_name = if info.name.is_empty() {
                                     self.type_name(obj_type)
@@ -1763,12 +1762,17 @@ impl TypeChecker {
             .unwrap_or(false);
 
         if is_defined_struct {
-            let declared = self
+            let declared: Vec<(String, TypeId, bool)> = self
                 .registry
                 .get(struct_type_id)
                 .and_then(|info| {
-                    if let TypeKind::Struct { fields: f, .. } = &info.kind {
-                        Some(f.clone())
+                    if let TypeKind::Struct { def, .. } = &info.kind {
+                        Some(
+                            def.fields
+                                .iter()
+                                .map(|f| (f.name.resolve().to_string(), f.type_id, f.is_public))
+                                .collect(),
+                        )
                     } else {
                         None
                     }
@@ -1861,12 +1865,11 @@ impl TypeChecker {
             .lookup(enum_name)
             .and_then(|enum_type_id| self.registry.get(enum_type_id))
             .map(|info| {
-                if let TypeKind::Enum { variants, .. } = &info.kind {
-                    if let Some((_, declared_payload)) = variants.iter().find(|(v, _)| v == variant)
-                    {
-                        (true, declared_payload.clone(), true)
+                if let TypeKind::Enum { def, .. } = &info.kind {
+                    if let Some(v_def) = def.variants.iter().find(|v| v.name.resolve() == variant) {
+                        (true, v_def.payload, true)
                     } else {
-                        (false, None, true)
+                        (true, None, true) // Variant not found, but enum exists
                     }
                 } else {
                     (false, None, false)
@@ -2037,11 +2040,11 @@ impl TypeChecker {
                     // Extract payload type from registry before calling define_symbol
                     // to avoid borrow conflict (immutable borrow on registry vs mutable on self)
                     let payload_type = if let Some(type_info) = self.registry.get(enum_type_id) {
-                        if let TypeKind::Enum { variants, .. } = &type_info.kind {
-                            variants
+                        if let TypeKind::Enum { def, .. } = &type_info.kind {
+                            def.variants
                                 .iter()
-                                .find(|(v, _)| v == variant)
-                                .and_then(|(_, payload)| *payload)
+                                .find(|v| v.name.resolve() == variant)
+                                .and_then(|v| v.payload)
                         } else {
                             None
                         }

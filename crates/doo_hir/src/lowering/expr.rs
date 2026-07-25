@@ -4,6 +4,7 @@ use super::type_infer::unwrap_optional_type;
 use super::{hir_binop_to_kind, hir_unaryop_to_kind};
 use super::{Lower, LowerError};
 use crate::types::*;
+use doo_core::types::composite::FunctionSig;
 use doo_core::{
     constants::ffi_names,
     infer::{infer_binop_result_type, infer_unaryop_result_type, BinOpKind},
@@ -797,7 +798,12 @@ impl Lower {
                     .map(|(_, t)| t.unwrap_or(builtin::ANY))
                     .collect();
                 let return_type = body.type_id.unwrap_or(builtin::ANY);
-                out.type_id = Some(registry.register_function(param_types, return_type));
+                out.type_id = Some(registry.register_function(FunctionSig {
+                    params: param_types,
+                    return_type: return_type,
+                    error_type: None,
+                    is_closure: true,
+                }));
             }
             HirExprKind::MethodCall {
                 receiver,
@@ -847,16 +853,17 @@ impl Lower {
                     for _ in 0..10 {
                         if let Some(info) = registry.get(current_type) {
                             match &info.kind {
-                                TypeKind::Struct { fields, .. } => {
-                                    if let Some((_, field_type, _)) =
-                                        fields.iter().find(|(n, _, _)| n == field)
+                                TypeKind::Struct { def } => {
+                                    let fields = &def.fields;
+                                    if let Some(field_def) =
+                                        fields.iter().find(|f| f.name.resolve() == field)
                                     {
-                                        out.type_id = Some(*field_type);
+                                        out.type_id = Some(field_def.type_id);
                                     }
                                     break;
                                 }
                                 TypeKind::TypeRef { name } => {
-                                    if let Some(resolved) = registry.lookup(name) {
+                                    if let Some(resolved) = registry.lookup(name.resolve()) {
                                         current_type = resolved;
                                     } else {
                                         break;

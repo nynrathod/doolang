@@ -24,11 +24,11 @@ impl ArrayBuiltins {
         match ctx.get_type_kind(ty) {
             Some(TypeKind::TypeRef { ref name }) => {
                 // Resolve through the type registry first (handles TypeRef chains)
-                if let Some(resolved) = ctx.type_registry.lookup(name) {
+                if let Some(resolved) = ctx.type_registry.lookup(name.resolve()) {
                     return Self::resolve_element_type(ctx, resolved);
                 }
                 // Fallback: match well-known type names to builtin TypeIds
-                match name.as_str() {
+                match name.as_ref() {
                     "Str" => builtin::STR,
                     "Int" => builtin::INT,
                     "Float" => builtin::FLOAT,
@@ -39,7 +39,7 @@ impl ArrayBuiltins {
             // Non-canonical TypeIds that ARE primitives: map to canonical builtin
             Some(TypeKind::Str) => builtin::STR,
             Some(TypeKind::Int) => builtin::INT,
-            Some(TypeKind::Float) => builtin::FLOAT,
+            Some(TypeKind::Float32 | TypeKind::Float64) => builtin::FLOAT,
             Some(TypeKind::Bool) => builtin::BOOL,
             _ => ty,
         }
@@ -743,11 +743,14 @@ impl ArrayBuiltins {
         // to avoid double-free when both source and sliced arrays are dropped.
         let elem_kind = ctx.get_type_kind(elem_type);
         match &elem_kind {
-            Some(doo_core::types::TypeKind::Struct { name, fields, .. }) => {
+            Some(doo_core::types::TypeKind::Struct { def }) => {
                 if val.is_pointer_value() {
-                    let field_pairs: Vec<_> =
-                        fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
-                    let struct_name = name.clone();
+                    let field_pairs: Vec<_> = def
+                        .fields
+                        .iter()
+                        .map(|f| (f.name.resolve().to_string(), f.type_id))
+                        .collect();
+                    let struct_name = def.name.resolve().to_string();
                     if let Some(cloned) = crate::instructions::memory::clone_struct(
                         ctx,
                         val.into_pointer_value(),
@@ -1524,11 +1527,14 @@ impl ArrayBuiltins {
         // to avoid double-free when both source and filtered arrays are dropped.
         let elem_kind = ctx.get_type_kind(elem_type_id);
         match &elem_kind {
-            Some(doo_core::types::TypeKind::Struct { name, fields, .. }) => {
+            Some(doo_core::types::TypeKind::Struct { def }) => {
                 if elem.is_pointer_value() {
-                    let field_pairs: Vec<_> =
-                        fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
-                    let struct_name = name.clone();
+                    let field_pairs: Vec<_> = def
+                        .fields
+                        .iter()
+                        .map(|f| (f.name.resolve().to_string(), f.type_id))
+                        .collect();
+                    let struct_name = def.name.resolve().to_string();
                     if let Some(cloned) = crate::instructions::memory::clone_struct(
                         ctx,
                         elem.into_pointer_value(),

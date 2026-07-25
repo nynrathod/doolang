@@ -288,18 +288,18 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 // an independent copy to avoid double-free when the array is dropped.
                 // This aligns with Doo's ownership model: auto-clone when variable reused.
                 let val = match ctx.get_type_kind(*elem_type) {
-                    Some(doo_core::types::TypeKind::Struct {
-                        ref name,
-                        ref fields, ..
-                    }) => {
+                    Some(doo_core::types::TypeKind::Struct { def }) => {
                         if val.is_pointer_value() {
-                            let field_pairs: Vec<_> =
-                                fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
-                            let struct_name = name.clone();
+                            let field_pairs: Vec<_> = def
+                                .fields
+                                .iter()
+                                .map(|f| (f.name.resolve().to_string(), f.type_id))
+                                .collect();
+                            let struct_name = def.name.resolve();
                             super::memory::clone_struct(
                                 ctx,
                                 val.into_pointer_value(),
-                                &struct_name,
+                                struct_name,
                                 &field_pairs,
                             )
                             .map(|p| p.into())

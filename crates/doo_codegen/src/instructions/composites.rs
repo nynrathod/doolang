@@ -199,40 +199,39 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                 if let Some(tid) = ctx.get_variable_type(&dest_str) {
                                     if let Some(kind) = ctx.get_type_kind(tid) {
                                         match kind {
-                                            TypeKind::Struct { name, .. } => {
-                                                ctx.set_temp_struct_type(&dest_str, &name);
+                                            TypeKind::Struct { def } => {
+                                                ctx.set_temp_struct_type(&dest_str, def.name.resolve());
                                             }
                                             TypeKind::TypeRef { name: ref_name } => {
                                                 if let Some(resolved_tid) =
-                                                    ctx.type_registry.lookup(&ref_name)
+                                                    ctx.type_registry.lookup(ref_name.resolve())
                                                 {
-                                                    if let Some(TypeKind::Struct { name, .. }) =
+                                                    if let Some(TypeKind::Struct { def }) =
                                                         ctx.get_type_kind(resolved_tid)
                                                     {
-                                                        ctx.set_temp_struct_type(&dest_str, &name);
+                                                        ctx.set_temp_struct_type(&dest_str, def.name.resolve());
                                                     }
                                                 }
                                             }
                                             TypeKind::Optional { inner } => {
                                                 if let Some(inner_kind) = ctx.get_type_kind(inner) {
                                                     match inner_kind {
-                                                        TypeKind::Struct { name, .. } => {
+                                                        TypeKind::Struct { def } => {
                                                             ctx.set_temp_struct_type(
-                                                                &dest_str, &name,
+                                                                &dest_str, def.name.resolve(),
                                                             );
                                                         }
                                                         TypeKind::TypeRef { name: ref_name } => {
                                                             if let Some(resolved_tid) =
-                                                                ctx.type_registry.lookup(&ref_name)
+                                                                ctx.type_registry.lookup(ref_name.resolve())
                                                             {
                                                                 if let Some(TypeKind::Struct {
-                                                                    name,
-                                                                    ..
+                                                                    def,
                                                                 }) =
                                                                     ctx.get_type_kind(resolved_tid)
                                                                 {
                                                                     ctx.set_temp_struct_type(
-                                                                        &dest_str, &name,
+                                                                        &dest_str, def.name.resolve(),
                                                                     );
                                                                 }
                                                             }
@@ -598,15 +597,15 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                             if let Some(type_id) = ctx.get_variable_type(&name) {
                                 if let Some(kind) = ctx.get_type_kind(type_id) {
                                     match kind {
-                                        TypeKind::Struct { name, .. } => return Some(name),
+                                        TypeKind::Struct { def } => return Some(def.name.resolve().to_string()),
                                         TypeKind::TypeRef { name: ref_name } => {
                                             if let Some(resolved_tid) =
-                                                ctx.type_registry.lookup(&ref_name)
+                                                ctx.type_registry.lookup(ref_name.resolve())
                                             {
-                                                if let Some(TypeKind::Struct { name, .. }) =
+                                                if let Some(TypeKind::Struct { def }) =
                                                     ctx.get_type_kind(resolved_tid)
                                                 {
-                                                    return Some(name);
+                                                    return Some(def.name.resolve().to_string());
                                                 }
                                             }
                                         }
@@ -631,18 +630,18 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                             if let Some(type_id) = type_id_opt {
                                 if let Some(kind) = ctx.get_type_kind(type_id) {
                                     match kind {
-                                        TypeKind::Struct { name: sname, .. } => {
-                                            return Some(sname);
+                                        TypeKind::Struct { def } => {
+                                            return Some(def.name.resolve().to_string());
                                         }
                                         TypeKind::TypeRef { name: ref_name } => {
                                             if let Some(resolved_tid) =
-                                                ctx.type_registry.lookup(&ref_name)
+                                                ctx.type_registry.lookup(ref_name.resolve())
                                             {
                                                 if let Some(TypeKind::Struct {
-                                                    name: sname, ..
+                                                    def,
                                                 }) = ctx.get_type_kind(resolved_tid)
                                                 {
-                                                    return Some(sname);
+                                                    return Some(def.name.resolve().to_string());
                                                 }
                                             }
                                         }
@@ -693,7 +692,7 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                             ctx.get_type_kind(tid)
                                         {
                                             if let Some(resolved_tid) =
-                                                ctx.type_registry.lookup(&ref_name)
+                                                ctx.type_registry.lookup(ref_name.resolve())
                                             {
                                                 return ctx
                                                     .get_struct_name_from_type_id(resolved_tid);
@@ -783,19 +782,17 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                                             .map(|p| p.into())
                                                             .unwrap_or(val)
                                                         }
-                                                        Some(TypeKind::Struct {
-                                                            name,
-                                                            fields,
-                                                            ..
-                                                        }) => {
-                                                            let field_pairs: Vec<_> = fields
+                                                        Some(TypeKind::Struct { def }) => {
+                                                            let struct_name = def.name.resolve().to_string();
+                                                            let field_pairs: Vec<_> = def
+                                                                .fields
                                                                 .iter()
-                                                                .map(|(n, t, _)| (n.clone(), *t))
+                                                                .map(|f| (f.name.resolve().to_string(), f.type_id))
                                                                 .collect();
                                                             super::memory::clone_struct(
                                                                 ctx,
                                                                 val.into_pointer_value(),
-                                                                &name,
+                                                                &struct_name,
                                                                 &field_pairs,
                                                             )
                                                             .map(|p| p.into())

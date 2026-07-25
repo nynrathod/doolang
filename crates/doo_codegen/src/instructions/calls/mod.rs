@@ -390,13 +390,10 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 // ================================================================
                 // Interface dispatch: vtable-based indirect call
                 // ================================================================
-                if let Some(TypeKind::Interface {
-                    name: iface_name,
-                    methods: iface_methods,
-                }) = ctx.get_type_kind(*receiver_type)
+                if let Some(TypeKind::Interface { def }) = ctx.get_type_kind(*receiver_type)
                 {
                     // Find the method index in the interface
-                    let method_idx = iface_methods.iter().position(|(m, _, _, _)| m == &method_s);
+                    let method_idx = def.methods.iter().position(|m| m.name.resolve() == &method_s);
                     if let Some(idx) = method_idx {
                         // Extract data_ptr and vtable_ptr from the fat pointer struct
                         // Re-get recv_val to avoid move issues with extract_value
@@ -432,8 +429,10 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                             .into_pointer_value();
 
                         // Build the function type for the indirect call from interface method signature
-                        let (_, ref param_type_ids, ref ret_type_id, ref err_type_id) =
-                            iface_methods[idx];
+                        let method_sig = &def.methods[idx];
+                        let param_type_ids = &method_sig.params;
+                        let ret_type_id = method_sig.return_type;
+                        let err_type_id = method_sig.error_type;
                         let has_error = err_type_id.is_some();
 
                         // Build parameter types: first param is always ptr (self/data_ptr)
@@ -452,8 +451,9 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                                 false,
                             );
                             result_type.fn_type(&param_llvm_types, false)
-                        } else if let Some(rt) = ret_type_id {
-                            let ret_llvm = ctx.get_llvm_type(*rt);
+                        } else {
+                            let rt = ret_type_id;
+                            let ret_llvm = ctx.get_llvm_type(rt);
                             match ret_llvm {
                                 BasicTypeEnum::IntType(t) => t.fn_type(&param_llvm_types, false),
                                 BasicTypeEnum::FloatType(t) => t.fn_type(&param_llvm_types, false),
@@ -465,8 +465,6 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                                 BasicTypeEnum::VectorType(t) => t.fn_type(&param_llvm_types, false),
                                 _ => ctx.ptr_type().fn_type(&param_llvm_types, false),
                             }
-                        } else {
-                            ctx.context.void_type().fn_type(&param_llvm_types, false)
                         };
 
                         // Build args: data_ptr as self, then method args
@@ -509,19 +507,19 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                     // Try receiver_type first
                     if let Some(kind) = ctx.get_type_kind(*receiver_type) {
                         match kind {
-                            TypeKind::Struct { name, .. } => return Some(name),
-                            TypeKind::Enum { name, .. } => return Some(name),
+                            TypeKind::Struct { def, .. } => return Some(def.name.resolve().to_string()),
+                            TypeKind::Enum { def, .. } => return Some(def.name.resolve().to_string()),
                             TypeKind::TypeRef { name } => {
-                                if let Some(tid) = ctx.type_registry.lookup(&name) {
+                                if let Some(tid) = ctx.type_registry.lookup(name.resolve()) {
                                     if let Some(k) = ctx.get_type_kind(tid) {
                                         match k {
-                                            TypeKind::Struct { name: n, .. } => return Some(n),
-                                            TypeKind::Enum { name: n, .. } => return Some(n),
+                                            TypeKind::Struct { def } => return Some(def.name.resolve().to_string()),
+                                            TypeKind::Enum { def } => return Some(def.name.resolve().to_string()),
                                             _ => {}
                                         }
                                     }
                                 }
-                                return Some(name);
+                                return Some(name.resolve().to_string());
                             }
                             _ => {}
                         }
@@ -531,9 +529,9 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                         if let Some(tid) = ctx.type_registry.lookup(name) {
                             if let Some(kind) = ctx.get_type_kind(tid) {
                                 match kind {
-                                    TypeKind::Struct { name: n, .. } => return Some(n),
-                                    TypeKind::Enum { name: n, .. } => return Some(n),
-                                    TypeKind::TypeRef { name: n } => return Some(n),
+                                    TypeKind::Struct { def, .. } => return Some(def.name.resolve().to_string()),
+                                    TypeKind::Enum { def, .. } => return Some(def.name.resolve().to_string()),
+                                    TypeKind::TypeRef { name: n } => return Some(n.resolve().to_string()),
                                     _ => {}
                                 }
                             }
@@ -542,8 +540,8 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                         if let Some(&static_type_id) = ctx.static_globals.get(name) {
                             if let Some(kind) = ctx.get_type_kind(static_type_id) {
                                 match kind {
-                                    TypeKind::Struct { name: n, .. } => return Some(n),
-                                    TypeKind::Enum { name: n, .. } => return Some(n),
+                                    TypeKind::Struct { def, .. } => return Some(def.name.resolve().to_string()),
+                                    TypeKind::Enum { def, .. } => return Some(def.name.resolve().to_string()),
                                     _ => {}
                                 }
                             }
@@ -758,7 +756,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                                 TypeKind::Bool => {
                                     emit_print_value(ctx, printf, ty, v, false, false);
                                 }
-                                TypeKind::Int | TypeKind::Float => {
+                                TypeKind::Int | TypeKind::Float32 | TypeKind::Float64 => {
                                     emit_print_value(ctx, printf, ty, v, false, false);
                                 }
                                 TypeKind::Array { element } => {
@@ -800,12 +798,13 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                                         );
                                     }
                                 }
-                                TypeKind::Struct { name, fields, .. } => {
+                                TypeKind::Struct { def, .. } => {
                                     if v.is_pointer_value() {
+                                        let name = def.name.resolve().to_string();
                                         // Extract just name and type for printing (visibility not needed)
-                                        let field_pairs: Vec<_> = fields
+                                        let field_pairs: Vec<_> = def.fields
                                             .iter()
-                                            .map(|(n, t, _)| (n.clone(), *t))
+                                            .map(|f| (f.name.resolve().to_string(), f.type_id))
                                             .collect();
                                         emit_print_struct(
                                             ctx,
@@ -818,14 +817,19 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                                         emit_print_value(ctx, printf, ty, v, false, false);
                                     }
                                 }
-                                TypeKind::Enum { name, variants } => {
+                                TypeKind::Enum { def } => {
+                                    let enum_name = def.name.resolve().to_string();
+                                    let variant_pairs: Vec<(String, Option<doo_core::types::TypeId>)> = def.variants
+                                        .iter()
+                                        .map(|v| (v.name.resolve().to_string(), v.payload))
+                                        .collect();
                                     if v.is_pointer_value() {
                                         emit_print_enum(
                                             ctx,
                                             printf,
                                             v.into_pointer_value(),
-                                            &name,
-                                            &variants,
+                                            &enum_name,
+                                            &variant_pairs,
                                         );
                                     } else if v.is_struct_value() {
                                         // Enum as StructValue (inline) - use direct extraction
@@ -833,8 +837,8 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                                             ctx,
                                             printf,
                                             v.into_struct_value(),
-                                            &name,
-                                            &variants,
+                                            &enum_name,
+                                            &variant_pairs,
                                         );
                                     } else {
                                         // Fallback for other cases
@@ -1167,8 +1171,8 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
 
                 let error_name_s = resolve(*error_name);
                 if error_name_s != "_" {
-                    if let Some(TypeKind::Struct { name, .. }) = ctx.get_type_kind(*err_type) {
-                        ctx.set_temp_struct_type(&error_name_s, &name);
+                    if let Some(TypeKind::Struct { def, .. }) = ctx.get_type_kind(*err_type) {
+                        ctx.set_temp_struct_type(&error_name_s, &def.name.resolve().to_string());
                     }
                     ctx.set_variable_type(&error_name_s, effective_err_type);
                 }
@@ -1409,23 +1413,38 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 let type_name: String = if let Some(kind) = ctx.get_type_kind(*value_type) {
                     match kind {
                         TypeKind::Int => "Int".to_string(),
-                        TypeKind::Float => "Float".to_string(),
+                        TypeKind::Float32 | TypeKind::Float64 => "Float".to_string(),
                         TypeKind::Bool => "Bool".to_string(),
                         TypeKind::Str => "Str".to_string(),
                         TypeKind::Void => "Nil".to_string(),
                         TypeKind::Array { .. } => "Array".to_string(),
                         TypeKind::Map { .. } => "Map".to_string(),
                         TypeKind::Tuple { .. } => "Tuple".to_string(),
-                        TypeKind::Struct { name, .. } => name,
-                        TypeKind::Enum { name, .. } => name,
-                        TypeKind::Interface { name, .. } => name,
+                        TypeKind::Struct { def, .. } => def.name.resolve().to_string(),
+                        TypeKind::Enum { def, .. } => def.name.resolve().to_string(),
+                        TypeKind::Interface { def, .. } => def.name.resolve().to_string(),
                         TypeKind::Function { .. } => "Function".to_string(),
                         TypeKind::Result { .. } => "Result".to_string(),
                         TypeKind::Optional { .. } => "Optional".to_string(),
+                        TypeKind::TypeRef { name } => name.resolve().to_string(),
+                        TypeKind::TypeParam { name } => name.resolve().to_string(),
+                        // Primitives not explicitly listed
+                        TypeKind::Char => "Char".to_string(),
+                        TypeKind::Int8 => "Int8".to_string(),
+                        TypeKind::Int16 => "Int16".to_string(),
+                        TypeKind::Int32 => "Int32".to_string(),
+                        TypeKind::Int64 => "Int64".to_string(),
+                        TypeKind::UInt8 => "UInt8".to_string(),
+                        TypeKind::UInt16 => "UInt16".to_string(),
+                        TypeKind::UInt32 => "UInt32".to_string(),
+                        TypeKind::UInt64 => "UInt64".to_string(),
+                        TypeKind::UInt => "UInt".to_string(),
+                        TypeKind::Never => "Never".to_string(),
+                        TypeKind::Set { .. } => "Set".to_string(),
+                        TypeKind::Box { .. } => "Box".to_string(),
+                        TypeKind::SelfType => "Self".to_string(),
                         TypeKind::Any => "Any".to_string(),
-                        TypeKind::TypeRef { name } => name,
                         TypeKind::Error => "Error".to_string(),
-                        TypeKind::TypeParam { name } => name,
                     }
                 } else {
                     "Unknown".to_string()
@@ -1494,12 +1513,12 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 // Build vtable: look up each interface method on the concrete type
                 // and store function pointers in a global constant array.
                 let concrete_name = ctx.get_type_kind(*concrete_type).and_then(|k| match k {
-                    TypeKind::Struct { name, .. } => Some(name),
-                    TypeKind::Enum { name, .. } => Some(name),
+                    TypeKind::Struct { def } => Some(def.name.resolve().to_string()),
+                    TypeKind::Enum { def } => Some(def.name.resolve().to_string()),
                     _ => None,
                 });
                 let iface_methods = ctx.get_type_kind(*interface_type).and_then(|k| match k {
-                    TypeKind::Interface { methods, .. } => Some(methods),
+                    TypeKind::Interface { def } => Some(def.methods.clone()),
                     _ => None,
                 });
 
@@ -1508,8 +1527,8 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 {
                     // Build array of function pointers for this concrete type
                     let mut fn_ptrs: Vec<inkwell::values::PointerValue<'ctx>> = Vec::new();
-                    for (method_name, _, _, _) in &methods {
-                        let mangled = format!("_method_{}_{}", cname, method_name);
+                    for method in &methods {
+                        let mangled = format!("_method_{}_{}", cname, method.name.resolve());
                         if let Some(func) = ctx.get_function(&mangled) {
                             let fptr = func.as_global_value().as_pointer_value();
                             let cast = ctx
@@ -1529,7 +1548,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                         cname,
                         ctx.get_type_kind(*interface_type)
                             .and_then(|k| match k {
-                                TypeKind::Interface { name, .. } => Some(name),
+                                TypeKind::Interface { def } => Some(def.name.resolve().to_string()),
                                 _ => None,
                             })
                             .unwrap_or_default()

@@ -171,7 +171,7 @@ fn convert_return_value<'ctx>(
                         return loaded;
                     }
                 }
-                TypeKind::Float => {
+                TypeKind::Float32 | TypeKind::Float64 => {
                     // Load f64 from pointer
                     if let Ok(loaded) =
                         ctx.builder
@@ -280,7 +280,7 @@ fn convert_i64_to_type<'ctx>(
                 .map(|v| v.into())
                 .unwrap_or(val)
         }
-        TypeKind::Float => {
+        TypeKind::Float32 | TypeKind::Float64 => {
             // Reinterpret i64 bits as f64
             ctx.builder
                 .build_bit_cast(i64_val, ctx.context.f64_type(), "i64_to_f64")
@@ -565,8 +565,14 @@ impl<'ctx> CodegenBuilder<'ctx> {
             .filter_map(|type_id| {
                 if let Some(type_info) = ctx.type_registry.get(type_id) {
                     match &type_info.kind {
-                        doo_core::types::TypeKind::Struct { name, fields, .. } => {
-                            return Some((name.clone(), fields.clone()));
+                        doo_core::types::TypeKind::Struct { def } => {
+                            let struct_name = def.name.resolve().to_string();
+                            let struct_fields: Vec<(String, doo_core::types::TypeId, bool)> = def
+                                .fields
+                                .iter()
+                                .map(|f| (f.name.resolve().to_string(), f.type_id, f.is_public))
+                                .collect();
+                            return Some((struct_name, struct_fields));
                         }
                         // Handle TypeRef to import struct types from other modules
                         // The TypeRef references struct types from imported modules
@@ -576,13 +582,17 @@ impl<'ctx> CodegenBuilder<'ctx> {
                             // The struct might be registered under a different type_id
                             for other_tid in ctx.type_registry.all_type_ids().collect::<Vec<_>>() {
                                 if let Some(other_info) = ctx.type_registry.get(other_tid) {
-                                    if let doo_core::types::TypeKind::Struct {
-                                        name, fields, ..
-                                    } = &other_info.kind
+                                    if let doo_core::types::TypeKind::Struct { def } = &other_info.kind
                                     {
-                                        if name == ref_name {
+                                        if def.name == *ref_name {
                                             if debug {}
-                                            return Some((name.clone(), fields.clone()));
+                                            let struct_name = def.name.resolve().to_string();
+                                            let struct_fields: Vec<(String, doo_core::types::TypeId, bool)> = def
+                                                .fields
+                                                .iter()
+                                                .map(|f| (f.name.resolve().to_string(), f.type_id, f.is_public))
+                                                .collect();
+                                            return Some((struct_name, struct_fields));
                                         }
                                     }
                                 }
@@ -912,31 +922,31 @@ impl<'ctx> CodegenBuilder<'ctx> {
             // is passed to another function or when its fields are accessed
             if let Some(kind) = ctx.get_type_kind(param.type_id) {
                 match kind {
-                    TypeKind::Struct { name, .. } => {
-                        ctx.set_temp_struct_type(&param_name, &name);
+                    TypeKind::Struct { def } => {
+                        ctx.set_temp_struct_type(&param_name, def.name.resolve());
                     }
                     // CRITICAL: Handle TypeRef for imported/cross-module types
                     // The TypeRef name IS the struct name, use it directly
                     TypeKind::TypeRef { name: ref_name } => {
                         // First try to resolve through lookup
-                        let struct_name =
-                            if let Some(resolved_tid) = ctx.type_registry.lookup(&ref_name) {
-                                if let Some(TypeKind::Struct { name, .. }) =
+                        let struct_name: Option<String> =
+                            if let Some(resolved_tid) = ctx.type_registry.lookup(ref_name.resolve()) {
+                                if let Some(TypeKind::Struct { def }) =
                                     ctx.get_type_kind(resolved_tid)
                                 {
-                                    Some(name)
+                                    Some(def.name.resolve().to_string())
                                 } else {
                                     // If resolution doesn't give a struct, use the TypeRef name directly
-                                    Some(ref_name.clone())
+                                    Some(ref_name.resolve().to_string())
                                 }
                             } else {
                                 // If lookup fails (common for imported types), use the TypeRef name directly
                                 // This is the struct name used for LLVM type lookup
-                                Some(ref_name.clone())
+                                Some(ref_name.resolve().to_string())
                             };
 
-                        if let Some(name) = struct_name {
-                            ctx.set_temp_struct_type(&param_name, &name);
+                        if let Some(sname) = struct_name {
+                            ctx.set_temp_struct_type(&param_name, &sname);
                         }
                     }
                     other => if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {},
@@ -959,28 +969,28 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 // This is needed for FieldGet/FieldSet to work correctly
                 if let Some(kind) = ctx.get_type_kind(local.type_id) {
                     match kind {
-                        TypeKind::Struct { name, .. } => {
-                            ctx.set_temp_struct_type(&local_name, &name);
+                        TypeKind::Struct { def } => {
+                            ctx.set_temp_struct_type(&local_name, def.name.resolve());
                         }
                         // CRITICAL: Handle TypeRef for imported/cross-module types
                         // The TypeRef name IS the struct name, use it directly
                         TypeKind::TypeRef { name: ref_name } => {
                             // First try to resolve through lookup
-                            let struct_name =
-                                if let Some(resolved_tid) = ctx.type_registry.lookup(&ref_name) {
-                                    if let Some(TypeKind::Struct { name, .. }) =
+                            let struct_name: Option<String> =
+                                if let Some(resolved_tid) = ctx.type_registry.lookup(ref_name.resolve()) {
+                                    if let Some(TypeKind::Struct { def }) =
                                         ctx.get_type_kind(resolved_tid)
                                     {
-                                        Some(name)
+                                        Some(def.name.resolve().to_string())
                                     } else {
-                                        Some(ref_name.clone())
+                                        Some(ref_name.resolve().to_string())
                                     }
                                 } else {
-                                    Some(ref_name.clone())
+                                    Some(ref_name.resolve().to_string())
                                 };
 
-                            if let Some(name) = struct_name {
-                                ctx.set_temp_struct_type(&local_name, &name);
+                            if let Some(sname) = struct_name {
+                                ctx.set_temp_struct_type(&local_name, &sname);
                             }
                         }
                         _ => {}

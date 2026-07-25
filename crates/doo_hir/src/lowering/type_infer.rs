@@ -3,6 +3,7 @@
 use super::Lower;
 use super::{hir_binop_to_kind, hir_unaryop_to_kind};
 use crate::types::*;
+use doo_core::types::composite::FunctionSig;
 use doo_core::{
     infer::{infer_binop_result_type, infer_unaryop_result_type, BinOpKind},
     types::{builtin, TypeId, TypeKind, TypeRegistry},
@@ -250,14 +251,19 @@ impl Lower {
                     .map(|(_, t)| t.unwrap_or(builtin::ANY))
                     .collect();
                 let return_type = body.type_id.unwrap_or(builtin::ANY);
-                expr.type_id = Some(registry.register_function(param_ids, return_type));
+                expr.type_id = Some(registry.register_function(FunctionSig {
+                    params: param_ids,
+                    return_type: return_type,
+                    error_type: None,
+                    is_closure: true,
+                }));
                 Some(return_type)
             }
             _ => expr
                 .type_id
                 .and_then(|type_id| match registry.get(type_id) {
-                    Some(info) => match info.kind {
-                        TypeKind::Function { returns, .. } => Some(returns),
+                    Some(info) => match &info.kind {
+                        TypeKind::Function { sig } => Some(sig.return_type),
                         _ => None,
                     },
                     None => None,
@@ -429,12 +435,10 @@ impl Lower {
                                 param_types.get(i).and_then(|(_, opt_type)| {
                                     opt_type.and_then(|param_type| {
                                         registry.get(param_type).and_then(|info| {
-                                            if let TypeKind::Function {
-                                                params: ref expected_params,
-                                                returns,
-                                            } = &info.kind
-                                            {
-                                                Some((expected_params.clone(), Some(*returns)))
+                                            if let TypeKind::Function { sig } = &info.kind {
+                                                let expected_params = &sig.params;
+                                                let returns = sig.return_type;
+                                                Some((expected_params.clone(), Some(returns)))
                                             } else {
                                                 None
                                             }
@@ -464,7 +468,10 @@ impl Lower {
                 self.infer_closure_types_in_expr(body, fn_sigs, registry);
             }
 
-            HirExprKind::Block { stmts, expr: block_expr } => {
+            HirExprKind::Block {
+                stmts,
+                expr: block_expr,
+            } => {
                 for stmt in stmts.iter_mut() {
                     self.infer_closure_types_in_stmt(stmt, fn_sigs, registry);
                 }
@@ -482,7 +489,11 @@ impl Lower {
                 self.infer_closure_types_in_expr(operand, fn_sigs, registry);
             }
 
-            HirExprKind::If { condition, then_expr, else_expr } => {
+            HirExprKind::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
                 self.infer_closure_types_in_expr(condition, fn_sigs, registry);
                 self.infer_closure_types_in_expr(then_expr, fn_sigs, registry);
                 if let Some(e) = else_expr {
@@ -554,7 +565,10 @@ impl Lower {
                 self.infer_closure_types_in_expr(end, fn_sigs, registry);
             }
 
-            HirExprKind::UnwrapOrPanic { expr: inner, message } => {
+            HirExprKind::UnwrapOrPanic {
+                expr: inner,
+                message,
+            } => {
                 self.infer_closure_types_in_expr(inner, fn_sigs, registry);
                 self.infer_closure_types_in_expr(message, fn_sigs, registry);
             }

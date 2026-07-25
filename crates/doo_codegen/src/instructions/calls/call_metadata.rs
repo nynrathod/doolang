@@ -142,8 +142,8 @@ pub(crate) fn emit_struct_metadata_registration_for_auth_crud<'ctx>(
         .type_registry
         .get(struct_type_id)
         .and_then(|info| {
-            if let TypeKind::Struct { fields, .. } = &info.kind {
-                Some(fields.iter().map(|(_, tid, _)| *tid).collect())
+            if let TypeKind::Struct { def } = &info.kind {
+                Some(def.fields.iter().map(|f| f.type_id).collect())
             } else {
                 None
             }
@@ -166,13 +166,13 @@ pub(crate) fn emit_enum_metadata_if_needed<'ctx>(
         None => return,
     };
 
-    if let TypeKind::Enum { name, variants, .. } = &type_info.kind {
+    if let TypeKind::Enum { def } = &type_info.kind {
         let debug = std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok();
 
         if debug {}
 
         // Build variants JSON array
-        let variant_names: Vec<&str> = variants.iter().map(|(name, _)| name.as_str()).collect();
+        let variant_names: Vec<&str> = def.variants.iter().map(|v| v.name.resolve()).collect();
         let variants_json =
             serde_json::to_string(&variant_names).unwrap_or_else(|_| "[]".to_string());
 
@@ -190,7 +190,7 @@ pub(crate) fn emit_enum_metadata_if_needed<'ctx>(
             });
 
         // Create string constants
-        let enum_name_ptr = ctx.const_string(name);
+        let enum_name_ptr = ctx.const_string(def.name.resolve());
         let variants_ptr = ctx.const_string(&variants_json);
 
         // Call doo_http_register_enum_metadata(name, variants_json)
@@ -215,7 +215,7 @@ pub(crate) fn emit_struct_metadata_if_needed<'ctx>(
         None => return,
     };
 
-    if let TypeKind::Struct { name, fields, .. } = &type_info.kind {
+    if let TypeKind::Struct { def, .. } = &type_info.kind {
         // Build struct metadata JSON (includes decorators from MIR)
         let struct_metadata = build_struct_metadata_json(ctx, type_id);
 
@@ -233,7 +233,7 @@ pub(crate) fn emit_struct_metadata_if_needed<'ctx>(
             });
 
         // Create string constants
-        let struct_name_ptr = ctx.const_string(name);
+        let struct_name_ptr = ctx.const_string(def.name.resolve());
         let metadata_ptr = ctx.const_string(&struct_metadata);
 
         // Call doo_http_register_struct_metadata(name, metadata_json)
@@ -245,7 +245,7 @@ pub(crate) fn emit_struct_metadata_if_needed<'ctx>(
 
         // Collect field type IDs before registering enum metadata
         let field_type_ids: Vec<doo_core::types::TypeId> =
-            fields.iter().map(|(_, tid, _)| *tid).collect();
+            def.fields.iter().map(|f| f.type_id).collect();
 
         // Register any enum types referenced by struct fields
         for field_type_id in field_type_ids {
@@ -267,14 +267,16 @@ fn build_struct_metadata_json<'ctx>(
         None => return "{}".to_string(),
     };
 
-    if let TypeKind::Struct { fields, name, .. } = &type_info.kind {
+    if let TypeKind::Struct { def } = &type_info.kind {
         // Look up field decorators from MIR data stored on context
-        let field_decorators = ctx.struct_field_decorators.get(name.as_str());
+        let field_decorators = ctx.struct_field_decorators.get(def.name.resolve());
 
-        let field_list: Vec<serde_json::Value> = fields
+        let field_list: Vec<serde_json::Value> = def
+            .fields
             .iter()
-            .map(|(fname, field_type_id, _is_public)| {
-                let type_name = type_id_to_string_inner(&ctx.type_registry, *field_type_id);
+            .map(|f| {
+                let fname = f.name.resolve();
+                let type_name = type_id_to_string_inner(&ctx.type_registry, f.type_id);
 
                 // Look up decorators from the MIR-populated map
                 let decorators: Vec<String> = field_decorators
@@ -324,14 +326,15 @@ fn build_handler_metadata_json<'ctx>(ctx: &CodegenContext<'ctx>, func_name: &str
     ) {
         if let Some(type_info) = registry.get(type_id) {
             match &type_info.kind {
-                TypeKind::Enum { name, variants, .. } => {
-                    if !enum_variants.contains_key(name) {
-                        // Extract just the variant names from (String, Option<TypeId>)
-                        let variant_names: Vec<String> = variants
+                TypeKind::Enum { def, .. } => {
+                    let name = def.name.resolve().to_string();
+                    if !enum_variants.contains_key(&name) {
+                        // Extract just the variant names from VariantDef
+                        let variant_names: Vec<String> = def.variants
                             .iter()
-                            .map(|(variant_name, _)| variant_name.clone())
+                            .map(|v| v.name.resolve().to_string())
                             .collect();
-                        enum_variants.insert(name.clone(), variant_names);
+                        enum_variants.insert(name, variant_names);
                     }
                 }
                 TypeKind::Array { element } => {
@@ -359,17 +362,18 @@ fn build_handler_metadata_json<'ctx>(ctx: &CodegenContext<'ctx>, func_name: &str
     ) {
         if let Some(type_info) = registry.get(type_id) {
             match &type_info.kind {
-                TypeKind::Struct { name, fields, .. } => {
+                TypeKind::Struct { def, .. } => {
+                    let name = def.name.resolve().to_string();
                     // Skip if already collected
-                    if struct_layouts.contains_key(name) {
+                    if struct_layouts.contains_key(&name) {
                         return;
                     }
 
                     let mut field_list: Vec<serde_json::Value> = Vec::new();
-                    let field_count = fields.len();
+                    let field_count = def.fields.len();
 
                     // Look up decorators for this struct from the MIR-populated map
-                    let struct_decorators = field_decorators_map.get(name.as_str());
+                    let struct_decorators = field_decorators_map.get(&name);
 
                     // Calculate field size and alignment based on LLVM type mapping
                     // CRITICAL: Must match get_llvm_type() in context.rs
@@ -377,12 +381,13 @@ fn build_handler_metadata_json<'ctx>(ctx: &CodegenContext<'ctx>, func_name: &str
                     // - Float -> f64 (8 bytes)
                     // - Bool -> i1 (1 byte)
                     // - Str/ptr -> ptr (8 bytes on 64-bit)
-                    let field_size_align: Vec<(u64, u64)> = fields
+                    let field_size_align: Vec<(u64, u64)> = def
+                        .fields
                         .iter()
-                        .map(|(_, field_type_id, _)| {
-                            match registry.get(*field_type_id).map(|t| &t.kind) {
+                        .map(|f| {
+                            match registry.get(f.type_id).map(|t| &t.kind) {
                                 Some(TypeKind::Int) => (8u64, 8u64),       // i64
-                                Some(TypeKind::Float) => (8, 8),           // f64
+                                Some(TypeKind::Float32 | TypeKind::Float64) => (8, 8),           // f64
                                 Some(TypeKind::Bool) => (1, 1),            // i1
                                 Some(TypeKind::Str) => (8, 8),             // pointer
                                 Some(TypeKind::Array { .. }) => (8, 8),    // pointer to array
@@ -415,20 +420,21 @@ fn build_handler_metadata_json<'ctx>(ctx: &CodegenContext<'ctx>, func_name: &str
                     }
 
                     // Build field list in LOGICAL order with correct PHYSICAL offsets
-                    for (i, (field_name, field_type_id, _)) in fields.iter().enumerate() {
-                        let field_type_name = type_id_to_string_inner(registry, *field_type_id);
+                    for (i, field_def) in def.fields.iter().enumerate() {
+                        let field_name = field_def.name.resolve().to_string();
+                        let field_type_name = type_id_to_string_inner(registry, field_def.type_id);
 
                         // Look up decorators for this field (single source of truth from MIR)
                         let decorators: Vec<String> = struct_decorators
                             .and_then(|fds| {
                                 fds.iter()
-                                    .find(|(n, _)| n == field_name)
+                                    .find(|(n, _)| n == &field_name)
                                     .map(|(_, decs)| decs.clone())
                             })
                             .unwrap_or_default();
 
                         field_list.push(serde_json::json!({
-                            "name": field_name,
+                            "name": &field_name,
                             "type": field_type_name,
                             "offset": physical_offsets[i],
                             "decorators": decorators
@@ -437,15 +443,15 @@ fn build_handler_metadata_json<'ctx>(ctx: &CodegenContext<'ctx>, func_name: &str
                         // Recursively collect nested structs and enums
                         collect_struct_layout(
                             registry,
-                            *field_type_id,
+                            field_def.type_id,
                             struct_layouts,
                             enum_variants,
                             field_decorators_map,
                         );
-                        collect_enums_from_type(registry, *field_type_id, enum_variants);
+                        collect_enums_from_type(registry, field_def.type_id, enum_variants);
                     }
                     struct_layouts.insert(
-                        name.clone(),
+                        name,
                         serde_json::json!({
                             "fields": field_list
                         }),
@@ -504,7 +510,7 @@ fn build_handler_metadata_json<'ctx>(ctx: &CodegenContext<'ctx>, func_name: &str
             // Get type name from type registry
             if let Some(type_info) = ctx.type_registry.get(*type_id) {
                 let type_name = match &type_info.kind {
-                    TypeKind::Struct { name, .. } => name.clone(),
+                    TypeKind::Struct { def } => def.name.resolve().to_string(),
                     _ => type_id_to_string_inner(&ctx.type_registry, *type_id),
                 };
                 param_types.push(type_name);
@@ -548,7 +554,7 @@ fn type_id_to_string_inner(
     if let Some(type_info) = registry.get(type_id) {
         match &type_info.kind {
             TypeKind::Int => "Int".to_string(),
-            TypeKind::Float => "Float".to_string(),
+            TypeKind::Float32 | TypeKind::Float64 => "Float".to_string(),
             TypeKind::Bool => "Bool".to_string(),
             TypeKind::Str => "Str".to_string(),
             TypeKind::Void => "Void".to_string(),
@@ -560,9 +566,9 @@ fn type_id_to_string_inner(
                 let inner_str = type_id_to_string_inner(registry, *inner);
                 format!("Optional({})", inner_str)
             }
-            TypeKind::Struct { name, .. } => name.clone(),
-            TypeKind::Enum { name, .. } => name.clone(),
-            TypeKind::Interface { name, .. } => name.clone(),
+            TypeKind::Struct { def } => def.name.resolve().to_string(),
+            TypeKind::Enum { def } => def.name.resolve().to_string(),
+            TypeKind::Interface { def } => def.name.resolve().to_string(),
             TypeKind::Function { .. } => "Function".to_string(),
             TypeKind::Map { key, value } => {
                 let key_str = type_id_to_string_inner(registry, *key);
@@ -581,10 +587,25 @@ fn type_id_to_string_inner(
                     .collect();
                 format!("({})", elem_strs.join(","))
             }
-            TypeKind::TypeRef { name } => name.clone(),
+            TypeKind::TypeRef { name } => name.to_string(),
+            TypeKind::TypeParam { name } => name.to_string(),
+            // Primitives not explicitly listed
+            TypeKind::Char => "Char".to_string(),
+            TypeKind::Int8 => "Int8".to_string(),
+            TypeKind::Int16 => "Int16".to_string(),
+            TypeKind::Int32 => "Int32".to_string(),
+            TypeKind::Int64 => "Int64".to_string(),
+            TypeKind::UInt8 => "UInt8".to_string(),
+            TypeKind::UInt16 => "UInt16".to_string(),
+            TypeKind::UInt32 => "UInt32".to_string(),
+            TypeKind::UInt64 => "UInt64".to_string(),
+            TypeKind::UInt => "UInt".to_string(),
+            TypeKind::Never => "Never".to_string(),
+            TypeKind::Set { .. } => "Set".to_string(),
+            TypeKind::Box { .. } => "Box".to_string(),
+            TypeKind::SelfType => "Self".to_string(),
             TypeKind::Any => "Any".to_string(),
             TypeKind::Error => "Error".to_string(),
-            TypeKind::TypeParam { name } => name.clone(),
         }
     } else {
         "Unknown".to_string()
@@ -661,8 +682,8 @@ fn emit_role_hierarchy_for_struct<'ctx>(ctx: &mut CodegenContext<'ctx>, struct_n
         .type_registry
         .get(struct_type_id)
         .and_then(|info| {
-            if let doo_core::types::TypeKind::Struct { fields, .. } = &info.kind {
-                Some(fields.iter().map(|(_, tid, _)| *tid).collect())
+            if let doo_core::types::TypeKind::Struct { def } = &info.kind {
+                Some(def.fields.iter().map(|f| f.type_id).collect())
             } else {
                 None
             }
@@ -675,8 +696,8 @@ fn emit_role_hierarchy_for_struct<'ctx>(ctx: &mut CodegenContext<'ctx>, struct_n
             None => continue,
         };
 
-        if let doo_core::types::TypeKind::Enum { name, .. } = &type_info.kind {
-            let enum_name = name.clone();
+        if let doo_core::types::TypeKind::Enum { def } = &type_info.kind {
+            let enum_name = def.name.resolve().to_string();
             // Check if we have inheritance data for this enum
             if let Some(inheritance) = ctx.enum_inheritance.get(&enum_name).cloned() {
                 emit_role_hierarchy_for_enum(ctx, &enum_name, &inheritance);

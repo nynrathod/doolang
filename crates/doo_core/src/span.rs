@@ -1,10 +1,13 @@
 //! Source Span — compact byte-range tracking for error reporting and debugging.
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
 /// A unique identifier for a source file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize, Deserialize,
+)]
 pub struct FileId(pub u32);
 
 impl FileId {
@@ -36,15 +39,8 @@ impl From<u32> for FileId {
     }
 }
 
-impl From<Span> for FileSpan {
-    #[inline]
-    fn from(span: Span) -> Self {
-        FileSpan::new(FileId::DUMMY, span)
-    }
-}
-
 /// A span in source code: a byte range within a file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Span {
     pub start: u32,
     pub end: u32,
@@ -118,7 +114,7 @@ impl fmt::Display for Span {
 }
 
 /// A span with associated file information.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FileSpan {
     pub file_id: FileId,
     pub span: Span,
@@ -162,6 +158,13 @@ impl FileSpan {
             file_id: self.file_id,
             span: self.span.merge(other.span),
         }
+    }
+}
+
+impl From<Span> for FileSpan {
+    #[inline]
+    fn from(span: Span) -> Self {
+        FileSpan::new(FileId::DUMMY, span)
     }
 }
 
