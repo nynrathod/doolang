@@ -31,6 +31,7 @@ fn keyword_map() -> &'static FxHashMap<&'static str, TokenKind> {
         map.insert("let", TokenKind::Let);
         map.insert("mut", TokenKind::Mut);
         map.insert("fn", TokenKind::Fn);
+        map.insert("use", TokenKind::Use);
         map.insert("import", TokenKind::Import);
         map.insert("as", TokenKind::As);
         map.insert("struct", TokenKind::Struct);
@@ -49,6 +50,7 @@ fn keyword_map() -> &'static FxHashMap<&'static str, TokenKind> {
         map.insert("break", TokenKind::Break);
         map.insert("continue", TokenKind::Continue);
         map.insert("print", TokenKind::Print);
+        map.insert("throw", TokenKind::Throw);
 
         // Error handling & special values
         map.insert("Ok", TokenKind::Ok);
@@ -56,6 +58,9 @@ fn keyword_map() -> &'static FxHashMap<&'static str, TokenKind> {
         map.insert("nil", TokenKind::Nil);
         map.insert("true", TokenKind::True);
         map.insert("false", TokenKind::False);
+
+        // Self type
+        map.insert("Self", TokenKind::Self_);
 
         // RBAC
         map.insert("policy", TokenKind::Policy);
@@ -841,6 +846,7 @@ impl<'a> Lexer<'a> {
             '>' => TokenKind::Gt,
             '&' => TokenKind::And,
             '|' => TokenKind::Or,
+            '^' => TokenKind::Caret,
             '(' => TokenKind::LParen,
             ')' => TokenKind::RParen,
             '{' => TokenKind::LBrace,
@@ -1071,5 +1077,49 @@ fn add(a: Int, b: Int) -> Int {
         assert!(kinds.contains(&TokenKind::Ident));
         assert!(kinds.contains(&TokenKind::Arrow));
         assert!(kinds.contains(&TokenKind::Return));
+    }
+
+    #[test]
+    fn test_new_keywords() {
+        let tokens = lex("use while try catch throw Self");
+        assert_eq!(tokens[0].kind, TokenKind::Use);
+        assert_eq!(tokens[4].kind, TokenKind::Throw);
+        assert_eq!(tokens[5].kind, TokenKind::Self_);
+    }
+
+    #[test]
+    fn test_bitwise_xor() {
+        let tokens = lex("a ^ b");
+        assert_eq!(tokens[1].kind, TokenKind::Caret);
+    }
+
+    #[test]
+    fn test_precedence_ordering() {
+        // Higher number = binds tighter
+        assert!(TokenKind::Star.precedence() > TokenKind::Plus.precedence());
+        assert!(TokenKind::Plus.precedence() > TokenKind::DotDot.precedence());
+        assert!(TokenKind::And.precedence() > TokenKind::Caret.precedence());
+        assert!(TokenKind::Caret.precedence() > TokenKind::Or.precedence());
+        assert!(TokenKind::Or.precedence() > TokenKind::QuestionQuestion.precedence());
+        assert!(TokenKind::QuestionQuestion.precedence() > TokenKind::EqEq.precedence());
+        assert!(TokenKind::EqEq.precedence() > TokenKind::AndAnd.precedence());
+        assert!(TokenKind::AndAnd.precedence() > TokenKind::OrOr.precedence());
+    }
+
+    #[test]
+    fn test_right_associative() {
+        assert!(TokenKind::Eq.is_right_associative());
+        assert!(TokenKind::PlusEq.is_right_associative());
+        assert!(TokenKind::QuestionQuestion.is_right_associative());
+        assert!(!TokenKind::Plus.is_right_associative());
+        assert!(!TokenKind::Star.is_right_associative());
+        assert!(!TokenKind::EqEq.is_right_associative());
+    }
+
+    #[test]
+    fn test_new_keyword_descriptions() {
+        assert_eq!(TokenKind::Use.description(), "`use`");
+        assert_eq!(TokenKind::Self_.description(), "`Self`");
+        assert_eq!(TokenKind::Caret.description(), "`^`");
     }
 }
