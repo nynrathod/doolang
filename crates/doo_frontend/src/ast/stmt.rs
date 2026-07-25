@@ -2,9 +2,9 @@
 //!
 //! Statements that perform actions but don't produce values directly.
 
-use doo_core::Span;
-use super::{Expr, Pattern, TypeExpr, StructDecl, EnumDecl};
+use super::{EnumDecl, Expr, Pattern, StructDecl, TypeExpr};
 use crate::lexer::TokenKind;
+use doo_core::Span;
 
 /// A statement.
 #[derive(Debug, Clone)]
@@ -39,10 +39,7 @@ pub enum StmtKind {
 
     // === Assignments ===
     /// Simple assignment: `x = 1`
-    Assign {
-        target: Pattern,
-        value: Expr,
-    },
+    Assign { target: Pattern, value: Expr },
     /// Compound assignment: `x += 1`
     CompoundAssign {
         target: Pattern,
@@ -50,10 +47,7 @@ pub enum StmtKind {
         value: Expr,
     },
     /// Increment/Decrement: `x++` or `x--`
-    IncDec {
-        variable: String,
-        op: IncDecOp,
-    },
+    IncDec { variable: String, op: IncDecOp },
     /// Element assignment: `arr[i] = x`
     ElementAssign {
         array: Expr,
@@ -139,11 +133,11 @@ pub enum ElseBranch {
 /// Compound assignment operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompoundOp {
-    Add,    // +=
-    Sub,    // -=
-    Mul,    // *=
-    Div,    // /=
-    Mod,    // %=
+    Add, // +=
+    Sub, // -=
+    Mul, // *=
+    Div, // /=
+    Mod, // %=
 }
 
 impl CompoundOp {

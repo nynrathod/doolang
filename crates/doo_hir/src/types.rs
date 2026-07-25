@@ -266,6 +266,7 @@ pub enum HirBinOp {
     // Bitwise
     BitAnd,
     BitOr,
+    BitXor,
     // Nil coalescing
     NullCoalesce,
 }

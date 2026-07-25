@@ -160,7 +160,7 @@ pub enum ExprKind {
         error_type: Option<TypeExpr>,
     },
 
-    // === HTTP Route Block ===
+    // === HTTP Route Block (Framework domain - slated for removal) ===
     /// Route block: `{ get("/path", Handler), post("/path", Handler) }`
     /// Used in app.group() for inline route definitions
     RouteBlock { routes: Vec<Expr> },
@@ -197,6 +197,7 @@ pub enum BinaryOp {
     // Bitwise
     BitAnd,
     BitOr,
+    BitXor,
     // Null coalescing
     NullCoalesce,
 }
@@ -220,6 +221,7 @@ impl std::fmt::Display for BinaryOp {
             Self::Or => write!(f, "||"),
             Self::BitAnd => write!(f, "&"),
             Self::BitOr => write!(f, "|"),
+            Self::BitXor => write!(f, "^"),
             Self::NullCoalesce => write!(f, "??"),
         }
     }
@@ -235,9 +237,10 @@ impl BinaryOp {
             Self::Lt | Self::Gt | Self::LtEq | Self::GtEq | Self::In => 4,
             Self::NullCoalesce => 5,
             Self::BitOr => 6,
-            Self::BitAnd => 7,
-            Self::Add | Self::Sub => 8,
-            Self::Mul | Self::Div | Self::Mod => 9,
+            Self::BitXor => 7,
+            Self::BitAnd => 8,
+            Self::Add | Self::Sub => 9,
+            Self::Mul | Self::Div | Self::Mod => 10,
         }
     }
 
@@ -260,6 +263,7 @@ impl BinaryOp {
             TokenKind::OrOr => Some(Self::Or),
             TokenKind::And => Some(Self::BitAnd),
             TokenKind::Or => Some(Self::BitOr),
+            TokenKind::Caret => Some(Self::BitXor),
             TokenKind::QuestionQuestion => Some(Self::NullCoalesce),
             _ => None,
         }

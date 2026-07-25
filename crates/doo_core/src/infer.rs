@@ -40,6 +40,7 @@ pub enum BinOpKind {
     // Bitwise
     BitAnd,
     BitOr,
+    BitXor,
     // Membership
     In,
     /// Nil coalescing: a ?? b — returns a if a != nil, else b.
@@ -82,7 +83,7 @@ pub fn infer_binop_result_type(op: BinOpKind, lhs: TypeId, rhs: TypeId) -> TypeI
     }
 
     // Bitwise operators return Int (or Bool if both operands are Bool)
-    if matches!(op, BinOpKind::BitAnd | BinOpKind::BitOr) {
+    if matches!(op, BinOpKind::BitAnd | BinOpKind::BitOr | BinOpKind::BitXor) {
         if lhs == builtin::BOOL || rhs == builtin::BOOL {
             return builtin::BOOL;
         }

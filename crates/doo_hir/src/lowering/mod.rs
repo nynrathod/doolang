@@ -686,6 +686,7 @@ fn hir_binop_to_kind(op: HirBinOp) -> BinOpKind {
         HirBinOp::Or => BinOpKind::Or,
         HirBinOp::BitAnd => BinOpKind::BitAnd,
         HirBinOp::BitOr => BinOpKind::BitOr,
+        HirBinOp::BitXor => BinOpKind::BitXor,
         HirBinOp::In => BinOpKind::In,
         HirBinOp::NullCoalesce => BinOpKind::NullCoalesce,
     }

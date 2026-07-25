@@ -91,6 +91,7 @@ impl Lower {
             BinaryOp::Or => HirBinOp::Or,
             BinaryOp::BitAnd => HirBinOp::BitAnd,
             BinaryOp::BitOr => HirBinOp::BitOr,
+            BinaryOp::BitXor => HirBinOp::BitXor,
             BinaryOp::NullCoalesce => HirBinOp::NullCoalesce,
             BinaryOp::In => HirBinOp::In,
         }

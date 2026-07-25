@@ -393,7 +393,7 @@ impl InterfaceMethodDecl {
 }
 
 // ============================================================================
-// RBAC Policy
+// RBAC Policy (Framework domain - slated for removal in Audit Phase 2)
 // ============================================================================
 
 /// A policy block: `policy FooPolicy for Foo { create: public, ... }`.

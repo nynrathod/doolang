@@ -904,6 +904,7 @@ impl<'a> MirBuilder<'a> {
             HirBinOp::In => BinaryOp::Eq,
             HirBinOp::And => BinaryOp::And,
             HirBinOp::Or => BinaryOp::Or,
+            HirBinOp::BitXor => BinaryOp::BitXor,
             // BitAnd/BitOr map to logical And/Or which is correct for booleans
             // (LLVM build_and/build_or are bitwise ops; for i1 values, bitwise == logical).
             // TODO: Add dedicated MIR BitAnd/BitOr variants when integer bitwise ops are needed.

@@ -839,6 +839,7 @@ pub enum BinaryOp {
     // Logical
     And,
     Or,
+    BitXor,
     // String
     Concat,
     // Nil coalescing

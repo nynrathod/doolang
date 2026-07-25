@@ -97,6 +97,7 @@ impl TypeInference {
                     doo_hir::HirBinOp::Or => BinOpKind::Or,
                     doo_hir::HirBinOp::BitAnd => BinOpKind::BitAnd,
                     doo_hir::HirBinOp::BitOr => BinOpKind::BitOr,
+                    doo_hir::HirBinOp::BitXor => BinOpKind::BitXor,
                     doo_hir::HirBinOp::In => BinOpKind::In,
                     doo_hir::HirBinOp::NullCoalesce => BinOpKind::NullCoalesce,
                 };

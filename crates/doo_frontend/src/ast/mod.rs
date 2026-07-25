@@ -1,13 +1,13 @@
-//! Abstract Syntax Tree for Doo.
+//! Abstract Syntax Tree (AST) top-level module for Doo.
 //!
 //! The AST represents the syntactic structure of Doo programs after parsing.
-//! All nodes are typed with spans for precise error reporting.
+//! All nodes carry span information for precise error reporting.
 
-mod decl;
-mod expr;
-mod pattern;
-mod stmt;
-mod types;
+pub mod decl;
+pub mod expr;
+pub mod pattern;
+pub mod stmt;
+pub mod types;
 
 pub use decl::*;
 pub use expr::*;
@@ -49,11 +49,11 @@ pub enum Item {
     Interface(InterfaceDecl),
     /// Import statement
     Import(ImportDecl),
-    /// RBAC policy block
+    /// RBAC policy block (Framework domain - slated for removal in Audit Phase 2)
     Policy(PolicyDecl),
     /// Impl block for struct methods
     Impl(ImplDecl),
-    /// Standalone statement (for scripting)
+    /// Standalone statement (for scripting mode)
     Statement(Stmt),
 }
 
@@ -69,7 +69,7 @@ impl Item {
             Self::Import(i) => i.span,
             Self::Policy(p) => p.span,
             Self::Impl(i) => i.span,
-            Self::Statement(s) => s.span(),
+            Self::Statement(s) => s.span,
         }
     }
 
