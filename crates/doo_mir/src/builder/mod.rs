@@ -984,7 +984,8 @@ impl<'a> MirBuilder<'a> {
         self.type_registry
             .get(struct_type)
             .and_then(|info| match &info.kind {
-                TypeKind::Struct { def, .. } => def.fields
+                TypeKind::Struct { def, .. } => def
+                    .fields
                     .iter()
                     .find(|f| f.name.resolve() == field_name)
                     .map(|f| f.type_id),
@@ -1108,123 +1109,81 @@ impl<'a> MirBuilder<'a> {
     }
 
     /// Get the return type for a builtin method call, with optional closure argument type.
-    /// This handles generic return types like [U] (from map) where U is closure's return.
-    /// SINGLE SOURCE OF TRUTH using doo_core::methods.
+    /// Handles generic return types like [U] (from map) where U is closure's return.
     pub(crate) fn get_builtin_method_return_type_with_closure(
         &self,
         receiver_type: CoreTypeId,
         method: &str,
         closure_type: Option<CoreTypeId>,
     ) -> Option<CoreTypeId> {
-        use doo_core::methods::get_method;
+        let info = self.type_registry.get(receiver_type)?;
 
-        // Get the type name for lookup
-        let type_name: &str = match self.type_registry.get(receiver_type).map(|info| &info.kind) {
-            Some(TypeKind::Str) => "Str",
-            Some(TypeKind::Int) => "Int",
-            Some(TypeKind::Float32) | Some(TypeKind::Float64) => "Float",
-            Some(TypeKind::Bool) => "Bool",
-            Some(TypeKind::Array { .. }) => "[T]",
-            Some(TypeKind::Map { .. }) => "{K:V}",
-            _ => return None,
-        };
-
-        // Look up the method definition
-        let method_def = get_method(type_name, method)?;
-
-        // Convert return type string to TypeId
-        match method_def.return_type {
-            "Int" => Some(builtin::INT),
-            "Bool" => Some(builtin::BOOL),
-            "Str" => Some(builtin::STR),
-            "Float" => Some(builtin::FLOAT),
-            "Void" => Some(builtin::VOID),
-            // For generic types like T, [T], [U], U, etc.
-            "T" => {
-                // Element type of array or value type of map
-                if let Some(info) = self.type_registry.get(receiver_type) {
-                    match &info.kind {
-                        TypeKind::Array { element } => Some(*element),
-                        TypeKind::Map { value, .. } => Some(*value),
-                        _ => Some(builtin::ANY),
+        match &info.kind {
+            TypeKind::Array { element } => match method {
+                "len" | "indexOf" => Some(builtin::INT),
+                "isEmpty" | "contains" => Some(builtin::BOOL),
+                "join" => Some(builtin::STR),
+                "first" | "last" | "pop" => Some(*element),
+                // slice and filter return the same array type as receiver
+                "slice" | "filter" => Some(receiver_type),
+                "push" | "clear" | "sort" | "reverse" => Some(builtin::VOID),
+                // map returns [U]. MIR doesn't mutate the registry, so we return ANY.
+                // The exact type will have been set on the HirExpr by doo_analysis.
+                "map" => Some(builtin::ANY),
+                // reduce returns U (closure's return type)
+                "reduce" => {
+                    if let Some(closure_tid) = closure_type {
+                        if let Some(c_info) = self.type_registry.get(closure_tid) {
+                            if let TypeKind::Function { sig, .. } = &c_info.kind {
+                                return Some(sig.return_type);
+                            }
+                        }
                     }
-                } else {
                     Some(builtin::ANY)
                 }
-            }
-            "[T]" => {
-                // Same array type as receiver
-                if let Some(info) = self.type_registry.get(receiver_type) {
-                    if let TypeKind::Array { element: _ } = &info.kind {
-                        return Some(receiver_type); // Same type for slice
-                    }
-                }
-                Some(builtin::ANY)
-            }
-            // [U] - Array of closure return type (e.g., map returns [U])
-            "[U]" => {
-                // Get U from closure's function return type
-                if let Some(closure_tid) = closure_type {
-                    if let Some(info) = self.type_registry.get(closure_tid) {
-                        if let TypeKind::Function { sig, .. } = &info.kind {
-                            // Look up the array type [U] by name
-                            // Array type names are formatted as "[ElementName]"
-                            if let Some(elem_info) = self.type_registry.get(sig.return_type) {
-                                let array_name = format!("[{}]", elem_info.name);
-                                if let Some(array_tid) = self.type_registry.lookup(&array_name) {
-                                    return Some(array_tid);
-                                }
-                            }
-                            // If U is same as receiver element type, return receiver type
-                            if let Some(recv_info) = self.type_registry.get(receiver_type) {
-                                if let TypeKind::Array { element } = &recv_info.kind {
-                                    if *element == sig.return_type {
-                                        return Some(receiver_type);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                // Fallback: same array type as receiver (e.g., identity map)
-                if let Some(info) = self.type_registry.get(receiver_type) {
-                    if let TypeKind::Array { .. } = &info.kind {
-                        return Some(receiver_type);
-                    }
-                }
-                Some(builtin::ANY)
-            }
-            // U - Closure return type (e.g., reduce returns U)
-            "U" => {
-                // Get U from closure's function return type
-                if let Some(closure_tid) = closure_type {
-                    if let Some(info) = self.type_registry.get(closure_tid) {
-                        if let TypeKind::Function { sig, .. } = &info.kind {
-                            return Some(sig.return_type);
-                        }
-                    }
-                }
-                Some(builtin::ANY)
-            }
-            "[K]" => {
-                // Array of keys from a map
-                if let Some(info) = self.type_registry.get(receiver_type) {
-                    if let TypeKind::Map { key, .. } = &info.kind {
-                        return Some(*key);
-                    }
-                }
-                Some(builtin::ANY)
-            }
-            "[V]" => {
-                // Array of values from a map
-                if let Some(info) = self.type_registry.get(receiver_type) {
-                    if let TypeKind::Map { value, .. } = &info.kind {
-                        return Some(*value);
-                    }
-                }
-                Some(builtin::ANY)
-            }
-            _ => Some(builtin::ANY),
+                _ => None,
+            },
+            TypeKind::Map { key, value, .. } => match method {
+                // keys and values return arrays, but we can't register them here.
+                "keys" | "values" => Some(builtin::ANY),
+                "has" => Some(builtin::BOOL),
+                "len" => Some(builtin::INT),
+                "isEmpty" => Some(builtin::BOOL),
+                "clear" | "remove" => Some(builtin::VOID),
+                "get" => Some(*value),
+                _ => None,
+            },
+            TypeKind::Str => match method {
+                "len" | "indexOf" | "charCode" => Some(builtin::INT),
+                "isEmpty" | "contains" | "startsWith" | "endsWith" => Some(builtin::BOOL),
+                // split returns [Str], but we return ANY to avoid mutating registry
+                "split" => Some(builtin::ANY),
+                "charAt" | "substring" | "concat" | "toUpper" | "toLower" | "replace" | "trim"
+                | "reverse" | "repeat" => Some(builtin::STR),
+                _ => None,
+            },
+            TypeKind::Int
+            | TypeKind::Int8
+            | TypeKind::Int16
+            | TypeKind::Int32
+            | TypeKind::Int64
+            | TypeKind::UInt
+            | TypeKind::UInt8
+            | TypeKind::UInt16
+            | TypeKind::UInt32
+            | TypeKind::UInt64 => match method {
+                "toStr" | "toChar" => Some(builtin::STR),
+                _ => None,
+            },
+            TypeKind::Float32 | TypeKind::Float64 => match method {
+                "toStr" => Some(builtin::STR),
+                _ => None,
+            },
+            TypeKind::Bool => match method {
+                "toStr" => Some(builtin::STR),
+                _ => None,
+            },
+            _ => None,
         }
     }
 

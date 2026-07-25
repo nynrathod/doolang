@@ -677,20 +677,19 @@ fn hir_binop_to_kind(op: HirBinOp) -> BinOpKind {
         HirBinOp::Div => BinOpKind::Div,
         HirBinOp::Mod => BinOpKind::Mod,
         HirBinOp::Eq => BinOpKind::Eq,
-        HirBinOp::NotEq => BinOpKind::Ne,
+        HirBinOp::NotEq => BinOpKind::NotEq,
         HirBinOp::Lt => BinOpKind::Lt,
         HirBinOp::Gt => BinOpKind::Gt,
-        HirBinOp::LtEq => BinOpKind::Le,
-        HirBinOp::GtEq => BinOpKind::Ge,
+        HirBinOp::LtEq => BinOpKind::LtEq,
+        HirBinOp::GtEq => BinOpKind::GtEq,
         HirBinOp::And => BinOpKind::And,
         HirBinOp::Or => BinOpKind::Or,
-        // In and BitAnd/BitOr don't have direct equivalents, default to appropriate
-        HirBinOp::In => BinOpKind::Eq, // Comparison semantics
-        HirBinOp::BitAnd | HirBinOp::BitOr => BinOpKind::And, // Logical semantics for type inference
+        HirBinOp::BitAnd => BinOpKind::BitAnd,
+        HirBinOp::BitOr => BinOpKind::BitOr,
+        HirBinOp::In => BinOpKind::In,
         HirBinOp::NullCoalesce => BinOpKind::NullCoalesce,
     }
 }
-
 /// Convert HirUnaryOp to UnaryOpKind for centralized type inference.
 fn hir_unaryop_to_kind(op: HirUnaryOp) -> UnaryOpKind {
     match op {

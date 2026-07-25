@@ -1175,16 +1175,21 @@ impl MethodResolver {
         // Normalize type name for lookup
         let normalized = Self::normalize_type_for_builtin(receiver_type);
 
-        // Use the methods registry from doo_core
-        let method_def = doo_core::methods::get_method(&normalized, method_name)?;
-
-        Some(ResolvedMethod::Builtin {
-            type_name: normalized,
-            method_name: method_name.to_string(),
-            param_types: method_def.params.iter().map(|s| s.to_string()).collect(),
-            return_type: method_def.return_type.to_string(),
-            mutates: method_def.mutates,
-        })
+        // Check if it's a known built-in method name using the single source of truth in doo_core
+        if doo_core::methods::is_builtin_method(method_name) {
+            Some(ResolvedMethod::Builtin {
+                type_name: normalized,
+                method_name: method_name.to_string(),
+                param_types: Vec::new(), // Type checker validates params dynamically
+                return_type: "Any".to_string(), // Type checker infers return type dynamically
+                mutates: matches!(
+                    method_name,
+                    "push" | "pop" | "clear" | "sort" | "reverse" | "remove" | "insert" | "set"
+                ),
+            })
+        } else {
+            None
+        }
     }
 
     /// Normalize type name for built-in method lookup.

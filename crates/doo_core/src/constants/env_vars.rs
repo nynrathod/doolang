@@ -1,6 +1,6 @@
 //! Environment Variable Names — Single Source of Truth
 //!
-//! All environment variable names used across the compiler and FFI crates.
+//! All environment variable names used across the compiler crates.
 //! NEVER hardcode env var strings — import from here.
 
 // ============================================================================
@@ -33,3 +33,6 @@ pub const DOO_VERBOSE: &str = "DOO_VERBOSE";
 
 /// When set, only check for errors without compiling.
 pub const DOO_CHECK_ONLY: &str = "DOO_CHECK_ONLY";
+
+/// Disables the compiler banner on startup.
+pub const DOO_NO_BANNER: &str = "DOO_NO_BANNER";

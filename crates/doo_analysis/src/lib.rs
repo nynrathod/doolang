@@ -60,4 +60,7 @@ pub use semantic::{
     VisibilityChecker,
     VisibilityError,
 };
-pub use types::{ClosureContext, InferenceError, TypeCompat, TypeInference};
+// Just added infer_method_return_type to the end of this list:
+pub use types::{
+    infer_method_return_type, ClosureContext, InferenceError, TypeCompat, TypeInference,
+};

@@ -1648,9 +1648,9 @@ impl TypeChecker {
     }
 
     /// Check if a method name is a known built-in method (not user-defined).
-    /// H05: Delegates to the centralized method registry in doo_core::methods.
+    /// Delegates to the single source of truth in doo_core::methods.
     fn is_known_builtin_method(method: &str) -> bool {
-        doo_core::methods::is_known_builtin(method)
+        doo_core::methods::is_builtin_method(method)
     }
 
     /// Validate that a method call's method is defined on the receiver's type.
