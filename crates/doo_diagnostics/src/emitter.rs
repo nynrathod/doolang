@@ -6,6 +6,7 @@ use doo_core::{FileId, Span};
 use std::io::{self, Write};
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
+/// Diagnostic emitter — renders `CompilerError`s using a `SourceMap`.
 pub struct DiagnosticEmitter {
     stream: StandardStream,
     use_color: bool,
@@ -79,13 +80,17 @@ impl DiagnosticEmitter {
         if errors.is_empty() {
             return Ok(());
         }
+
         if errors.len() >= 5 {
             self.emit_summary(errors, source_map)?;
         }
+
         for err in errors {
             self.emit(err, source_map)?;
         }
+
         self.emit_summary_line(errors, source_map)?;
+
         Ok(())
     }
 
@@ -95,12 +100,14 @@ impl DiagnosticEmitter {
         source_map: &SourceMap,
     ) -> io::Result<()> {
         writeln!(self.stream, "--- doo compile ---")?;
+
         let mut by_file: std::collections::BTreeMap<&str, Vec<&CompilerError>> =
             std::collections::BTreeMap::new();
         for err in errors {
             let filename = source_map.filename(err.file_id);
             by_file.entry(filename).or_default().push(err);
         }
+
         for (filename, file_errors) in &by_file {
             writeln!(self.stream, "{}", filename)?;
             for err in file_errors {
@@ -115,6 +122,7 @@ impl DiagnosticEmitter {
                 writeln!(self.stream, " {}", err.message)?;
             }
         }
+
         writeln!(self.stream, "---")?;
         Ok(())
     }

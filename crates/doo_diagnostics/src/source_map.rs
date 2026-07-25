@@ -1,4 +1,6 @@
 //! Source Map — maps file IDs to source contents for error rendering.
+//!
+//! Single source of truth for all source file tracking during compilation.
 
 use doo_core::span::LineIndex;
 use doo_core::{FileId, Span};
@@ -10,6 +12,7 @@ struct SourceFile {
     line_index: LineIndex,
 }
 
+/// Maps file IDs → source content for error rendering.
 #[derive(Debug, Default)]
 pub struct SourceMap {
     files: Vec<SourceFile>,
@@ -90,6 +93,7 @@ impl SourceMap {
     }
 }
 
+/// Resolved context for a span — ready for rendering.
 #[derive(Debug)]
 pub struct SpanContext<'a> {
     pub filename: &'a str,
