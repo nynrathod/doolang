@@ -223,7 +223,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
             source_map.add_file(main_filename, &source);
 
             let mut emitter = DiagnosticEmitter::new(true);
-            let _ = emitter.emit(&e, &source_map);
+            let _ = emitter.emit_all(&e, &source_map);
 
             return Ok(CompileResult {
                 success: false,

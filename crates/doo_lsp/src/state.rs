@@ -186,16 +186,18 @@ fn parse_and_extract(
 
             (Some(program.items), parse_errors, symbols)
         }
-        Err(e) => {
-            let (line, col) = line_index.line_col(e.span.start);
-            let (end_line, end_col) = line_index.line_col(e.span.end.max(e.span.start + 1));
-            parse_errors.push(ParseError {
-                message: format!("{}", e),
-                line: line.saturating_sub(1),
-                column: col.saturating_sub(1),
-                end_line: end_line.saturating_sub(1),
-                end_column: end_col.saturating_sub(1),
-            });
+        Err(errors) => {
+            for e in errors {
+                let (line, col) = line_index.line_col(e.span.start);
+                let (end_line, end_col) = line_index.line_col(e.span.end.max(e.span.start + 1));
+                parse_errors.push(ParseError {
+                    message: e.message.clone(),
+                    line: line.saturating_sub(1),
+                    column: col.saturating_sub(1),
+                    end_line: end_line.saturating_sub(1),
+                    end_column: end_col.saturating_sub(1),
+                });
+            }
 
             // Also grab any accumulated errors
             for err in parser.errors() {

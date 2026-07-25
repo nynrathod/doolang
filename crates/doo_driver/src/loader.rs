@@ -275,9 +275,13 @@ impl ModuleLoader {
             &source,
         );
         let mut parser = Parser::new(&source, file_id);
-        let program = parser
-            .parse_program()
-            .map_err(|e| format!("Failed to parse {}: {}", module_key, e))?;
+        let program = parser.parse_program().map_err(|e| {
+            let msg = e
+                .first()
+                .map(|err| err.message.clone())
+                .unwrap_or_else(|| "unknown parse error".to_string());
+            format!("Failed to parse {}: {}", module_key, msg)
+        })?;
 
         // Cache and return
         self.cache.insert(module_key.to_string(), program);
@@ -842,9 +846,17 @@ pub fn resolve_imports(
         let module_program = match parser.parse_program() {
             Ok(p) => p,
             Err(e) => {
+                let msg = e
+                    .first()
+                    .map(|err| err.message.clone())
+                    .unwrap_or_else(|| "unknown parse error".to_string());
                 result.errors.push(CompilerError::new(
                     ErrorCode::IoError,
-                    format!("failed to parse module '{}': {}", module_path.display(), e),
+                    format!(
+                        "failed to parse module '{}': {}",
+                        module_path.display(),
+                        msg
+                    ),
                     doo_core::Span::dummy(),
                 ));
                 continue;
