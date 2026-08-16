@@ -49,20 +49,11 @@ impl Lower {
                 object,
                 method,
                 args,
-            } => {
-                // Transform HTTP route methods with middleware arguments
-                // app.get("/path", middleware, Handler) -> app.getWithMiddleware("/path", "middleware", Handler)
-                // app.get("/path", m1, m2, Handler) -> app.getWithMiddleware("/path", "m1,m2", Handler)
-                if Self::is_http_route_method(method) && args.len() > 2 {
-                    return self.transform_route_with_middleware(object, method, args, expr.span);
-                }
-
-                HirExprKind::MethodCall {
-                    receiver: Box::new(self.lower_expr(object)),
-                    method: method.clone(),
-                    args: args.iter().map(|a| self.lower_expr(a)).collect(),
-                }
-            }
+            } => HirExprKind::MethodCall {
+                receiver: Box::new(self.lower_expr(object)),
+                method: method.clone(),
+                args: args.iter().map(|a| self.lower_expr(a)).collect(),
+            },
 
             ExprKind::Field { object, field } => HirExprKind::Field {
                 object: Box::new(self.lower_expr(object)),
@@ -318,79 +309,14 @@ impl Lower {
                 object,
                 method,
                 args,
-            } => {
-                // ── Webhook integration (typed path only) ─────────────────
-                // Detect when the LAST argument is a webhook JSON string.
-                // app.get(path, handler, webhooksJson)       → no middleware, with webhook
-                // app.get(path, Jwt(), handler, webhooksJson) → with middleware, with webhook
-                //
-                // Heuristic (does NOT depend on var_types tracking):
-                // The second-to-last arg is always a handler (known function name).
-                // The last arg is a webhook JSON if it's NOT a known function name.
-                // This works for ALL patterns:
-                //   (path, handler, webhook)          — handler is fn, webhook is var
-                //   (path, Jwt(), handler, webhook)    — handler is fn, webhook is var
-                //   (path, mw1, mw2, handler, webhook) — handler is fn, webhook is var
-                //   (path, mw, handler)                — handler is fn, last IS fn → no webhook
-                if Self::is_http_route_method(method) && args.len() >= 3 {
-                    let handler_idx = args.len() - 2;
-                    let webhook_idx = args.len() - 1;
-
-                    // The second-to-last arg must be a known function (the handler)
-                    let handler_is_known_fn = match &args[handler_idx].kind {
-                        ExprKind::Ident(name) => {
-                            let contains = self.known_functions.contains(name.as_str());
-                            contains
-                        }
-                        other => false,
-                    };
-
-                    // The last arg must NOT be a known function (it's a variable, not a handler/middleware)
-                    let last_is_not_fn = match &args[webhook_idx].kind {
-                        ExprKind::StrLit(_) => true,
-                        ExprKind::Ident(name) => {
-                            let not_fn = !self.known_functions.contains(name.as_str());
-                            not_fn
-                        }
-                        ExprKind::Call { .. } | ExprKind::MethodCall { .. } => true,
-                        other => {
-                            let last_arg = &args[webhook_idx];
-                            self.expr_is_str(last_arg) || {
-                                let lowered = self.lower_expr_typed(last_arg, registry);
-                                lowered.type_id.map_or(false, |tid| {
-                                    tid == builtin::STR
-                                        || registry
-                                            .get(tid)
-                                            .map_or(false, |info| info.name == "Str")
-                                })
-                            }
-                        }
-                    };
-
-                    if handler_is_known_fn && last_is_not_fn {
-                        return self.transform_route_with_webhook_typed(
-                            object, method, args, expr.span, registry,
-                        );
-                    }
-                }
-
-                // Transform HTTP route methods with middleware arguments
-                // app.get("/path", middleware, Handler) -> app.getWithMiddleware("/path", "middleware", Handler)
-                if Self::is_http_route_method(method) && args.len() > 2 {
-                    return self.transform_route_with_middleware_typed(
-                        object, method, args, expr.span, registry,
-                    );
-                }
-
-                HirExprKind::MethodCall {
-                    receiver: Box::new(self.lower_expr_typed(object, registry)),
-                    method: method.clone(),
-                    args: args
-                        .iter()
-                        .map(|a| self.lower_expr_typed(a, registry))
-                        .collect(),
-                }
-            }
+            } => HirExprKind::MethodCall {
+                receiver: Box::new(self.lower_expr_typed(object, registry)),
+                method: method.clone(),
+                args: args
+                    .iter()
+                    .map(|a| self.lower_expr_typed(a, registry))
+                    .collect(),
+            },
 
             ExprKind::Field { object, field } => HirExprKind::Field {
                 object: Box::new(self.lower_expr_typed(object, registry)),

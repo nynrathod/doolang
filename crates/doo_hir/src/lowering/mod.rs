@@ -13,7 +13,6 @@ mod expr;
 mod for_loops;
 mod helpers;
 mod items;
-mod route;
 mod stmt;
 mod type_infer;
 
@@ -33,6 +32,8 @@ pub struct Lower {
     errors: Vec<LowerError>,
     /// Variable type tracking for typed lowering (name -> TypeId)
     var_types: FxHashMap<String, TypeId>,
+    /// Scope stack for name resolution and hygiene
+    scope_stack: Vec<FxHashMap<String, String>>,
     /// Counter for generating unique internal variable names
     unique_counter: u64,
     /// Track JSON stringify sources: variable name -> type of the stringified value
@@ -73,6 +74,7 @@ impl Lower {
         Self {
             errors: Vec::new(),
             var_types: FxHashMap::default(),
+            scope_stack: Vec::new(),
             unique_counter: 0,
             json_stringify_sources: FxHashMap::default(),
             hoisted_items: Vec::new(),
@@ -83,10 +85,42 @@ impl Lower {
     }
 
     /// Generate a unique suffix for internal variable names.
-    fn unique_suffix(&mut self) -> u64 {
+    pub(crate) fn unique_suffix(&mut self) -> u64 {
         let id = self.unique_counter;
         self.unique_counter += 1;
         id
+    }
+
+    /// Push a new scope onto the scope stack.
+    pub fn push_scope(&mut self) {
+        self.scope_stack.push(FxHashMap::default());
+    }
+
+    /// Pop the current scope from the scope stack.
+    pub fn pop_scope(&mut self) {
+        self.scope_stack.pop();
+    }
+
+    /// Define a name in the current scope.
+    pub fn define_name(&mut self, ast_name: &str, hir_name: String) {
+        if let Some(scope) = self.scope_stack.last_mut() {
+            scope.insert(ast_name.to_string(), hir_name);
+        }
+    }
+
+    /// Resolve a name from the scope stack.
+    pub fn resolve_name(&self, ast_name: &str) -> String {
+        for scope in self.scope_stack.iter().rev() {
+            if let Some(hir_name) = scope.get(ast_name) {
+                return hir_name.clone();
+            }
+        }
+        ast_name.to_string()
+    }
+
+    /// Emit a lowering error.
+    pub fn emit_error(&mut self, message: impl Into<String>, span: Span) {
+        self.errors.push(LowerError::new(message, span));
     }
 
     /// Recursively substitute a local variable name in a statement.
