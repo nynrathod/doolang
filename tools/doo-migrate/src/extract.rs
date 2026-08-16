@@ -10,8 +10,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
-use doo_ffi_core::to_snake_case;
 use doo_core::types::TypeRegistry;
+use doo_ffi_core::to_snake_case;
 use doo_frontend::Parser;
 use doo_hir::{ConstValue, HirExpr, HirExprKind, HirItem, HirStmtKind, Lower};
 
@@ -303,12 +303,6 @@ fn walk_expr_for_implicit_tables(
         HirExprKind::Range { start, end, .. } => {
             walk_expr_for_implicit_tables(start, all_structs, implicit);
             walk_expr_for_implicit_tables(end, all_structs, implicit);
-        }
-        // Route block — recurse into each route expression
-        HirExprKind::RouteBlock { routes } => {
-            for r in routes {
-                walk_expr_for_implicit_tables(r, all_structs, implicit);
-            }
         }
         // Ownership annotations — unwrap and recurse
         HirExprKind::Move(inner) | HirExprKind::Clone(inner) | HirExprKind::Await(inner) => {

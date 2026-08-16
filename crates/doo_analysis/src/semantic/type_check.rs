@@ -2018,6 +2018,17 @@ impl TypeChecker {
                     self.check_match_pattern(p);
                 }
             }
+            HirMatchPattern::Struct { fields, .. } => {
+                for (_, p) in fields {
+                    self.check_match_pattern(p);
+                }
+            }
+            HirMatchPattern::Array(patterns) => {
+                for p in patterns {
+                    self.check_match_pattern(p);
+                }
+            }
+            HirMatchPattern::Rest(_) => {}
             HirMatchPattern::Wildcard
             | HirMatchPattern::EnumVariant { .. }
             | HirMatchPattern::EnumVariantPayload { .. } => {
@@ -2101,6 +2112,17 @@ impl TypeChecker {
                     self.register_pattern_bindings(p, span);
                 }
             }
+            HirMatchPattern::Struct { fields, .. } => {
+                for (_, p) in fields {
+                    self.register_pattern_bindings(p, span);
+                }
+            }
+            HirMatchPattern::Array(patterns) => {
+                for p in patterns {
+                    self.register_pattern_bindings(p, span);
+                }
+            }
+            HirMatchPattern::Rest(_) => {}
             // These patterns don't introduce bindings
             HirMatchPattern::Literal(_)
             | HirMatchPattern::Condition(_)

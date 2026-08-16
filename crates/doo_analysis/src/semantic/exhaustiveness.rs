@@ -580,6 +580,22 @@ impl<'a> ExhaustivenessChecker<'a> {
                         has_wildcard = true;
                     }
                 }
+                HirMatchPattern::Struct { fields, .. } => {
+                    if fields
+                        .iter()
+                        .any(|(_, p)| matches!(p, HirMatchPattern::Wildcard))
+                    {
+                        covered.add_wildcard();
+                        has_wildcard = true;
+                    }
+                }
+                HirMatchPattern::Array(parts) => {
+                    if parts.iter().any(|p| matches!(p, HirMatchPattern::Wildcard)) {
+                        covered.add_wildcard();
+                        has_wildcard = true;
+                    }
+                }
+                HirMatchPattern::Rest(_) => {}
             }
         }
 

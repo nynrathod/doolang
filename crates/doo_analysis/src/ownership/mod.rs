@@ -492,10 +492,16 @@ impl OwnershipAnalyzer {
             }
             doo_hir::HirMatchPattern::Wildcard
             | doo_hir::HirMatchPattern::EnumVariant { .. }
-            | doo_hir::HirMatchPattern::EnumVariantPayload { .. } => {}
-            doo_hir::HirMatchPattern::Tuple(parts) => {
+            | doo_hir::HirMatchPattern::EnumVariantPayload { .. }
+            | doo_hir::HirMatchPattern::Rest(_) => {}
+            doo_hir::HirMatchPattern::Tuple(parts) | doo_hir::HirMatchPattern::Array(parts) => {
                 for x in parts {
                     self.count_uses_in_match_pattern(x);
+                }
+            }
+            doo_hir::HirMatchPattern::Struct { fields, .. } => {
+                for (_, p) in fields {
+                    self.count_uses_in_match_pattern(p);
                 }
             }
         }
@@ -741,10 +747,16 @@ impl OwnershipAnalyzer {
             }
             doo_hir::HirMatchPattern::Wildcard
             | doo_hir::HirMatchPattern::EnumVariant { .. }
-            | doo_hir::HirMatchPattern::EnumVariantPayload { .. } => {}
-            doo_hir::HirMatchPattern::Tuple(parts) => {
+            | doo_hir::HirMatchPattern::EnumVariantPayload { .. }
+            | doo_hir::HirMatchPattern::Rest(_) => {}
+            doo_hir::HirMatchPattern::Tuple(parts) | doo_hir::HirMatchPattern::Array(parts) => {
                 for x in parts {
                     self.analyze_match_pattern(x);
+                }
+            }
+            doo_hir::HirMatchPattern::Struct { fields, .. } => {
+                for (_, p) in fields {
+                    self.analyze_match_pattern(p);
                 }
             }
         }

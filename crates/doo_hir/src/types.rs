@@ -511,4 +511,13 @@ pub enum HirMatchPattern {
         bindings: Vec<String>,
     },
     Tuple(Vec<HirMatchPattern>),
+    /// Struct pattern: `Point { x, y: 10 }`
+    Struct {
+        name: String,
+        fields: Vec<(String, HirMatchPattern)>,
+    },
+    /// Array pattern: `[a, b, ..rest]`
+    Array(Vec<HirMatchPattern>),
+    /// Rest pattern: `..` or `..rest`
+    Rest(Option<String>),
 }

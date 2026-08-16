@@ -432,10 +432,16 @@ impl BorrowChecker {
             }
             doo_hir::HirMatchPattern::Wildcard
             | doo_hir::HirMatchPattern::EnumVariant { .. }
-            | doo_hir::HirMatchPattern::EnumVariantPayload { .. } => {}
-            doo_hir::HirMatchPattern::Tuple(parts) => {
+            | doo_hir::HirMatchPattern::EnumVariantPayload { .. }
+            | doo_hir::HirMatchPattern::Rest(_) => {}
+            doo_hir::HirMatchPattern::Tuple(parts) | doo_hir::HirMatchPattern::Array(parts) => {
                 for x in parts {
                     self.check_match_pattern(x);
+                }
+            }
+            doo_hir::HirMatchPattern::Struct { fields, .. } => {
+                for (_, p) in fields {
+                    self.check_match_pattern(p);
                 }
             }
         }

@@ -141,6 +141,10 @@ pub trait HirVisitorMut {
     fn visit_expr_mut(&mut self, expr: &mut HirExpr) {
         walk_expr_mut(self, expr);
     }
+
+    fn visit_pattern_mut(&mut self, pattern: &mut HirMatchPattern) {
+        walk_pattern_mut(self, pattern);
+    }
 }
 
 // ============================================================================
@@ -316,10 +320,40 @@ pub fn walk_pattern<V: HirVisitor + ?Sized>(visitor: &mut V, pattern: &HirMatchP
         HirMatchPattern::Literal(e) | HirMatchPattern::Condition(e) => visitor.visit_expr(e),
         HirMatchPattern::Wildcard
         | HirMatchPattern::EnumVariant { .. }
-        | HirMatchPattern::EnumVariantPayload { .. } => {}
-        HirMatchPattern::Tuple(parts) => {
+        | HirMatchPattern::EnumVariantPayload { .. }
+        | HirMatchPattern::Rest(_) => {}
+        HirMatchPattern::Tuple(parts) | HirMatchPattern::Array(parts) => {
             for p in parts {
                 visitor.visit_pattern(p);
+            }
+        }
+        HirMatchPattern::Struct { fields, .. } => {
+            for (_, p) in fields {
+                visitor.visit_pattern(p);
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Walk Functions (Mutable)
+// ============================================================================
+
+pub fn walk_pattern_mut<V: HirVisitorMut + ?Sized>(visitor: &mut V, pattern: &mut HirMatchPattern) {
+    match pattern {
+        HirMatchPattern::Literal(e) | HirMatchPattern::Condition(e) => visitor.visit_expr_mut(e),
+        HirMatchPattern::Wildcard
+        | HirMatchPattern::EnumVariant { .. }
+        | HirMatchPattern::EnumVariantPayload { .. }
+        | HirMatchPattern::Rest(_) => {}
+        HirMatchPattern::Tuple(parts) | HirMatchPattern::Array(parts) => {
+            for p in parts {
+                visitor.visit_pattern_mut(p);
+            }
+        }
+        HirMatchPattern::Struct { fields, .. } => {
+            for (_, p) in fields {
+                visitor.visit_pattern_mut(p);
             }
         }
     }

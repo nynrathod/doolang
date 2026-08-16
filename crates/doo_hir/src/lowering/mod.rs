@@ -9,12 +9,14 @@
 //! - `for x in iter` → while loop (basic structure)
 //! - Range expressions → Range construction
 
+mod constraints;
 mod expr;
 mod for_loops;
 mod helpers;
 mod items;
 mod stmt;
 mod type_infer;
+mod unify;
 
 use doo_core::{
     infer::{BinOpKind, UnaryOpKind},
@@ -50,6 +52,8 @@ pub struct Lower {
     /// Compile-time constants declared at module level (name -> AST expression).
     /// When an identifier resolves to a known const, its expression is inlined at the use site.
     pub(crate) known_consts: FxHashMap<String, ast::Expr>,
+    /// Type variable table for Hindley-Milner style type inference (Phase 18/19).
+    pub(crate) type_var_table: constraints::TypeVarTable,
 }
 
 /// Lowering error.
@@ -81,6 +85,7 @@ impl Lower {
             known_functions: FxHashSet::default(),
             known_qualified_methods: FxHashMap::default(),
             known_consts: FxHashMap::default(),
+            type_var_table: constraints::TypeVarTable::new(),
         }
     }
 
