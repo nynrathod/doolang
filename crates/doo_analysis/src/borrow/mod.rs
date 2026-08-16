@@ -19,6 +19,8 @@
 //! - At scope end: release all borrows from that scope
 
 use doo_core::Span;
+pub mod cfg;
+pub use cfg::{BasicBlock, BlockId, CfgBuilder, Terminator, CFG};
 use doo_hir::{HirExpr, HirExprKind, HirFunction, HirItem, HirProgram, HirStmt, HirStmtKind};
 use rustc_hash::FxHashMap;
 

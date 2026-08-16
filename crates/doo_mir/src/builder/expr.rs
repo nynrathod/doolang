@@ -205,6 +205,18 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         );
                         MirOperand::Temp(dest)
                     }
+										 Decision::Drop => {
+											// Dropping acts like a move: the value is consumed and 
+											// ownership is transferred to the drop logic.
+											builder.emit(
+													MirInstrKind::Move {
+															dest,
+															src: MirOperand::Local(sym(name)),
+													},
+													span,
+											);
+											MirOperand::Temp(dest)
+									}
                 }
             } else {
                 // No ownership decision available - default to direct reference
