@@ -46,9 +46,6 @@ pub use doo_analysis::{
 // SymbolKindDef is in semantic submodule
 pub use doo_analysis::semantic::SymbolKindDef;
 
-// Shared loader types — single source of truth
-pub use doo_analysis::loader::{merge_imports, resolve_module_path, ImportResolution};
-
 /// Module loader for the Doo compiler.
 ///
 /// Handles discovery, loading, and parsing of imported modules.
@@ -68,6 +65,12 @@ pub struct ModuleLoader {
     /// Registered source files: (file_id, display_name, source_content)
     /// These must be added to SourceMap after import resolution.
     imported_sources: Vec<(u32, String, String)>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct ImportResolution {
+    pub items: Vec<doo_frontend::ast::Item>,
+    pub errors: Vec<doo_core::errors::codes::CompilerError>,
 }
 
 /// Check if a candidate std/ directory is valid (contains .doo source files, not

@@ -26,12 +26,10 @@ use doo_mir::builder::MirBuilder;
 use doo_mir::sym::resolve;
 
 // Module loader - single source of truth for import resolution
-use crate::loader::{merge_imports, resolve_imports, ModuleLoader};
+use crate::loader::{resolve_imports, ModuleLoader};
 
 // Analysis imports - wire in the semantic analysis phase
 use doo_analysis::{
-    // Field visibility checking
-    check_field_visibility,
     // Error conversions (analysis errors → CompilerError)
     conversions::{
         borrow_errors_to_compiler, error_flow_errors_to_compiler,
@@ -277,7 +275,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
         })
         .collect();
 
-    merge_imports(&mut program, import_resolution);
+    program.items.extend(import_resolution.items);
     timings.push(("Import resolution", t.elapsed()));
 
     // Phase 3.5: AST Transformations (AFTER imports so all files are transformed)
@@ -407,19 +405,12 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
 
     // 5.1: Type Checking
     // Validates type compatibility across the program
-    let mut type_checker = TypeChecker::new(type_registry.clone());
-    if let Err(errors) = type_checker.check(&hir) {
+    let mut type_checker = TypeChecker::new(type_registry.as_ref());
+    let mut thir_lowerer = doo_thir::ThirLoweringContext::new(type_registry.as_ref());
+    let thir = thir_lowerer.lower_program(&hir);
+
+    if let Err(errors) = type_checker.check_program(&thir) {
         analysis_errors.extend(type_errors_to_compiler(errors));
-    }
-    // Collect scope errors (redeclarations, duplicate symbols)
-    let scope_errs = type_checker.take_scope_errors();
-    if !scope_errs.is_empty() {
-        analysis_errors.extend(scope_errors_to_compiler(scope_errs));
-    }
-    // Collect direct compiler errors (MissingReturn, UnreachableCode, etc.)
-    let direct_errs = type_checker.take_direct_errors();
-    if !direct_errs.is_empty() {
-        analysis_errors.extend(direct_errs);
     }
 
     // 5.2: Ownership Analysis
@@ -453,40 +444,15 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     // 5.5: Error Flow Checking
     // Ensures all Result types are properly handled
     let mut error_flow_checker = ErrorFlowChecker::new(&type_registry);
-    if let Err(errors) = error_flow_checker.check(&hir) {
+    if let Err(errors) = error_flow_checker.check_thir(&thir) {
         analysis_errors.extend(error_flow_errors_to_compiler(errors));
     }
 
     // 5.6: Exhaustiveness Checking
     // Ensures all match expressions cover all possible patterns
     let mut exhaustiveness_checker = ExhaustivenessChecker::new(&type_registry);
-    let exhaustiveness_errors = exhaustiveness_checker.check_program(&hir);
-    analysis_errors.extend(exhaustiveness_errors_to_compiler(exhaustiveness_errors));
-
-    // 5.7: Field Visibility Checking
-    // Ensures private fields (camelCase) are not accessed from outside their module
-    doo_debug!(
-        "DEBUG",
-        "Imported struct names: {:?}",
-        imported_struct_names
-    );
-    let visibility_errors = check_field_visibility(&hir, &type_registry, &imported_struct_names);
-    for err in visibility_errors {
-        let capitalized = {
-            let mut c = err.field_name.chars();
-            match c.next() {
-                None => String::new(),
-                Some(f) => f.to_uppercase().to_string() + c.as_str(),
-            }
-        };
-        analysis_errors.push(
-            CompilerError::new(
-                doo_core::errors::codes::ErrorCode::PrivateItemAccess,
-                format!("'{}' is private", err.field_name),
-                err.span,
-            )
-            .with_suggestion(format!("rename to '{}'", capitalized)),
-        );
+    if let Err(errors) = exhaustiveness_checker.check_program(&thir) {
+        analysis_errors.extend(exhaustiveness_errors_to_compiler(errors));
     }
 
     // Report any analysis errors via the diagnostic emitter
@@ -1765,8 +1731,8 @@ mod tests {
         let errors = vec![
             TypeError {
                 kind: TypeErrorKind::Mismatch {
-                    expected: builtin::INT,
-                    found: builtin::STR,
+                    expected: builtin::INT.to_string(),
+                    found: builtin::STR.to_string(),
                 },
                 span: test_span(),
             },
@@ -1880,7 +1846,7 @@ mod tests {
     #[test]
     fn test_type_checker_new() {
         let registry = Arc::new(TypeRegistry::new());
-        let _checker = TypeChecker::new(registry);
+        let _checker = TypeChecker::new(&registry);
         // Should not panic
     }
 
@@ -1919,13 +1885,14 @@ mod tests {
     // ========================================================================
     // Analysis Pass Integration Tests (Empty Program)
     // ========================================================================
-
     #[test]
     fn test_type_checker_empty_program() {
         let hir = empty_program();
         let registry = Arc::new(TypeRegistry::new());
-        let mut checker = TypeChecker::new(registry);
-        let result = checker.check(&hir);
+        let mut lowerer = doo_thir::ThirLoweringContext::new(registry.as_ref());
+        let thir = lowerer.lower_program(&hir);
+        let mut checker = TypeChecker::new(registry.as_ref());
+        let result = checker.check_program(&thir);
         assert!(result.is_ok(), "Type checker should pass on empty program");
     }
 
@@ -1964,7 +1931,7 @@ mod tests {
         let hir = empty_program();
         let registry = TypeRegistry::new();
         let mut checker = ErrorFlowChecker::new(&registry);
-        let result = checker.check(&hir);
+        let result = checker.check_hir(&hir);
         assert!(
             result.is_ok(),
             "Error flow checker should pass on empty program"
@@ -1975,10 +1942,12 @@ mod tests {
     fn test_exhaustiveness_checker_empty_program() {
         let hir = empty_program();
         let registry = TypeRegistry::new();
+        let mut lowerer = doo_thir::ThirLoweringContext::new(&registry);
+        let thir = lowerer.lower_program(&hir);
         let mut checker = ExhaustivenessChecker::new(&registry);
-        let errors = checker.check_program(&hir);
+        let result = checker.check_program(&thir);
         assert!(
-            errors.is_empty(),
+            result.is_ok(),
             "Exhaustiveness checker should pass on empty program"
         );
     }
@@ -2087,8 +2056,14 @@ mod tests {
 
         // Run all analysis passes
         let registry = Arc::new(TypeRegistry::new());
-        let mut type_checker = TypeChecker::new(registry);
-        assert!(type_checker.check(&hir).is_ok(), "Type checker should pass");
+        let mut lowerer = doo_thir::ThirLoweringContext::new(registry.as_ref());
+        let thir = lowerer.lower_program(&hir);
+
+        let mut type_checker = TypeChecker::new(registry.as_ref());
+        assert!(
+            type_checker.check_program(&thir).is_ok(),
+            "Type checker should pass"
+        );
 
         let mut ownership_analyzer = OwnershipAnalyzer::new();
         assert!(
@@ -2102,17 +2077,15 @@ mod tests {
             "Borrow checker should pass"
         );
 
-        let registry = TypeRegistry::new();
         let mut error_flow_checker = ErrorFlowChecker::new(&registry);
         assert!(
-            error_flow_checker.check(&hir).is_ok(),
+            error_flow_checker.check_thir(&thir).is_ok(),
             "Error flow checker should pass"
         );
 
         let mut exhaustiveness_checker = ExhaustivenessChecker::new(&registry);
-        let exhaustiveness_errors = exhaustiveness_checker.check_program(&hir);
         assert!(
-            exhaustiveness_errors.is_empty(),
+            exhaustiveness_checker.check_program(&thir).is_ok(),
             "Exhaustiveness checker should pass"
         );
     }
@@ -2158,8 +2131,13 @@ mod tests {
 
         // Run analysis passes
         let registry = Arc::new(TypeRegistry::new());
-        let mut type_checker = TypeChecker::new(registry);
-        assert!(type_checker.check(&hir).is_ok());
+
+        // Lower HIR to THIR for type checking
+        let mut lowerer = doo_thir::ThirLoweringContext::new(registry.as_ref());
+        let thir = lowerer.lower_program(&hir);
+
+        let mut type_checker = TypeChecker::new(registry.as_ref());
+        assert!(type_checker.check_program(&thir).is_ok());
 
         let mut ownership_analyzer = OwnershipAnalyzer::new();
         assert!(ownership_analyzer.analyze(&hir).is_ok());
