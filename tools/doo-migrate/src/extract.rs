@@ -33,6 +33,12 @@ const SERVER_METHOD_CRUD: &str = "crud";
 /// Matches the FFI convention: app.auth() always creates a "users" table.
 const DEFAULT_AUTH_TABLE: &str = "users";
 
+#[derive(Debug, Default, Clone)]
+pub struct ImportResolution {
+    pub items: Vec<doo_frontend::ast::Item>,
+    pub errors: Vec<String>,
+}
+
 /// Extract a DatabaseSchema from the project.
 ///
 /// Always uses entry-point resolution: starts from the specified file or
@@ -69,7 +75,6 @@ fn try_extract_from_entry(path: &Path, project_root: &Path) -> Result<DatabaseSc
     let mut loader = doo_driver_loader::ModuleLoader::new();
     let import_resolution =
         doo_driver_loader::resolve_imports(&program, &mut loader, project_root)?;
-    doo_analysis::loader::merge_imports(&mut program, import_resolution);
 
     // AST transforms
     doo_analysis::transform::transform_route_groups(&mut program);
@@ -1117,8 +1122,7 @@ mod doo_driver_loader {
     use doo_frontend::ast::{Item, Program};
     use doo_frontend::Parser;
 
-    // Shared from doo_analysis::loader — single source of truth
-    use doo_analysis::loader::{resolve_module_path, ImportResolution};
+    use crate::extract::ImportResolution;
 
     /// Module loader — discovers and parses imported .doo files.
     pub struct ModuleLoader {
@@ -1226,5 +1230,13 @@ mod doo_driver_loader {
         }
 
         Ok(ImportResolution { items, errors })
+    }
+
+    pub fn resolve_module_path(
+        _path: &[String],
+        _project_root: &std::path::Path,
+        _stdlib_path: Option<&std::path::Path>,
+    ) -> Option<std::path::PathBuf> {
+        None
     }
 }
