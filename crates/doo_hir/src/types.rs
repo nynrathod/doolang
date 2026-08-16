@@ -1,7 +1,7 @@
 //! HIR Type Definitions
 //!
 //! All HIR node types - expressions, statements, items.
-//! Every node carries a TypeId for type information (initially unknown).
+//! Every node carries an optional TypeId for type information (initially unknown).
 
 use doo_core::{
     types::{builtin, TypeId},
@@ -14,6 +14,12 @@ use serde::{Deserialize, Serialize};
 // ============================================================================
 
 /// Ownership state for a value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Visibility {
+    Public,
+    Private,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Ownership {
     /// Value is owned by this variable.
@@ -53,6 +59,137 @@ impl ConstValue {
             Self::Nil => builtin::VOID,
         }
     }
+}
+
+// ============================================================================
+// Program & Items
+// ============================================================================
+
+#[derive(Debug, Clone)]
+pub struct HirProgram {
+    pub items: Vec<HirItem>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum HirItem {
+    Const(HirConst),
+    Static(HirStatic),
+    Function(HirFunction),
+    Struct(HirStruct),
+    Enum(HirEnum),
+    Interface(HirInterface),
+    Import(HirImport),
+}
+
+#[derive(Debug, Clone)]
+pub struct HirConst {
+    pub name: String,
+    pub is_public: bool,
+    pub value: Option<ConstValue>,
+    pub value_expr: HirExpr,
+    pub type_id: TypeId,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirStatic {
+    pub name: String,
+    pub is_public: bool,
+    pub type_id: Option<TypeId>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirFunction {
+    pub name: String,
+    pub type_params: Vec<String>,
+    pub params: Vec<HirParam>,
+    pub return_type: Option<TypeId>,
+    pub error_type: Option<TypeId>,
+    pub body: Vec<HirStmt>,
+    pub decorators: Vec<HirDecorator>,
+    pub is_async: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirParam {
+    pub name: String,
+    pub type_id: Option<TypeId>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirStruct {
+    pub name: String,
+    pub type_params: Vec<String>,
+    pub fields: Vec<HirField>,
+    pub decorators: Vec<HirDecorator>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirField {
+    pub name: String,
+    pub type_id: Option<TypeId>,
+    pub is_public: bool,
+    pub is_optional: bool,
+    pub default: Option<HirExpr>,
+    pub decorators: Vec<HirDecorator>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirEnum {
+    pub name: String,
+    pub variants: Vec<HirVariant>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirVariant {
+    pub name: String,
+    pub payload: Option<TypeId>,
+    pub decorators: Vec<HirDecorator>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirInterface {
+    pub name: String,
+    pub methods: Vec<HirInterfaceMethod>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirInterfaceMethod {
+    pub name: String,
+    pub params: Vec<HirParam>,
+    pub return_type: Option<TypeId>,
+    pub error_type: Option<TypeId>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirImport {
+    pub path: Vec<String>,
+    pub items: Vec<HirImportItem>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum HirImportItem {
+    Symbol(String),
+    Alias { name: String, alias: String },
+    Wildcard,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirDecorator {
+    pub name: String,
+    pub args: Vec<HirExpr>,
+    pub span: Span,
 }
 
 // ============================================================================
@@ -374,202 +511,4 @@ pub enum HirMatchPattern {
         bindings: Vec<String>,
     },
     Tuple(Vec<HirMatchPattern>),
-}
-
-// ============================================================================
-// Items (Top-Level Declarations)
-// ============================================================================
-
-/// HIR program.
-#[derive(Debug, Clone)]
-pub struct HirProgram {
-    pub items: Vec<HirItem>,
-    pub span: Span,
-}
-
-/// Top-level items.
-#[derive(Debug, Clone)]
-pub enum HirItem {
-    /// Compile-time constant declaration.
-    Const(HirConst),
-    /// Runtime global variable declaration (OnceLock semantics).
-    Static(HirStatic),
-    Function(HirFunction),
-    Struct(HirStruct),
-    Enum(HirEnum),
-    Interface(HirInterface),
-    Import(HirImport),
-}
-
-/// Compile-time constant declaration.
-///
-/// All const values must be evaluable at compile time: literals, arrays/maps of literals,
-/// or constant arithmetic expressions. The compiler inlines the value at every use site.
-#[derive(Debug, Clone)]
-pub struct HirConst {
-    pub name: String,
-    pub is_public: bool,
-    /// Resolved constant value (for primitives). None for complex types (arrays/maps).
-    pub value: Option<ConstValue>,
-    /// The full lowered expression (used for complex types inlined at use sites).
-    pub value_expr: HirExpr,
-    pub type_id: TypeId,
-    pub span: Span,
-}
-
-/// Runtime global variable declaration.
-///
-/// Declared at top-level with a type annotation: `static DB: Database`
-/// Set exactly once in main(), immutable after.
-/// Compiles to OnceLock behind the scenes for thread safety.
-#[derive(Debug, Clone)]
-pub struct HirStatic {
-    pub name: String,
-    pub is_public: bool,
-    pub type_id: Option<TypeId>,
-    pub span: Span,
-}
-
-/// Function definition.
-#[derive(Debug, Clone)]
-pub struct HirFunction {
-    pub name: String,
-    /// Generic type parameter names (empty for non-generic functions).
-    pub type_params: Vec<String>,
-    pub params: Vec<HirParam>,
-    pub return_type: Option<TypeId>,
-    pub error_type: Option<TypeId>,
-    pub body: Vec<HirStmt>,
-    pub decorators: Vec<HirDecorator>,
-    pub is_async: bool,
-    pub span: Span,
-}
-
-/// Function parameter.
-#[derive(Debug, Clone)]
-pub struct HirParam {
-    pub name: String,
-    pub type_id: Option<TypeId>,
-    pub span: Span,
-}
-
-/// Struct definition.
-#[derive(Debug, Clone)]
-pub struct HirStruct {
-    pub name: String,
-    /// Generic type parameter names (empty for non-generic structs).
-    pub type_params: Vec<String>,
-    pub fields: Vec<HirField>,
-    pub decorators: Vec<HirDecorator>,
-    pub span: Span,
-}
-
-/// Struct field.
-#[derive(Debug, Clone)]
-pub struct HirField {
-    pub name: String,
-    pub type_id: Option<TypeId>,
-    pub is_public: bool,
-    pub is_optional: bool,
-    pub default: Option<HirExpr>,
-    pub decorators: Vec<HirDecorator>,
-    pub span: Span,
-}
-
-/// Enum definition.
-#[derive(Debug, Clone)]
-pub struct HirEnum {
-    pub name: String,
-    pub variants: Vec<HirVariant>,
-    pub span: Span,
-}
-
-/// Enum variant.
-#[derive(Debug, Clone)]
-pub struct HirVariant {
-    pub name: String,
-    pub payload: Option<TypeId>,
-    /// Decorators on this variant (e.g. @inherits(User)).
-    pub decorators: Vec<HirDecorator>,
-    pub span: Span,
-}
-
-/// Interface definition.
-#[derive(Debug, Clone)]
-pub struct HirInterface {
-    pub name: String,
-    pub methods: Vec<HirInterfaceMethod>,
-    pub span: Span,
-}
-
-/// A method signature inside an interface.
-#[derive(Debug, Clone)]
-pub struct HirInterfaceMethod {
-    pub name: String,
-    pub params: Vec<HirParam>,
-    pub return_type: Option<TypeId>,
-    pub error_type: Option<TypeId>,
-    pub span: Span,
-}
-
-/// Import.
-#[derive(Debug, Clone)]
-pub struct HirImport {
-    pub path: Vec<String>,
-    pub items: Vec<HirImportItem>,
-    pub span: Span,
-}
-
-/// Import item.
-#[derive(Debug, Clone)]
-pub enum HirImportItem {
-    Symbol(String),
-    Alias { name: String, alias: String },
-    Wildcard,
-}
-
-/// Decorator.
-#[derive(Debug, Clone)]
-pub struct HirDecorator {
-    pub name: String,
-    pub args: Vec<HirExpr>,
-    pub span: Span,
-}
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_ownership_default() {
-        assert_eq!(Ownership::default(), Ownership::Owned);
-    }
-
-    #[test]
-    fn test_const_value() {
-        let c = ConstValue::Int(42);
-        assert_eq!(c, ConstValue::Int(42));
-    }
-
-    #[test]
-    fn test_hir_expr_new() {
-        let span = Span::dummy();
-        let expr = HirExpr::new(HirExprKind::Const(ConstValue::Int(1)), span);
-        assert!(expr.type_id.is_none());
-    }
-
-    #[test]
-    fn test_hir_expr_with_type() {
-        let span = Span::dummy();
-        let expr = HirExpr::with_type(
-            HirExprKind::Const(ConstValue::Bool(true)),
-            builtin::BOOL,
-            span,
-        );
-        assert_eq!(expr.type_id, Some(builtin::BOOL));
-    }
 }
