@@ -717,6 +717,7 @@ dependencies = [
  "doo_core",
  "doo_frontend",
  "doo_hir",
+ "doo_thir",
  "pretty_assertions",
  "rustc-hash 1.1.0",
  "serde",
@@ -776,6 +777,7 @@ dependencies = [
  "doo_hir",
  "doo_migrate",
  "doo_mir",
+ "doo_thir",
  "inkwell",
  "serde",
  "serde_json",
@@ -953,6 +955,7 @@ dependencies = [
  "doo_core",
  "doo_frontend",
  "doo_hir",
+ "doo_thir",
  "lsp-server",
  "lsp-types",
  "rustc-hash 1.1.0",
@@ -998,6 +1001,17 @@ dependencies = [
  "rustc-hash 1.1.0",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "doo_thir"
+version = "0.5.0"
+dependencies = [
+ "doo_core",
+ "doo_hir",
+ "pretty_assertions",
+ "rustc-hash 2.1.3",
+ "serde",
 ]
 
 [[package]]
