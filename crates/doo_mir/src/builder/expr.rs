@@ -508,7 +508,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                                 .unwrap_or(false);
                             if is_interface {
                                 let arg_type = builder.infer_operand_type(&arg_op);
-                                let is_concrete = arg_type != param_type;
+                                let _is_concrete = arg_type != param_type;
                                 Some((arg_type, param_type))
                             } else {
                                 None
