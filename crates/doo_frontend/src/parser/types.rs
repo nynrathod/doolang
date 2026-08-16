@@ -3,16 +3,10 @@ use crate::ast::*;
 use crate::lexer::TokenKind;
 use doo_core::{CompilerError, ErrorCode};
 
-/// Trait for parsing type expressions and patterns.
-pub trait ParserTypes {
-    fn parse_type_expr(&mut self) -> ParseResult<TypeExpr>;
-    fn parse_pattern(&mut self) -> ParseResult<Pattern>;
-}
-
-impl ParserTypes for Parser {
+impl Parser {
     // === Types ===
 
-    fn parse_type_expr(&mut self) -> ParseResult<TypeExpr> {
+    pub(crate) fn parse_type_expr(&mut self) -> ParseResult<TypeExpr> {
         let start = self.current_span();
 
         // Array type: [T] or [T]?
@@ -106,7 +100,7 @@ impl ParserTypes for Parser {
 
     // === Patterns ===
 
-    fn parse_pattern(&mut self) -> ParseResult<Pattern> {
+    pub(crate) fn parse_pattern(&mut self) -> ParseResult<Pattern> {
         let start = self.current_span();
 
         if self.check(TokenKind::Underscore) {
@@ -125,10 +119,7 @@ impl ParserTypes for Parser {
             }
             self.expect(TokenKind::RParen)?;
             let end = self.prev_span();
-            return Ok(Pattern::new(
-                PatternKind::Tuple(patterns),
-                start.merge(end),
-            ));
+            return Ok(Pattern::new(PatternKind::Tuple(patterns), start.merge(end)));
         }
 
         let name = self.expect_ident()?;

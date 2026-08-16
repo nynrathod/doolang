@@ -3,9 +3,14 @@
 //! Centralized parsing utilities following single-source-of-truth principle.
 
 use super::{ParseResult, Parser};
-use crate::ast::*;
 use crate::lexer::TokenKind;
-use doo_core::{CompilerError, ErrorCode, Span};
+
+/// Brace disambiguation result.
+pub enum BraceType {
+    Object, // {key: value}
+    Map,    // {"str": value} or {...}
+    Block,  // { stmt; }
+}
 
 impl Parser {
     /// Parse comma-separated items until end token.
@@ -97,7 +102,7 @@ impl Parser {
         false
     }
 
-    /// Lookahead helper for object vs map vs block vs route block.
+    /// Lookahead helper for object vs map vs block.
     pub fn lookahead_brace_type(&mut self) -> BraceType {
         let saved_pos = self.pos;
         if !self.check(TokenKind::LBrace) {
@@ -130,7 +135,7 @@ impl Parser {
             return BraceType::Map;
         }
 
-        // Identifier - could be Object, Block, or RouteBlock
+        // Identifier - could be Object or Block
         if self.check(TokenKind::Ident) {
             let ident_text = self.current().text.clone();
             self.advance();
@@ -140,28 +145,9 @@ impl Parser {
                 self.pos = saved_pos;
                 return BraceType::Object;
             }
-
-            // Route block: `{ get("/path", handler) }`
-            if matches!(
-                ident_text.as_str(),
-                "get" | "post" | "put" | "delete" | "patch" | "head" | "options"
-            ) {
-                if self.check(TokenKind::LParen) {
-                    self.pos = saved_pos;
-                    return BraceType::RouteBlock;
-                }
-            }
         }
 
         self.pos = saved_pos;
         BraceType::Block
     }
-}
-
-/// Brace disambiguation result.
-pub enum BraceType {
-    Object,     // {key: value}
-    Map,        // {"str": value} or {...}
-    Block,      // { stmt; }
-    RouteBlock, // { get("/path", Handler), post(...) }
 }

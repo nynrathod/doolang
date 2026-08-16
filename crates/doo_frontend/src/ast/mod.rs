@@ -49,8 +49,6 @@ pub enum Item {
     Interface(InterfaceDecl),
     /// Import statement
     Import(ImportDecl),
-    /// RBAC policy block (Framework domain - slated for removal in Audit Phase 2)
-    Policy(PolicyDecl),
     /// Impl block for struct methods
     Impl(ImplDecl),
     /// Standalone statement (for scripting mode)
@@ -67,7 +65,6 @@ impl Item {
             Self::Enum(e) => e.span,
             Self::Interface(i) => i.span,
             Self::Import(i) => i.span,
-            Self::Policy(p) => p.span,
             Self::Impl(i) => i.span,
             Self::Statement(s) => s.span,
         }
@@ -85,7 +82,6 @@ impl Item {
             | Self::Struct(_)
             | Self::Enum(_)
             | Self::Interface(_)
-            | Self::Policy(_)
             | Self::Impl(_) => false,
         }
     }

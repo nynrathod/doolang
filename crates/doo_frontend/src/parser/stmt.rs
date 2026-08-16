@@ -1,31 +1,12 @@
-use super::expr::ParserExpr;
-use super::items::ParserItems;
-use super::types::ParserTypes;
 use super::{ParseResult, Parser};
 use crate::ast::*;
 use crate::lexer::TokenKind;
 use doo_core::{CompilerError, ErrorCode};
 
-/// Trait for parsing statements.
-pub trait ParserStmt {
-    fn parse_statement(&mut self) -> ParseResult<Stmt>;
-    fn parse_let(&mut self) -> ParseResult<Stmt>;
-    fn parse_if(&mut self) -> ParseResult<Stmt>;
-    fn parse_for(&mut self) -> ParseResult<Stmt>;
-    fn parse_return(&mut self) -> ParseResult<Stmt>;
-    fn parse_break(&mut self) -> ParseResult<Stmt>;
-    fn parse_continue(&mut self) -> ParseResult<Stmt>;
-    fn parse_print(&mut self) -> ParseResult<Stmt>;
-    fn parse_block(&mut self) -> ParseResult<Vec<Stmt>>;
-    fn parse_block_stmt(&mut self) -> ParseResult<Stmt>;
-    fn parse_expr_or_assign(&mut self) -> ParseResult<Stmt>;
-    fn expr_to_pattern(&self, expr: &Expr) -> ParseResult<Pattern>;
-}
-
-impl ParserStmt for Parser {
+impl Parser {
     // === Statements ===
 
-    fn parse_statement(&mut self) -> ParseResult<Stmt> {
+    pub fn parse_statement(&mut self) -> ParseResult<Stmt> {
         match self.current().kind {
             TokenKind::Let => self.parse_let(),
             TokenKind::If => self.parse_if(),
@@ -411,7 +392,7 @@ impl ParserStmt for Parser {
         Ok(Stmt::new(StmtKind::Print(exprs), start.merge(end)))
     }
 
-    fn parse_block(&mut self) -> ParseResult<Vec<Stmt>> {
+    pub(crate) fn parse_block(&mut self) -> ParseResult<Vec<Stmt>> {
         self.expect(TokenKind::LBrace)?;
 
         let mut stmts = Vec::new();

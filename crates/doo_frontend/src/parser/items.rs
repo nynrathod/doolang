@@ -1,39 +1,12 @@
-use super::expr::ParserExpr;
-use super::stmt::ParserStmt;
-use super::types::ParserTypes;
 use super::{ParseResult, Parser};
 use crate::ast::*;
 use crate::lexer::TokenKind;
 use doo_core::{CompilerError, ErrorCode};
 use std::collections::HashSet;
 
-/// Trait for parsing top-level items.
-pub trait ParserItems {
-    fn parse_item(&mut self) -> ParseResult<Item>;
-    fn parse_decorators(&mut self) -> ParseResult<Vec<Decorator>>;
-    fn parse_decorator(&mut self) -> ParseResult<Decorator>;
-    fn parse_const(&mut self) -> ParseResult<ConstDecl>;
-    fn parse_static(&mut self) -> ParseResult<StaticDecl>;
-    fn parse_function(&mut self) -> ParseResult<FunctionDecl>;
-    fn parse_function_name(&mut self) -> ParseResult<(String, Option<String>, Option<String>)>;
-    fn parse_type_params(&mut self) -> ParseResult<Vec<TypeParam>>;
-    fn parse_param_list(&mut self) -> ParseResult<Vec<(String, Option<TypeExpr>)>>;
-    fn parse_struct(&mut self) -> ParseResult<StructDecl>;
-    fn parse_field_decl(&mut self) -> ParseResult<FieldDecl>;
-    fn parse_impl(&mut self) -> ParseResult<ImplDecl>;
-    fn parse_enum(&mut self) -> ParseResult<EnumDecl>;
-    fn parse_variant_decl(&mut self) -> ParseResult<VariantDecl>;
-    fn parse_interface(&mut self) -> ParseResult<InterfaceDecl>;
-    fn parse_interface_method(&mut self) -> ParseResult<InterfaceMethodDecl>;
-    fn parse_import(&mut self) -> ParseResult<ImportDecl>;
-    fn parse_policy(&mut self) -> ParseResult<PolicyDecl>;
-    fn parse_policy_rule(&mut self) -> ParseResult<String>;
-    fn parse_policy_term(&mut self) -> ParseResult<String>;
-}
-
-impl ParserItems for Parser {
+impl Parser {
     /// Parse a top-level item.
-    fn parse_item(&mut self) -> ParseResult<Item> {
+    pub fn parse_item(&mut self) -> ParseResult<Item> {
         // Skip decorators and collect them
         let decorators = self.parse_decorators()?;
 
@@ -78,11 +51,6 @@ impl ParserItems for Parser {
                 drop(decorators);
                 Ok(Item::Import(self.parse_import()?))
             }
-            TokenKind::Policy => {
-                // Decorators not supported on policy blocks
-                drop(decorators);
-                Ok(Item::Policy(self.parse_policy()?))
-            }
             TokenKind::Impl => {
                 let mut impl_block = self.parse_impl()?;
                 impl_block.decorators = decorators;
@@ -99,7 +67,7 @@ impl ParserItems for Parser {
 
     // === Decorators ===
 
-    fn parse_decorators(&mut self) -> ParseResult<Vec<Decorator>> {
+    pub(crate) fn parse_decorators(&mut self) -> ParseResult<Vec<Decorator>> {
         let mut decorators = Vec::new();
 
         while self.check(TokenKind::At) {
@@ -164,7 +132,7 @@ impl ParserItems for Parser {
     ///   const MaxItems = 10
     ///   const FreePlan = "free"
     ///   const Regions = { "us": "us-west1" }
-    fn parse_const(&mut self) -> ParseResult<ConstDecl> {
+    pub(crate) fn parse_const(&mut self) -> ParseResult<ConstDecl> {
         let start = self.current_span();
         self.expect(TokenKind::Const)?;
 
@@ -215,7 +183,7 @@ impl ParserItems for Parser {
     ///   - Type annotation is required
     ///   - Set exactly once in main(), immutable after
     ///   - PascalCase = public, camelCase = private
-    fn parse_static(&mut self) -> ParseResult<StaticDecl> {
+    pub(crate) fn parse_static(&mut self) -> ParseResult<StaticDecl> {
         let start = self.current_span();
         self.expect(TokenKind::Static)?;
 
@@ -243,7 +211,7 @@ impl ParserItems for Parser {
         Ok(StaticDecl::new(name, type_expr, start.merge(end)))
     }
 
-    fn parse_function(&mut self) -> ParseResult<FunctionDecl> {
+    pub(crate) fn parse_function(&mut self) -> ParseResult<FunctionDecl> {
         let start = self.current_span();
 
         // Handle `async fn` — consume `async` if present
@@ -495,7 +463,7 @@ impl ParserItems for Parser {
         Ok(params)
     }
 
-    fn parse_struct(&mut self) -> ParseResult<StructDecl> {
+    pub(crate) fn parse_struct(&mut self) -> ParseResult<StructDecl> {
         let start = self.current_span();
         self.expect(TokenKind::Struct)?;
 
@@ -590,7 +558,7 @@ impl ParserItems for Parser {
         })
     }
 
-    fn parse_impl(&mut self) -> ParseResult<ImplDecl> {
+    pub(crate) fn parse_impl(&mut self) -> ParseResult<ImplDecl> {
         let start = self.current_span();
         self.expect(TokenKind::Impl)?;
 
@@ -670,7 +638,7 @@ impl ParserItems for Parser {
         })
     }
 
-    fn parse_enum(&mut self) -> ParseResult<EnumDecl> {
+    pub(crate) fn parse_enum(&mut self) -> ParseResult<EnumDecl> {
         let start = self.current_span();
         self.expect(TokenKind::Enum)?;
 
@@ -790,7 +758,7 @@ impl ParserItems for Parser {
         })
     }
 
-    fn parse_interface(&mut self) -> ParseResult<InterfaceDecl> {
+    pub(crate) fn parse_interface(&mut self) -> ParseResult<InterfaceDecl> {
         let start = self.current_span();
         self.expect(TokenKind::Interface)?;
 
@@ -891,7 +859,7 @@ impl ParserItems for Parser {
         })
     }
 
-    fn parse_import(&mut self) -> ParseResult<ImportDecl> {
+    pub(crate) fn parse_import(&mut self) -> ParseResult<ImportDecl> {
         let start = self.current_span();
         self.expect(TokenKind::Import)?;
 
@@ -973,86 +941,5 @@ impl ParserItems for Parser {
             wildcard: false,
             span: start.merge(end),
         })
-    }
-
-    // === RBAC Policy ===
-
-    /// Parse a `policy PolicyName for StructName { action: rule, ... }` block.
-    ///
-    /// Rules are parsed as free-form expressions and serialised to a canonical
-    /// string understood by the FFI runtime:
-    ///   - `public`           → "public"
-    ///   - `authenticated`    → "authenticated"
-    ///   - `own`              → "own"
-    ///   - `Role::Admin`      → "Admin"
-    ///   - `a | b`            → "a|b"
-    ///   - `a & b`            → "a&b"
-    fn parse_policy(&mut self) -> ParseResult<PolicyDecl> {
-        let start = self.current_span();
-        self.expect(TokenKind::Policy)?;
-
-        let name = self.expect_ident()?;
-        self.expect(TokenKind::For)?;
-        let for_struct = self.expect_ident()?;
-        self.expect(TokenKind::LBrace)?;
-
-        let mut rules: Vec<(String, String)> = Vec::new();
-        while !self.check(TokenKind::RBrace) && !self.is_at_end() {
-            let action = self.expect_ident()?;
-            self.expect(TokenKind::Colon)?;
-            let rule_str = self.parse_policy_rule()?;
-            rules.push((action, rule_str));
-            // Optional trailing comma
-            if self.check(TokenKind::Comma) {
-                self.advance();
-            }
-        }
-
-        self.expect(TokenKind::RBrace)?;
-        let end = self.prev_span();
-
-        let mut decl = PolicyDecl::new(name, for_struct, start.merge(end));
-        decl.rules = rules;
-        Ok(decl)
-    }
-
-    /// Parse a policy rule expression and serialise it to a canonical string.
-    ///
-    /// Grammar (simple recursive descent):
-    ///   rule  = term (('|' | '&') term)*
-    ///   term  = ident ('::' ident)?   -- e.g. Role::Admin, public, own, authenticated
-    fn parse_policy_rule(&mut self) -> ParseResult<String> {
-        // Canonical serialization (single source of truth):
-        // - no whitespace
-        // - Role::Variant lowered to "Variant" by parse_policy_term
-        // - operators preserved in source order
-        let mut result = self.parse_policy_term()?;
-
-        while self.check(TokenKind::Or) || self.check(TokenKind::And) {
-            if self.check(TokenKind::Or) {
-                self.advance();
-                result.push('|');
-            } else {
-                self.advance();
-                result.push('&');
-            }
-            result.push_str(&self.parse_policy_term()?);
-        }
-
-        Ok(result)
-    }
-
-    /// Parse a single policy term: an identifier, optionally qualified with `::`.
-    /// Examples: `public`, `authenticated`, `own`, `Role::Admin`, `Role::User`
-    fn parse_policy_term(&mut self) -> ParseResult<String> {
-        let first = self.expect_ident()?;
-        if self.check(TokenKind::ColonColon) {
-            self.advance();
-            let variant = self.expect_ident()?;
-            // Discard the enum name prefix — the FFI matches on variant name only
-            Ok(variant)
-        } else {
-            Ok(first)
-        }
     }
 }

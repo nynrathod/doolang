@@ -5,7 +5,7 @@
 use super::helpers::BraceType;
 use super::{ParseResult, Parser};
 use crate::ast::*;
-use crate::lexer::{Lexer, TokenKind};
+use crate::lexer::TokenKind;
 use doo_core::{CompilerError, ErrorCode, Span};
 
 impl Parser {
@@ -187,7 +187,6 @@ impl Parser {
                 BraceType::Object => self.parse_object_literal(span),
                 BraceType::Map => self.parse_map_literal(span),
                 BraceType::Block => self.parse_block_expression(span),
-                BraceType::RouteBlock => self.parse_route_block(span),
             },
             TokenKind::If => self.parse_if_expression(span),
             TokenKind::Match => self.parse_match_expression(span),
@@ -459,22 +458,6 @@ impl Parser {
         ))
     }
 
-    fn parse_route_block(&mut self, span: Span) -> ParseResult<Expr> {
-        self.expect(TokenKind::LBrace)?;
-        let mut routes = Vec::new();
-        while !self.check(TokenKind::RBrace) && !self.is_at_end() {
-            routes.push(self.parse_expression()?);
-            if !self.check(TokenKind::RBrace) {
-                self.expect(TokenKind::Comma)?;
-            }
-        }
-        let end_span = self.expect(TokenKind::RBrace)?;
-        Ok(Expr::new(
-            ExprKind::RouteBlock { routes },
-            span.merge(end_span),
-        ))
-    }
-
     pub fn parse_if_expression(&mut self, span: Span) -> ParseResult<Expr> {
         self.expect(TokenKind::If)?;
         let condition = self.parse_expression()?;
@@ -516,7 +499,7 @@ impl Parser {
         self.expect(TokenKind::LBrace)?;
         let mut arms = Vec::new();
         while !self.check(TokenKind::RBrace) && !self.is_at_end() {
-            let arm_span = self.current().span;
+            let arm_span = self.current_span();
             let pattern = self.parse_match_pattern()?;
 
             let guard = if self.match_token(TokenKind::If) {

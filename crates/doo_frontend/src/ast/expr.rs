@@ -28,7 +28,6 @@ impl Expr {
                 | ExprKind::Match { .. }
                 | ExprKind::Block(_, _)
                 | ExprKind::StructLit { .. }
-                | ExprKind::RouteBlock { .. }
                 | ExprKind::GoSpawn { .. }
                 | ExprKind::ScopeBlock { .. }
         )
@@ -159,11 +158,6 @@ pub enum ExprKind {
         return_type: Option<TypeExpr>,
         error_type: Option<TypeExpr>,
     },
-
-    // === HTTP Route Block (Framework domain - slated for removal) ===
-    /// Route block: `{ get("/path", Handler), post("/path", Handler) }`
-    /// Used in app.group() for inline route definitions
-    RouteBlock { routes: Vec<Expr> },
 
     // === Async & Concurrency ===
     /// Await expression: `await expr`
