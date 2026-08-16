@@ -67,9 +67,6 @@ fn keyword_map() -> &'static FxHashMap<&'static str, TokenKind> {
         // Self type
         map.insert("Self", TokenKind::Self_);
 
-        // RBAC
-        map.insert("policy", TokenKind::Policy);
-
         // Async & concurrency
         map.insert("async", TokenKind::Async);
         map.insert("await", TokenKind::Await);

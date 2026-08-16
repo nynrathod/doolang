@@ -112,10 +112,6 @@ pub enum TokenKind {
     /// `Self` (type reference, not the `self` parameter)
     Self_,
 
-    // === RBAC ===
-    /// `policy`
-    Policy,
-
     // === Async & Concurrency ===
     /// `async`
     Async,
@@ -283,7 +279,6 @@ impl TokenKind {
             Self::Match => Some("match"),
             Self::True => Some("true"),
             Self::False => Some("false"),
-            Self::Policy => Some("policy"),
             Self::Async => Some("async"),
             Self::Await => Some("await"),
             Self::Go => Some("go"),
@@ -389,7 +384,6 @@ impl TokenKind {
             Self::Match => "`match`",
             Self::True => "`true`",
             Self::False => "`false`",
-            Self::Policy => "`policy`",
             Self::Async => "`async`",
             Self::Await => "`await`",
             Self::Go => "`go`",
