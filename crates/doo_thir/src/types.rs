@@ -1,5 +1,6 @@
 //! THIR Type System Support and Core Types
 
+use crate::item::ThirItem;
 use doo_core::types::TypeId;
 
 /// How a method call was resolved during Type Check.
