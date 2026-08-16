@@ -25,31 +25,18 @@ pub mod visibility;
 pub use error_flow::{ErrorFlowChecker, ErrorFlowError, ErrorFlowErrorKind};
 pub use exhaustiveness::{ExhaustivenessChecker, ExhaustivenessError, ExhaustivenessErrorKind};
 pub use resolve::{
-    CircularImportDetector,
-    CircularImportError,
-    // Cross-module resolution
-    CrossModuleResolver,
-    ImportEdge,
-    ImportGraph,
-    ImportItemKind,
-    ImportKind,
-    ImportStack,
-    ImportedModule,
-    // Method resolution (TASK-017)
-    MethodResolver,
-    MethodSignature,
-    MethodTable,
-    NameResolver,
-    ResolveError,
-    ResolvedMethod,
-    ResolvedSymbol,
-    SymbolDef,
-    SymbolKindDef,
-    SymbolTable,
+    CircularImportDetector, CircularImportError, CrossModuleResolver, ImportEdge, ImportGraph,
+    ImportItemKind, ImportKind, ImportStack, ImportedModule, MethodResolver, MethodSignature,
+    MethodTable, NameResolver, ResolveError, ResolvedMethod, ResolvedSymbol, SymbolDef,
+    SymbolKindDef, SymbolTable,
 };
-pub use scope::{Scope, ScopeError, ScopeManager, Symbol, SymbolKind};
+// Phase 23: Module-level scope resolution
+pub use scope::{
+    ModuleImport, ModuleScope, Scope, ScopeError, ScopeItem, ScopeManager, ScopeResolver,
+    ScopeResolverError, Symbol, SymbolKind, Visibility,
+};
 pub use type_check::{TypeChecker, TypeError, TypeErrorKind};
 pub use visibility::{
-    check_field_visibility, visibility_from_flag, FieldVisibilityChecker, FieldVisibilityError,
-    Visibility, VisibilityChecker, VisibilityError,
+    check_field_visibility, is_public, visibility_from_flag, visibility_from_name,
+    FieldVisibilityChecker, FieldVisibilityError, VisibilityChecker, VisibilityError,
 };

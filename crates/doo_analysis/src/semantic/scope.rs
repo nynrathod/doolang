@@ -1,6 +1,14 @@
 //! Scope Management
 //!
-//! Hierarchical symbol tables for tracking declarations.
+//! Hierarchical symbol tables for tracking declarations within functions,
+//! plus module-level scope resolution across files with visibility enforcement.
+
+// Re-export module-level scope resolution types from doo_core.
+// These implement cross-module name resolution, import validation,
+// and case-based visibility enforcement (Core Decision §1–§3).
+pub use doo_core::scope::{
+    ModuleImport, ModuleScope, ScopeItem, ScopeResolver, ScopeResolverError, Visibility,
+};
 
 use doo_core::{types::TypeId, Span};
 use rustc_hash::FxHashMap;
