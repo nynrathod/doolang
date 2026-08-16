@@ -691,11 +691,6 @@ impl<'a> Monomorphizer<'a> {
                     self.process_stmt(s);
                 }
             }
-            HirExprKind::RouteBlock { routes } => {
-                for r in routes {
-                    self.process_expr(r);
-                }
-            }
             // For Local references, refresh the type_id from the current
             // binding scope. Type inference may have stamped the Local with
             // an abstract (TypeParam-laden) type that became concrete after
@@ -988,11 +983,6 @@ impl<'a> Monomorphizer<'a> {
             }
             HirExprKind::ScopeBlock { stmts } => {
                 self.substitute_stmts(stmts, type_map);
-            }
-            HirExprKind::RouteBlock { routes } => {
-                for r in routes {
-                    self.substitute_expr(r, type_map);
-                }
             }
             // Literals, locals, globals — no types to substitute
             HirExprKind::Const(_) | HirExprKind::Local { .. } | HirExprKind::Global { .. } => {}

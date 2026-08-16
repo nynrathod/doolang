@@ -290,11 +290,6 @@ impl<'a> DropInserter<'a> {
             HirExprKind::Spread(inner) => {
                 self.scan_expr_for_uses(inner);
             }
-            HirExprKind::RouteBlock { routes } => {
-                for route in routes {
-                    self.scan_expr_for_uses(route);
-                }
-            }
             HirExprKind::Cast { value, .. } => {
                 self.scan_expr_for_uses(value);
             }
@@ -434,11 +429,6 @@ impl<'a> DropInserter<'a> {
             }
             HirExprKind::Cast { value, .. } => {
                 self.scan_spawn_body_for_outer_uses(value);
-            }
-            HirExprKind::RouteBlock { routes } => {
-                for r in routes {
-                    self.scan_spawn_body_for_outer_uses(r);
-                }
             }
             HirExprKind::ScopeBlock { stmts } => {
                 for s in stmts {
@@ -629,11 +619,6 @@ impl<'a> DropInserter<'a> {
             }
             HirExprKind::Cast { value, .. } => {
                 self.scan_closure_body_for_outer_uses(value, closure_params);
-            }
-            HirExprKind::RouteBlock { routes } => {
-                for r in routes {
-                    self.scan_closure_body_for_outer_uses(r, closure_params);
-                }
             }
             HirExprKind::ScopeBlock { stmts } => {
                 for s in stmts {

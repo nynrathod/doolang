@@ -206,11 +206,7 @@ impl<'a> ExhaustivenessChecker<'a> {
         match item {
             HirItem::Const(_) | HirItem::Static(_) => {}
             HirItem::Function(func) => self.check_function(func),
-            HirItem::Struct(_)
-            | HirItem::Enum(_)
-            | HirItem::Import(_)
-            | HirItem::Policy(_)
-            | HirItem::Interface(_) => {}
+            HirItem::Struct(_) | HirItem::Enum(_) | HirItem::Import(_) | HirItem::Interface(_) => {}
         }
     }
 
@@ -502,11 +498,6 @@ impl<'a> ExhaustivenessChecker<'a> {
             }
             HirExprKind::Spread(inner) => {
                 self.check_expr(inner);
-            }
-            HirExprKind::RouteBlock { routes } => {
-                for route in routes {
-                    self.check_expr(route);
-                }
             }
             HirExprKind::Move(inner) | HirExprKind::Clone(inner) => {
                 self.check_expr(inner);

@@ -217,11 +217,6 @@ impl Lower {
             HirExprKind::Spread(inner) => {
                 self.substitute_local_in_expr(inner, old_name, new_name);
             }
-            HirExprKind::RouteBlock { routes } => {
-                for route in routes {
-                    self.substitute_local_in_expr(route, old_name, new_name);
-                }
-            }
             HirExprKind::If {
                 condition,
                 then_expr,

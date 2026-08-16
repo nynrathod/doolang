@@ -730,12 +730,6 @@ pub fn resolve_imports(
                 Item::Import(_) | Item::Statement(_) | Item::Impl(_) => {
                     // Don't re-export
                 }
-                Item::Policy(p) => {
-                    if !imported_names.contains(&p.name) {
-                        imported_names.insert(p.name.clone());
-                        result.items.push(item.clone());
-                    }
-                }
                 Item::Interface(i) => {
                     let is_wanted = import_all || requested.contains_key(&i.name);
                     if is_wanted && !imported_names.contains(&i.name) {
@@ -1149,12 +1143,6 @@ pub fn resolve_imports(
                 Item::Import(_) | Item::Statement(_) | Item::Impl(_) => {
                     // Don't re-export
                 }
-                Item::Policy(p) => {
-                    if !imported_names.contains(&p.name) {
-                        imported_names.insert(p.name.clone());
-                        result.items.push(item.clone());
-                    }
-                }
                 Item::Interface(i) => {
                     let is_wanted = import_all;
                     if is_wanted && !imported_names.contains(&i.name) {
@@ -1321,12 +1309,6 @@ pub fn resolve_imports(
                         }
                     }
                     Item::Import(_) | Item::Statement(_) | Item::Impl(_) => {}
-                    Item::Policy(p) => {
-                        if !imported_names.contains(&p.name) {
-                            imported_names.insert(p.name.clone());
-                            result.items.push(item.clone());
-                        }
-                    }
                     Item::Interface(i) => {
                         let is_wanted = import_all || requested.contains_key(&i.name);
                         if is_wanted && !imported_names.contains(&i.name) {

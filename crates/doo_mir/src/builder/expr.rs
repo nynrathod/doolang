@@ -2034,27 +2034,6 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             builder.build_expr(inner)
         }
 
-        HirExprKind::RouteBlock { routes } => {
-            // Route block is a collection of route expressions.
-            // Build each route (side effects for registering routes),
-            // and return an array of their results.
-            let elements: Vec<MirOperand> = routes
-                .iter()
-                .map(|r| builder.build_expr(r))
-                .collect();
-            let dest = builder.new_temp();
-            let span = builder.convert_span(expr.span);
-            builder.emit(
-                MirInstrKind::ArrayCreate {
-                    dest,
-                    elements,
-                    elem_type: doo_core::types::builtin::ANY,
-                },
-                span,
-            );
-            MirOperand::Temp(dest)
-        }
-
         HirExprKind::Cast { value, to_type } => {
             // Build the value and emit a cast instruction
             let val = builder.build_expr(value);

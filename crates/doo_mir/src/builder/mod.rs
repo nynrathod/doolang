@@ -430,17 +430,6 @@ impl<'a> MirBuilder<'a> {
                     };
                     program.interfaces.insert(sym(&i.name), mir_interface);
                 }
-                HirItem::Policy(p) => {
-                    // Serialise policy rules to a JSON string for the FFI runtime.
-                    // Format: {"create":"authenticated","read":"public",...}
-                    let mut map = serde_json::Map::new();
-                    for (action, rule) in &p.rules {
-                        map.insert(action.clone(), serde_json::Value::String(rule.clone()));
-                    }
-                    let json = serde_json::to_string(&serde_json::Value::Object(map))
-                        .unwrap_or_else(|_| "{}".to_string());
-                    program.policies.insert(sym(&p.for_struct), json);
-                }
                 HirItem::Function(_) | HirItem::Import(_) => {
                     // Functions built in second pass; imports are handled elsewhere
                 }

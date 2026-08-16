@@ -22,7 +22,6 @@ impl Lower {
             Item::Enum(e) => Some(HirItem::Enum(self.lower_enum(e))),
             Item::Interface(i) => Some(HirItem::Interface(self.lower_interface(i))),
             Item::Import(i) => Some(HirItem::Import(self.lower_import(i))),
-            Item::Policy(p) => Some(HirItem::Policy(self.lower_policy(p))),
             Item::Impl(impl_decl) => {
                 for method in &impl_decl.methods {
                     let hir_func = self.lower_function(method);
@@ -47,7 +46,6 @@ impl Lower {
             Item::Enum(e) => Some(HirItem::Enum(self.lower_enum_typed(e, registry))),
             Item::Interface(i) => Some(HirItem::Interface(self.lower_interface_typed(i, registry))),
             Item::Import(i) => Some(HirItem::Import(self.lower_import(i))),
-            Item::Policy(p) => Some(HirItem::Policy(self.lower_policy(p))),
             Item::Impl(impl_decl) => {
                 for method in &impl_decl.methods {
                     let hir_func = self.lower_function_typed(method, registry);
@@ -564,16 +562,6 @@ impl Lower {
             name: d.name.clone(),
             args: d.args.iter().map(|e| self.lower_expr(e)).collect(),
             span: d.span,
-        }
-    }
-
-    /// Lower a `PolicyDecl` to `HirPolicy`.
-    pub(crate) fn lower_policy(&mut self, p: &doo_frontend::ast::PolicyDecl) -> HirPolicy {
-        HirPolicy {
-            name: p.name.clone(),
-            for_struct: p.for_struct.clone(),
-            rules: p.rules.clone(),
-            span: p.span,
         }
     }
 }

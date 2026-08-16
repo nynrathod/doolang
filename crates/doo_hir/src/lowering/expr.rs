@@ -57,22 +57,6 @@ impl Lower {
                     return self.transform_route_with_middleware(object, method, args, expr.span);
                 }
 
-                // Transform app.group with route block
-                // app.group("/api", middleware, { routes }) -> expand routes with prefix and middleware
-                if method == "group" && args.len() >= 2 {
-                    if let Some(route_block_arg) = args.last() {
-                        if matches!(
-                            route_block_arg,
-                            Expr {
-                                kind: ExprKind::RouteBlock { .. },
-                                ..
-                            }
-                        ) {
-                            return self.transform_group_with_routes(object, args, expr.span);
-                        }
-                    }
-                }
-
                 HirExprKind::MethodCall {
                     receiver: Box::new(self.lower_expr(object)),
                     method: method.clone(),
@@ -243,10 +227,6 @@ impl Lower {
 
             ExprKind::Spread(inner) => HirExprKind::Spread(Box::new(self.lower_expr(inner))),
 
-            ExprKind::RouteBlock { routes } => HirExprKind::RouteBlock {
-                routes: routes.iter().map(|r| self.lower_expr(r)).collect(),
-            },
-
             // === Async & Concurrency ===
             ExprKind::Await(inner) => HirExprKind::Await(Box::new(self.lower_expr(inner))),
             ExprKind::GoSpawn { body } => HirExprKind::Spawn {
@@ -400,23 +380,6 @@ impl Lower {
                     return self.transform_route_with_middleware_typed(
                         object, method, args, expr.span, registry,
                     );
-                }
-
-                // Transform app.group with route block
-                if method == "group" && args.len() >= 2 {
-                    if let Some(route_block_arg) = args.last() {
-                        if matches!(
-                            route_block_arg,
-                            Expr {
-                                kind: ExprKind::RouteBlock { .. },
-                                ..
-                            }
-                        ) {
-                            return self.transform_group_with_routes_typed(
-                                object, args, expr.span, registry,
-                            );
-                        }
-                    }
                 }
 
                 HirExprKind::MethodCall {
@@ -685,13 +648,6 @@ impl Lower {
             ExprKind::Spread(inner) => {
                 HirExprKind::Spread(Box::new(self.lower_expr_typed(inner, registry)))
             }
-
-            ExprKind::RouteBlock { routes } => HirExprKind::RouteBlock {
-                routes: routes
-                    .iter()
-                    .map(|r| self.lower_expr_typed(r, registry))
-                    .collect(),
-            },
 
             // === Async & Concurrency ===
             ExprKind::Await(inner) => {

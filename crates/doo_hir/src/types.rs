@@ -200,12 +200,6 @@ pub enum HirExprKind {
         message: Box<HirExpr>,
     },
 
-    // === Route Block (for app.group() inline routes) ===
-    /// Collection of route definitions.
-    RouteBlock {
-        routes: Vec<HirExpr>,
-    },
-
     // === Ownership Annotations (filled by analysis) ===
     /// Move value.
     Move(Box<HirExpr>),
@@ -405,8 +399,6 @@ pub enum HirItem {
     Enum(HirEnum),
     Interface(HirInterface),
     Import(HirImport),
-    /// RBAC policy block.
-    Policy(HirPolicy),
 }
 
 /// Compile-time constant declaration.
@@ -435,20 +427,6 @@ pub struct HirStatic {
     pub name: String,
     pub is_public: bool,
     pub type_id: Option<TypeId>,
-    pub span: Span,
-}
-
-/// RBAC policy declaration.
-/// Produced by lowering `policy FooPolicy for Foo { ... }`.
-#[derive(Debug, Clone)]
-pub struct HirPolicy {
-    /// Policy name (e.g. "PostPolicy").
-    pub name: String,
-    /// Struct this policy guards (e.g. "Post").
-    pub for_struct: String,
-    /// CRUD + custom actions with serialised access rules.
-    /// e.g. `("create", "authenticated")`, `("update", "own|Admin")`
-    pub rules: Vec<(String, String)>,
     pub span: Span,
 }
 

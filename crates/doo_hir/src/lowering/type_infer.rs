@@ -590,10 +590,7 @@ impl Lower {
             }
 
             // Expressions that don't contain sub-expressions
-            HirExprKind::Const(_)
-            | HirExprKind::Local { .. }
-            | HirExprKind::Global { .. }
-            | HirExprKind::RouteBlock { .. } => {}
+            HirExprKind::Const(_) | HirExprKind::Local { .. } | HirExprKind::Global { .. } => {}
 
             _ => {}
         }

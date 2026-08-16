@@ -407,12 +407,6 @@ impl BorrowChecker {
                 self.check_expr(inner, false);
             }
 
-            HirExprKind::RouteBlock { routes } => {
-                for route in routes {
-                    self.check_expr(route, false);
-                }
-            }
-
             HirExprKind::Cast { value, .. } => {
                 self.check_expr(value, false);
             }

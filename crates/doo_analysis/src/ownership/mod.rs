@@ -467,11 +467,6 @@ impl OwnershipAnalyzer {
             HirExprKind::Spread(inner) => {
                 self.count_uses_in_expr(inner);
             }
-            HirExprKind::RouteBlock { routes } => {
-                for route in routes {
-                    self.count_uses_in_expr(route);
-                }
-            }
             HirExprKind::Cast { value, .. } => {
                 self.count_uses_in_expr(value);
             }
@@ -720,11 +715,6 @@ impl OwnershipAnalyzer {
             }
             HirExprKind::Spread(inner) => {
                 self.analyze_expr(inner);
-            }
-            HirExprKind::RouteBlock { routes } => {
-                for route in routes {
-                    self.analyze_expr(route);
-                }
             }
             HirExprKind::Cast { value, .. } => {
                 self.analyze_expr(value);

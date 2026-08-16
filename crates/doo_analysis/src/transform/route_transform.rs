@@ -181,13 +181,6 @@ fn try_expand_route_group(expr: &Expr) -> Option<Vec<Expr>> {
                 }
                 calls
             }
-            ExprKind::RouteBlock { routes } => {
-                // Handle the new RouteBlock syntax: { get(...), post(...) }
-                routes
-                    .iter()
-                    .filter_map(|r| extract_route_call(r))
-                    .collect()
-            }
             _ => {
                 if let Some(call) = extract_route_call(block) {
                     vec![call]

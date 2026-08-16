@@ -25,7 +25,6 @@ pub trait HirVisitor {
             HirItem::Struct(s) => self.visit_struct(s),
             HirItem::Enum(e) => self.visit_enum(e),
             HirItem::Import(i) => self.visit_import(i),
-            HirItem::Policy(_) => {}
             HirItem::Interface(_) => {}
         }
     }
@@ -226,11 +225,6 @@ pub trait HirVisitor {
             HirExprKind::Spread(inner) => {
                 self.visit_expr(inner);
             }
-            HirExprKind::RouteBlock { routes } => {
-                for route in routes {
-                    self.visit_expr(route);
-                }
-            }
             HirExprKind::Cast { value, .. } => {
                 self.visit_expr(value);
             }
@@ -281,7 +275,6 @@ pub trait HirVisitorMut {
             HirItem::Struct(s) => self.visit_struct_mut(s),
             HirItem::Enum(e) => self.visit_enum_mut(e),
             HirItem::Import(i) => self.visit_import_mut(i),
-            HirItem::Policy(_) => {}
             HirItem::Interface(_) => {}
         }
     }
@@ -468,11 +461,6 @@ pub trait HirVisitorMut {
             }
             HirExprKind::Spread(inner) => {
                 self.visit_expr_mut(inner);
-            }
-            HirExprKind::RouteBlock { routes } => {
-                for route in routes {
-                    self.visit_expr_mut(route);
-                }
             }
             HirExprKind::Cast { value, .. } => {
                 self.visit_expr_mut(value);

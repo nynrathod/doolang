@@ -645,11 +645,6 @@ impl<'a> FieldVisibilityChecker<'a> {
                     self.check_expr(p);
                 }
             }
-            HirExprKind::RouteBlock { routes } => {
-                for route in routes {
-                    self.check_expr(route);
-                }
-            }
             // Async & concurrency
             HirExprKind::Await(inner) | HirExprKind::Spawn { body: inner } => {
                 self.check_expr(inner);

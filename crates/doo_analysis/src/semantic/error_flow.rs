@@ -376,11 +376,6 @@ impl<'a> ErrorFlowChecker<'a> {
             HirExprKind::Move(inner) | HirExprKind::Clone(inner) | HirExprKind::Spread(inner) => {
                 self.check_expr(inner);
             }
-            HirExprKind::RouteBlock { routes } => {
-                for route in routes {
-                    self.check_expr(route);
-                }
-            }
             HirExprKind::Borrow { expr: inner, .. } => {
                 self.check_expr(inner);
             }

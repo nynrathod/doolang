@@ -519,9 +519,6 @@ fn extract_symbols_from_item(
         Item::Statement(_) => {
             // Top-level let bindings could be extracted later
         }
-        Item::Policy(_) => {
-            // Policy blocks are not exposed as LSP symbols
-        }
         Item::Interface(_) => {
             // Interface definitions are not exposed as LSP symbols
         }
