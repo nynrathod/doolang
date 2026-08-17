@@ -23,6 +23,8 @@ impl Lower {
                 // For field patterns, use the base object name
                 self.pattern_to_name(object)
             }
+            PatternKind::Or(_) => format!("__or_pat_{}", pattern.span.start),
+            PatternKind::Bind { name, .. } => name.clone(),
         }
     }
 
@@ -62,6 +64,18 @@ impl Lower {
                     pattern.span,
                 )
             }
+            PatternKind::Bind { name, .. } => {
+                // For let bindings, @ bindings just use the bound name
+                HirExpr::new(HirExprKind::Local { name: name.clone() }, pattern.span)
+            }
+            PatternKind::Or(patterns) => {
+                // Or patterns are not valid in let bindings, fallback to first pattern
+                if let Some(first) = patterns.first() {
+                    self.pattern_to_expr(first)
+                } else {
+                    HirExpr::new(HirExprKind::Const(ConstValue::Nil), pattern.span)
+                }
+            }
         }
     }
 
@@ -99,11 +113,11 @@ impl Lower {
 
     pub(crate) fn lower_match_pattern(&mut self, p: &ast::MatchPattern) -> HirMatchPattern {
         match p {
+            ast::MatchPattern::Wildcard => HirMatchPattern::Wildcard,
             ast::MatchPattern::Literal(e) => HirMatchPattern::Literal(Box::new(self.lower_expr(e))),
             ast::MatchPattern::Condition(e) => {
                 HirMatchPattern::Condition(Box::new(self.lower_expr(e)))
             }
-            ast::MatchPattern::Wildcard => HirMatchPattern::Wildcard,
             ast::MatchPattern::EnumVariant { enum_name, variant } => HirMatchPattern::EnumVariant {
                 enum_name: enum_name.clone(),
                 variant: variant.clone(),
@@ -122,7 +136,6 @@ impl Lower {
             }
         }
     }
-
     pub(crate) fn lower_match_pattern_typed(
         &mut self,
         p: &ast::MatchPattern,

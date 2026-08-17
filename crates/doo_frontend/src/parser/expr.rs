@@ -209,7 +209,7 @@ impl Parser {
         }
     }
 
-    /// Parse postfix operations (`.`, `()`, `[]`, `await`).
+    //// Parse postfix operations (`.`, `()`, `[]`, `await`, `?`, `!`, `??`).
     fn parse_postfix(&mut self, mut expr: Expr) -> ParseResult<Expr> {
         loop {
             match self.current().kind {
@@ -269,6 +269,55 @@ impl Parser {
                         ExprKind::Index {
                             object: Box::new(expr),
                             index: Box::new(index),
+                        },
+                        span,
+                    );
+                }
+                // `?` operator: unwrap or propagate error
+                TokenKind::Question => {
+                    let span = expr.span.merge(self.current().span);
+                    self.advance();
+                    expr = Expr::new(ExprKind::Try(Box::new(expr)), span);
+                }
+                // `!` operator: unwrap or panic
+                TokenKind::Bang => {
+                    let span = expr.span.merge(self.current().span);
+                    self.advance();
+                    // Check for optional message: `expr! "message"`
+                    let message =
+                        if matches!(self.current().kind, TokenKind::String | TokenKind::Ident) {
+                            // Only consume if it's a string literal or an identifier
+                            if matches!(self.current().kind, TokenKind::String) {
+                                Box::new(self.parse_expression()?)
+                            } else {
+                                // It's an identifier, could be a variable. Parse as expr.
+                                Box::new(self.parse_expression()?)
+                            }
+                        } else {
+                            // Default message if none provided
+                            Box::new(Expr::new(
+                                ExprKind::StrLit("unwrap of None/Err".to_string()),
+                                span,
+                            ))
+                        };
+                    expr = Expr::new(
+                        ExprKind::UnwrapOrPanic {
+                            expr: Box::new(expr),
+                            message,
+                        },
+                        span,
+                    );
+                }
+                // `??` operator: null coalescing
+                TokenKind::QuestionQuestion => {
+                    let span = expr.span.merge(self.current().span);
+                    self.advance();
+                    let rhs = self.parse_unary()?;
+                    expr = Expr::new(
+                        ExprKind::Binary {
+                            left: Box::new(expr),
+                            op: BinaryOp::NullCoalesce,
+                            right: Box::new(rhs),
                         },
                         span,
                     );

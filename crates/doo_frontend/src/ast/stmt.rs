@@ -104,6 +104,24 @@ pub enum StmtKind {
     EnumDecl(EnumDecl),
 }
 
+/// For loop: `for x in iter { body }` or `for cond { body }`
+#[derive(Debug, Clone)]
+pub struct ForStmt {
+    /// `Some(pattern)` for `for x in iter`, `None` for `for cond { }`
+    pub pattern: Option<Pattern>,
+    /// `Some(iterable)` for `for x in iter`, `None` for `for cond { }`
+    pub iterable: Option<Expr>,
+    /// `Some(cond)` for `for cond { }`, `None` for standard for-in
+    pub condition: Option<Expr>,
+    /// The loop body
+    pub body: Vec<Stmt>,
+    /// `if cond` guard: `for x in iter if x.active { }`
+    pub filter: Option<Expr>,
+    /// `take N` limit: `for x in iter take 10 { }`
+    pub take: Option<Expr>,
+    pub span: Span,
+}
+
 impl StmtKind {
     /// Whether this statement kind requires a trailing semicolon (Rust-like rules).
     /// Statements ending with `}` do NOT require `;`.

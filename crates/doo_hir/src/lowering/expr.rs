@@ -764,4 +764,61 @@ impl Lower {
 
         out
     }
+
+    /// Lower a match expression to HIR.
+    ///
+    /// Desugars scrutinee-less matches to if/else chains, and OR patterns
+    /// to duplicated arms.
+    pub(crate) fn lower_match(&mut self, expr: &Expr) -> HirExpr {
+        if let ExprKind::Match { values, arms } = &expr.kind {
+            // Scrutinee-less match: `match { cond => body }`
+            if values.is_empty() {
+                let mut else_expr = HirExpr::new(HirExprKind::Const(ConstValue::Nil), expr.span);
+                for arm in arms.iter().rev() {
+                    if let Some(guard) = &arm.guard {
+                        let cond = self.lower_expr(guard);
+                        let body = self.lower_expr(&arm.body);
+                        else_expr = HirExpr::new(
+                            HirExprKind::If {
+                                condition: Box::new(cond),
+                                then_expr: Box::new(body),
+                                else_expr: Some(Box::new(else_expr)),
+                            },
+                            expr.span,
+                        );
+                    } else {
+                        // Wildcard arm `_ => body`
+                        else_expr = self.lower_expr(&arm.body);
+                    }
+                }
+                return else_expr;
+            }
+
+            // Standard match with scrutinees
+            let hir_values: Vec<HirExpr> = values.iter().map(|v| self.lower_expr(v)).collect();
+            let mut hir_arms = Vec::new();
+
+            for arm in arms {
+                let pattern = self.lower_match_pattern(&arm.pattern);
+                let guard = arm.guard.as_ref().map(|g| self.lower_expr(g));
+                let body = self.lower_expr(&arm.body);
+                hir_arms.push(HirMatchArm {
+                    pattern,
+                    guard,
+                    body,
+                    span: arm.span,
+                });
+            }
+
+            HirExpr::new(
+                HirExprKind::Match {
+                    values: hir_values,
+                    arms: hir_arms,
+                },
+                expr.span,
+            )
+        } else {
+            unreachable!("lower_match called on non-match expression")
+        }
+    }
 }
