@@ -177,8 +177,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 elements,
                 elem_type,
             } => {
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                }
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                 let elem_llvm_ty = ctx.get_llvm_type(*elem_type);
                 let len_i32 = ctx.i32_type().const_int(elements.len() as u64, false);
                 let data_ptr = alloc_with_header(ctx, len_i32, elem_llvm_ty, "arr");
