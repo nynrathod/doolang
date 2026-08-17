@@ -11,12 +11,10 @@ use crate::context::CodegenContext;
 use crate::layout::{alloc_with_header, get_array_length_from_data, int_to_i64};
 use crate::utils::{emit_eq, operand_to_value};
 use doo_core::constants::ffi_names;
-use doo_core::doo_debug;
 use doo_mir::sym::resolve;
 use doo_mir::{MirInstr, MirInstrKind, MirOperand};
 use inkwell::types::BasicType;
 use inkwell::values::{BasicValueEnum, IntValue, PointerValue};
-use inkwell::AddressSpace;
 use inkwell::IntPredicate;
 
 /// Array instruction handler.

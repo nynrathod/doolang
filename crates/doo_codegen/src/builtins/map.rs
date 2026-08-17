@@ -7,9 +7,8 @@ use crate::context::CodegenContext;
 use crate::utils::emit_eq;
 use doo_core::constants::ffi_names;
 use doo_core::types::{TypeId, TypeKind};
-use inkwell::types::BasicType;
 use inkwell::values::{BasicValueEnum, PointerValue};
-use inkwell::{AddressSpace, IntPredicate};
+use inkwell::IntPredicate;
 
 pub struct MapBuiltins;
 
@@ -125,11 +124,7 @@ impl MapBuiltins {
         let out_data = alloc_with_header(ctx, len_i32, key_llvm, "map_keys")?;
         let out_base = ctx
             .builder
-            .build_pointer_cast(
-                out_data,
-                ctx.ptr_type(),
-                "keys_cast",
-            )
+            .build_pointer_cast(out_data, ctx.ptr_type(), "keys_cast")
             .ok()?;
 
         let len_i64 = ctx
@@ -140,8 +135,7 @@ impl MapBuiltins {
         let loop_bb = ctx.context.append_basic_block(current_fn, "keys_loop");
         let body_bb = ctx.context.append_basic_block(current_fn, "keys_body");
         let end_bb = ctx.context.append_basic_block(current_fn, "keys_end");
-        let idx_alloca = ctx
-            .alloca_in_entry_block(ctx.context.i64_type(), "idx")?;
+        let idx_alloca = ctx.alloca_in_entry_block(ctx.context.i64_type(), "idx")?;
         ctx.builder
             .build_store(idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
@@ -207,11 +201,7 @@ impl MapBuiltins {
         let out_data = alloc_with_header(ctx, len_i32, val_llvm, "map_values")?;
         let out_base = ctx
             .builder
-            .build_pointer_cast(
-                out_data,
-                ctx.ptr_type(),
-                "values_cast",
-            )
+            .build_pointer_cast(out_data, ctx.ptr_type(), "values_cast")
             .ok()?;
 
         let len_i64 = ctx
@@ -222,8 +212,7 @@ impl MapBuiltins {
         let loop_bb = ctx.context.append_basic_block(current_fn, "values_loop");
         let body_bb = ctx.context.append_basic_block(current_fn, "values_body");
         let end_bb = ctx.context.append_basic_block(current_fn, "values_end");
-        let idx_alloca = ctx
-            .alloca_in_entry_block(ctx.context.i64_type(), "idx")?;
+        let idx_alloca = ctx.alloca_in_entry_block(ctx.context.i64_type(), "idx")?;
         ctx.builder
             .build_store(idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
@@ -315,18 +304,15 @@ impl MapBuiltins {
             .append_basic_block(current_fn, "map_remove_not_found");
         let end_bb = ctx.context.append_basic_block(current_fn, "map_remove_end");
 
-        let idx_alloca = ctx
-            .alloca_in_entry_block(ctx.context.i64_type(), "idx")?;
+        let idx_alloca = ctx.alloca_in_entry_block(ctx.context.i64_type(), "idx")?;
         ctx.builder
             .build_store(idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
-        let found_idx_alloca = ctx
-            .alloca_in_entry_block(ctx.context.i64_type(), "found_idx")?;
+        let found_idx_alloca = ctx.alloca_in_entry_block(ctx.context.i64_type(), "found_idx")?;
         ctx.builder
             .build_store(found_idx_alloca, ctx.context.i64_type().const_zero())
             .ok()?;
-        let found_flag_alloca = ctx
-            .alloca_in_entry_block(ctx.context.bool_type(), "found")?;
+        let found_flag_alloca = ctx.alloca_in_entry_block(ctx.context.bool_type(), "found")?;
         ctx.builder
             .build_store(found_flag_alloca, ctx.context.bool_type().const_zero())
             .ok()?;
@@ -636,7 +622,6 @@ impl MapBuiltins {
 // =============================================================================
 
 use crate::layout::{
-    alloc_with_header, data_ptr_from_header,
-    header_ptr_from_data, load_len_i32, set_map_length_from_data,
-    store_len_at_header,
+    alloc_with_header, data_ptr_from_header, header_ptr_from_data, load_len_i32,
+    set_map_length_from_data, store_len_at_header,
 };

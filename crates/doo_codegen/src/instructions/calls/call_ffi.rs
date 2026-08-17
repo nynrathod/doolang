@@ -1,10 +1,9 @@
 //! FFI call implementation — signatures, declarations, and call emission.
 //!
-//! This module is **completely package-agnostic**. All package-specific behavior
-//! (HTTP handler wrappers, WS event wrappers, DB enum conversion, middleware)
-//! is handled by the `packages/` dispatch system.
-//!
-//! Adding a new FFI package requires ZERO changes here.
+//! This module is completely package-agnostic. All @extern functions are
+//! called by name through the generic FFI path. The compiler never matches
+//! on framework symbols like "doo_http" — it resolves function signatures
+//! from @extern declarations via the type signature registry.
 
 use super::call_utils::operand_to_value;
 use crate::context::CodegenContext;
@@ -17,30 +16,23 @@ use inkwell::module::Linkage;
 use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::AddressSpace;
+
 // ============================================================================
 // FFI Call Implementation
 // ============================================================================
 
 /// FFI function signature: (param_types, return_type, is_variadic)
-/// - param_types: slice of ("ptr" | "i64" | "i32" | "f64" | "void")
-/// - return_type: "ptr" | "i64" | "i32" | "f64" | "void"
-/// - is_variadic: whether function accepts variable arguments
 type FfiSignature = (&'static [&'static str], &'static str, bool);
 
 /// Get FFI function signature for C stdlib and runtime intrinsic functions.
 ///
-/// **Package-Ready Design**: This table ONLY contains signatures for functions
-/// that have NO Doo `@extern` declaration (C stdlib, Doo runtime allocator).
-/// All Doo-declared FFI functions (http, db, auth, json, file, ws, process,
-/// config, and any third-party packages) get their signatures from the
-/// type signature registry populated from MIR FfiLinkage.
-///
-/// A third-party package author NEVER needs to add entries here.
+/// This table ONLY contains signatures for functions that have NO Doo
+/// `@extern` declaration (C stdlib, Doo runtime allocator). All Doo-declared
+/// FFI functions get their signatures from the type signature registry
+/// populated from MIR FfiLinkage.
 fn get_ffi_signature(symbol: &str) -> Option<FfiSignature> {
     match symbol {
-        // =====================================================================
-        // C Standard Library — no Doo declarations, need hardcoded signatures
-        // =====================================================================
+        // C Standard Library
         ffi_names::MALLOC => Some((&["i64"], "ptr", false)),
         ffi_names::FREE => Some((&["ptr"], "void", false)),
         ffi_names::REALLOC => Some((&["ptr", "i64"], "ptr", false)),
@@ -50,33 +42,23 @@ fn get_ffi_signature(symbol: &str) -> Option<FfiSignature> {
         ffi_names::STRCAT => Some((&["ptr", "ptr"], "ptr", false)),
         ffi_names::MEMCPY => Some((&["ptr", "ptr", "i64"], "ptr", false)),
         ffi_names::MEMSET => Some((&["ptr", "i32", "i64"], "ptr", false)),
-        ffi_names::PRINTF => Some((&["ptr"], "i32", true)), // variadic
+        ffi_names::PRINTF => Some((&["ptr"], "i32", true)),
         ffi_names::SNPRINTF => Some((&["ptr", "i64", "ptr"], "i32", true)),
         ffi_names::PUTS => Some((&["ptr"], "i32", false)),
         ffi_names::PUTCHAR => Some((&["i32"], "i32", false)),
 
-        // =====================================================================
-        // Doo Runtime Allocator — compiler-internal, no @extern declarations
-        // =====================================================================
+        // Doo Runtime Allocator
         ffi_names::DOO_ALLOC => Some((&["i64"], "ptr", false)),
         ffi_names::DOO_FREE => Some((&["ptr"], "void", false)),
         ffi_names::DOO_REALLOC => Some((&["ptr", "i64"], "ptr", false)),
 
-        // =====================================================================
-        // Math intrinsics — linked from libm, no @extern declarations
-        // =====================================================================
+        // Math intrinsics
         ffi_names::FABS => Some((&["f64"], "f64", false)),
         ffi_names::FLOOR => Some((&["f64"], "f64", false)),
         ffi_names::CEIL => Some((&["f64"], "f64", false)),
         ffi_names::ROUND => Some((&["f64"], "f64", false)),
         ffi_names::SQRT => Some((&["f64"], "f64", false)),
 
-        // =====================================================================
-        // All other FFI functions (doo_http_*, doo_db_*, doo_auth_*, doo_json_*,
-        // doo_file_*, doo_ws_*, doo_process_*, doo_config_*, and any third-party
-        // packages) are resolved via the type signature registry from their
-        // @extern Doo declarations. No entries needed here.
-        // =====================================================================
         _ => None,
     }
 }
@@ -91,61 +73,50 @@ fn ffi_type_to_llvm<'ctx>(
         "i64" => Some(ctx.i64_type().into()),
         "i32" => Some(ctx.i32_type().into()),
         "f64" => Some(ctx.f64_type().into()),
-        "void" => None, // void is not a BasicType
-        // SimpleResult: { i64 tag, ptr value } - returned by value for Result types
-        // Using ptr for the payload field preserves pointer provenance through LLVM optimizations.
-        // This avoids ptrtoint/inttoptr round-trips that lose provenance under O3 alias analysis.
+        "void" => None,
         "simple_result" => {
             let struct_ty = ctx
                 .context
                 .struct_type(&[ctx.i64_type().into(), ctx.ptr_type().into()], false);
             Some(struct_ty.into())
         }
-        _ => Some(ctx.i64_type().into()), // default to i64
+        _ => Some(ctx.i64_type().into()),
     }
 }
 
 /// Convert a Doo TypeId to the corresponding FFI type string.
-/// This maps Doo's type system to the C ABI types used at the FFI boundary.
 fn type_id_to_ffi_str(type_id: TypeId) -> &'static str {
     if type_id == builtin::INT {
         "i64"
     } else if type_id == builtin::FLOAT {
         "f64"
     } else if type_id == builtin::BOOL {
-        "i32" // C ABI uses i32 for bools
+        "i32"
     } else if type_id == builtin::VOID {
         "void"
     } else {
-        // All other types (Str, structs, arrays, maps, enums, Any, etc.)
-        // are passed as pointers at the FFI boundary
         "ptr"
     }
 }
 
 /// Declare an FFI function with proper signature and external linkage.
 ///
-/// Resolution order (package-ready):
-/// 1. **Type signature registry** — populated from MIR FfiLinkage (Doo declarations).
-///    This is the primary path and handles ALL @extern functions including third-party packages.
-/// 2. **Hardcoded table** — `get_ffi_signature()` for C stdlib/runtime functions
-///    (malloc, free, printf, etc.) that have no Doo `@extern` declaration.
-/// 3. **Fallback** — all-pointer inference (ptr params, ptr return) for unknown symbols.
+/// Resolution order:
+/// 1. Type signature registry — from MIR FfiLinkage (Doo @extern declarations)
+/// 2. Hardcoded table — C stdlib/runtime functions without @extern
+/// 3. Fallback — all-pointer inference for unknown symbols
 pub(crate) fn declare_ffi_function<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     symbol: &str,
     arg_count: usize,
 ) -> FunctionValue<'ctx> {
-    // Check if already declared
     if let Some(func) = ctx.get_function(symbol) {
         return func;
     }
 
     let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
 
-    // === Priority 1: Type signature registry (from Doo @extern declarations) ===
-    // This is the package-ready path — works for ALL FFI functions with Doo declarations,
-    // including third-party packages. No hardcoded table entry needed.
+    // Priority 1: Type signature registry (from Doo @extern declarations)
     if let Some((param_type_ids, return_type_id, is_result)) =
         ctx.ffi_type_signatures.get(symbol).cloned()
     {
@@ -155,12 +126,11 @@ pub(crate) fn declare_ffi_function<'ctx>(
             .collect();
 
         let ret = if is_result {
-            // Result-returning FFI functions return *mut SimpleResult (pointer)
             Some(ptr_ty.into())
         } else {
             match return_type_id {
                 Some(tid) => ffi_type_to_llvm(ctx, type_id_to_ffi_str(tid)),
-                None => None, // void
+                None => None,
             }
         };
 
@@ -177,7 +147,7 @@ pub(crate) fn declare_ffi_function<'ctx>(
         return func;
     }
 
-    // === Priority 2: Hardcoded table (C stdlib / Doo runtime intrinsics only) ===
+    // Priority 2: Hardcoded table (C stdlib / Doo runtime intrinsics)
     let (param_types_vec, return_type, is_variadic) =
         if let Some((param_strs, ret_str, variadic)) = get_ffi_signature(symbol) {
             let params: Vec<BasicTypeEnum> = param_strs
@@ -187,12 +157,11 @@ pub(crate) fn declare_ffi_function<'ctx>(
             let ret = ffi_type_to_llvm(ctx, ret_str);
             (params, ret, variadic)
         } else {
-            // === Priority 3: Fallback — all-pointer inference ===
+            // Priority 3: Fallback — all-pointer inference
             let params: Vec<BasicTypeEnum> = (0..arg_count).map(|_| ptr_ty.into()).collect();
             (params, Some(ptr_ty.into()), false)
         };
 
-    // Build function type
     let param_meta: Vec<inkwell::types::BasicMetadataTypeEnum> =
         param_types_vec.iter().map(|t| (*t).into()).collect();
 
@@ -201,7 +170,6 @@ pub(crate) fn declare_ffi_function<'ctx>(
         None => ctx.context.void_type().fn_type(&param_meta, is_variadic),
     };
 
-    // Declare with external linkage for FFI
     let func = ctx
         .module
         .add_function(symbol, fn_type, Some(Linkage::External));
@@ -216,7 +184,6 @@ fn convert_to_ffi_arg<'ctx>(
 ) -> inkwell::values::BasicMetadataValueEnum<'ctx> {
     match expected_type {
         Some("i32") => {
-            // Convert to i32 if needed (i64→i32 truncate, i8→i32 zero-extend for Bool)
             if val.is_int_value() {
                 let int_val = val.into_int_value();
                 let bit_width = int_val.get_type().get_bit_width();
@@ -227,7 +194,6 @@ fn convert_to_ffi_arg<'ctx>(
                         .unwrap();
                     return truncated.into();
                 } else if bit_width < 32 {
-                    // Bool (i8) → i32: zero-extend for C ABI compatibility
                     let extended = ctx
                         .builder
                         .build_int_z_extend(int_val, ctx.i32_type(), "bool_to_i32")
@@ -238,7 +204,6 @@ fn convert_to_ffi_arg<'ctx>(
             val.into()
         }
         Some("f64") => {
-            // Ensure float type
             if val.is_int_value() {
                 let int_val = val.into_int_value();
                 let float_val = ctx
@@ -250,31 +215,24 @@ fn convert_to_ffi_arg<'ctx>(
             val.into()
         }
         Some("ptr") => {
-            // Convert non-pointer types to string pointers
             if val.is_int_value() {
                 let int_val = val.into_int_value();
                 let ptr_type = ctx.ptr_type();
 
-                // Check if this is a null/nil value (i64 0 from MirConst::Nil)
-                // In that case, pass a null pointer directly instead of stringifying
                 if let Some(const_val) = int_val.get_zero_extended_constant() {
                     if const_val == 0 {
                         return ptr_type.const_null().into();
                     }
                 }
 
-                // Convert i64 to string using sprintf
-                // Allocate buffer for max int64 string: "-9223372036854775808" (20 chars + null)
                 let i8_type = ctx.context.i8_type();
                 let i64_type = ctx.i64_type();
 
-                // Allocate 24 bytes for safety
                 let buffer = ctx
                     .builder
                     .build_array_alloca(i8_type, i64_type.const_int(24, false), "int_to_str_buf")
                     .unwrap();
 
-                // Get or declare sprintf
                 let sprintf = ctx
                     .module
                     .get_function(ffi_names::SPRINTF)
@@ -284,10 +242,7 @@ fn convert_to_ffi_arg<'ctx>(
                         ctx.module.add_function(ffi_names::SPRINTF, fn_type, None)
                     });
 
-                // Format string: "%lld"
                 let fmt = ctx.const_string("%lld");
-
-                // Call sprintf(buffer, "%lld", value)
                 let int_val = val.into_int_value();
                 ctx.builder
                     .build_call(
@@ -299,7 +254,6 @@ fn convert_to_ffi_arg<'ctx>(
 
                 return buffer.into();
             } else if val.is_float_value() {
-                // Float → string: use doo_format_float (ryu) for clean formatting
                 let ptr_type = ctx.ptr_type();
                 let f64_type = ctx.f64_type();
                 let format_fn = ctx
@@ -322,8 +276,6 @@ fn convert_to_ffi_arg<'ctx>(
                 }
                 return val.into();
             } else if val.is_struct_value() {
-                // Struct value (e.g., enum { i32, ptr }) needs to be boxed to pointer
-                // This handles single enum values passed to FFI functions like doo_db_raw_param
                 let struct_val = val.into_struct_value();
                 let alloca = ctx
                     .alloca_in_entry_block(struct_val.get_type(), "enum_box")
@@ -331,7 +283,6 @@ fn convert_to_ffi_arg<'ctx>(
                 ctx.builder.build_store(alloca, struct_val).ok();
                 return alloca.into();
             }
-            // Already a pointer - pass through
             val.into()
         }
         _ => val.into(),
@@ -340,29 +291,19 @@ fn convert_to_ffi_arg<'ctx>(
 
 /// Emit an FFI call with proper type handling.
 ///
-/// This function is **completely package-agnostic**. All package-specific behavior
-/// is delegated to `crate::packages` dispatch:
-/// - **Pre-call hooks**: metadata registration, middleware setup (HTTP), etc.
-/// - **FuncRef wrapping**: HTTP handler wrappers, WS event wrappers, etc.
-/// - **Arg conversion**: DB enum→JSON, etc.
-///
-/// Adding a new FFI package requires ZERO changes here.
+/// All @extern functions are called by name through this single generic path.
+/// FuncRef arguments are passed as raw function pointers — the FFI crate must
+/// accept `extern "C" fn(...)`.
 pub(crate) fn emit_ffi_call<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     dest: Option<&str>,
     symbol: &str,
     args: &[MirOperand],
 ) -> Option<BasicValueEnum<'ctx>> {
-    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-    }
+    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
 
-    // Declare FFI function if not already declared
     let func = declare_ffi_function(ctx, symbol, args.len());
 
-    // Get expected param types from signature (for argument conversion).
-    // Priority 1: Type signature registry (from Doo @extern declarations — package-ready)
-    // Priority 2: Hardcoded table (C stdlib / runtime intrinsics)
-    // Priority 3: No type info (fall through to default conversion)
     let expected_types: Vec<Option<&str>> =
         if let Some((param_type_ids, _, _)) = ctx.ffi_type_signatures.get(symbol) {
             param_type_ids
@@ -375,37 +316,15 @@ pub(crate) fn emit_ffi_call<'ctx>(
             args.iter().map(|_| None).collect()
         };
 
-    // ======================================================================
-    // Package dispatch: pre-call hooks
-    // ======================================================================
-    // Delegates to the appropriate package module based on library name.
-    // Each package handles its own setup (metadata, middleware, etc.).
-    // Unknown packages: no-op.
-    let library = crate::packages::resolve_library(ctx, symbol);
-    crate::packages::pre_call(ctx, &library, symbol, args);
-
-    // ======================================================================
-    // Convert arguments — generic with package dispatch for specials
-    // ======================================================================
     let ptr_type = ctx.context.ptr_type(AddressSpace::default());
     let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> = Vec::with_capacity(args.len());
 
     for (i, a) in args.iter().enumerate() {
-        // FuncRef: generate callback wrapper via package dispatch
+        // FuncRef: pass the raw function pointer directly.
+        // Third-party FFI crates must accept extern "C" fn(...).
         if let MirOperand::FuncRef(func_name) = a {
             let func_name_str = resolve(*func_name);
 
-            // Ask the package for a specialized wrapper
-            // (HTTP → handler wrapper, WS → event wrapper, etc.)
-            if let Some(wrapper) =
-                crate::packages::wrap_func_ref(ctx, &library, symbol, &func_name_str, args)
-            {
-                arg_vals.push(wrapper.as_global_value().as_pointer_value().into());
-                continue;
-            }
-
-            // Generic passthrough: raw function pointer for unknown packages.
-            // Third-party FFI crate must accept `extern "C" fn(...)`.
             if let Some(user_fn) = ctx.get_function(&func_name_str) {
                 arg_vals.push(user_fn.as_global_value().as_pointer_value().into());
             } else {
@@ -414,14 +333,7 @@ pub(crate) fn emit_ffi_call<'ctx>(
             continue;
         }
 
-        // Package-specific argument conversion
-        // (e.g., DB enum→JSON for doo_db_raw_param)
-        if let Some(converted) = crate::packages::convert_arg(ctx, &library, symbol, i, a) {
-            arg_vals.push(converted);
-            continue;
-        }
-
-        // Standard argument conversion (type coercion to FFI types)
+        // Standard argument conversion with type coercion to FFI types
         if let Some(val) = operand_to_value(ctx, a) {
             let expected = expected_types.get(i).copied().flatten();
             arg_vals.push(convert_to_ffi_arg(ctx, val, expected));
