@@ -1,162 +1,181 @@
-//! Type System Interface
+//! Type Translation — MIR types to LLVM types.
 //!
-//! Centralized Doo type to LLVM type mapping.
-//! Single source of truth for type conversions.
+//! Single source of truth for mapping Doo's type system to LLVM IR types.
+//! All codegen passes use `mir_to_llvm` to get the LLVM representation of a type.
 
-use inkwell::context::Context;
-use inkwell::types::{BasicType, BasicTypeEnum, StructType};
+use crate::context::CodegenContext;
+use doo_mir::types::MirType;
+use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::AddressSpace;
-use doo_core::types::{TypeId, builtin};
 
-/// Type mapper - converts Doo types to LLVM types.
-pub struct TypeMapper<'ctx> {
-    context: &'ctx Context,
-}
-
-impl<'ctx> TypeMapper<'ctx> {
-    /// Create a new type mapper.
-    pub fn new(context: &'ctx Context) -> Self {
-        Self { context }
-    }
-
-    /// Map TypeId to LLVM BasicTypeEnum.
-    pub fn map_type(&self, type_id: TypeId) -> BasicTypeEnum<'ctx> {
-        // Use builtin constants for comparison
-        if type_id == builtin::INT {
-            return self.context.i64_type().into();
+/// Translate a MIR type to its LLVM IR type representation.
+///
+/// Returns `None` for `Void` and `Never` since they don't have a storable
+/// `BasicTypeEnum` representation (void is only valid as a function return type).
+pub fn mir_to_llvm<'ctx>(ty: &MirType, ctx: &CodegenContext<'ctx>) -> Option<BasicTypeEnum<'ctx>> {
+    match ty {
+        MirType::Int => Some(ctx.context.i64_type().into()),
+        MirType::Float => Some(ctx.context.f64_type().into()),
+        MirType::Bool => Some(ctx.context.bool_type().into()),
+        MirType::Char => Some(ctx.context.i32_type().into()),
+        MirType::Str => {
+            // Fat string: { i8*, i64 }
+            let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+            Some(
+                ctx.context
+                    .struct_type(&[ptr_ty.into(), ctx.context.i64_type().into()], false)
+                    .into(),
+            )
         }
-        if type_id == builtin::FLOAT {
-            return self.context.f64_type().into();
+        MirType::Void | MirType::Never => None,
+
+        MirType::Ptr(inner) => {
+            // Raw pointer — always i8* at LLVM level
+            let _ = mir_to_llvm(inner, ctx);
+            Some(ctx.context.ptr_type(AddressSpace::default()).into())
         }
-        if type_id == builtin::BOOL {
-            // Use i8 (not i1) for Bool — C ABI compatible
-            return self.context.i8_type().into();
+
+        MirType::Array(elem_ty) => {
+            // Array: { i64 len, i64 cap, ptr data }
+            let elem_llvm = mir_to_llvm(elem_ty, ctx).unwrap_or(ctx.context.i64_type().into());
+            let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+            Some(
+                ctx.context
+                    .struct_type(
+                        &[
+                            ctx.context.i64_type().into(),
+                            ctx.context.i64_type().into(),
+                            ptr_ty.into(),
+                        ],
+                        false,
+                    )
+                    .into(),
+            )
         }
-        if type_id == builtin::STR {
-            return self.context.ptr_type(AddressSpace::default()).into();
+
+        MirType::Map { .. } => {
+            // Opaque struct — all operations via FFI
+            let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+            Some(
+                ctx.context
+                    .struct_type(
+                        &[
+                            ctx.context.i64_type().into(),
+                            ctx.context.i64_type().into(),
+                            ptr_ty.into(),
+                        ],
+                        false,
+                    )
+                    .into(),
+            )
         }
-        if type_id == builtin::VOID {
-            return self.context.i8_type().into();
+
+        MirType::Optional(inner) => {
+            // Optional: { i1 tag, [T payload] }
+            let inner_llvm = mir_to_llvm(inner, ctx).unwrap_or(ctx.context.i64_type().into());
+            let payload_ty = ctx.context.struct_type(&[inner_llvm.into()], false);
+            Some(
+                ctx.context
+                    .struct_type(&[ctx.context.bool_type().into(), payload_ty.into()], false)
+                    .into(),
+            )
         }
-        if type_id == builtin::ANY {
-            return self.context.ptr_type(AddressSpace::default()).into();
+
+        MirType::Result { ok, err } => {
+            // Result: { i1 tag, union payload }
+            let ok_llvm = mir_to_llvm(ok, ctx).unwrap_or(ctx.context.i64_type().into());
+            let err_llvm = mir_to_llvm(err, ctx).unwrap_or(ctx.context.i64_type().into());
+            let ok_size = ok_llvm
+                .size_of()
+                .unwrap_or(ctx.context.i64_type().const_int(8, false));
+            let err_size = err_llvm
+                .size_of()
+                .unwrap_or(ctx.context.i64_type().const_int(8, false));
+
+            // Use the larger type as the union payload
+            let payload_ty = if ok_llvm == err_llvm {
+                ok_llvm
+            } else {
+                ctx.context.i64_type().into()
+            };
+
+            Some(
+                ctx.context
+                    .struct_type(&[ctx.context.bool_type().into(), payload_ty.into()], false)
+                    .into(),
+            )
         }
-        
-        // Default - i64 for unknown types
-        self.context.i64_type().into()
-    }
 
-    /// Create an array type.
-    pub fn array_type(&self, _element_type: BasicTypeEnum<'ctx>) -> StructType<'ctx> {
-        // Array: { i64 len, i64 cap, ptr data }
-        self.context.struct_type(
-            &[
-                self.context.i64_type().into(),  // len
-                self.context.i64_type().into(),  // cap
-                self.context.ptr_type(AddressSpace::default()).into(),  // data
-            ],
-            false,
-        )
-    }
+        MirType::Tuple(elements) => {
+            let field_types: Vec<BasicTypeEnum> = elements
+                .iter()
+                .filter_map(|t| mir_to_llvm(t, ctx))
+                .collect();
+            if field_types.is_empty() {
+                Some(ctx.context.struct_type(&[], false).into())
+            } else {
+                Some(ctx.context.struct_type(&field_types, false).into())
+            }
+        }
 
-    /// Create a map type.
-    pub fn map_type_struct(&self) -> StructType<'ctx> {
-        // Map: { i64 len, ptr keys, ptr values }
-        self.context.struct_type(
-            &[
-                self.context.i64_type().into(),  // len
-                self.context.ptr_type(AddressSpace::default()).into(),  // keys
-                self.context.ptr_type(AddressSpace::default()).into(),  // values
-            ],
-            false,
-        )
-    }
+        MirType::Struct { name, fields } => {
+            let field_types: Vec<BasicTypeEnum> = fields
+                .iter()
+                .filter_map(|(_, t)| mir_to_llvm(t, ctx))
+                .collect();
+            Some(ctx.context.struct_type(&field_types, false).into())
+        }
 
-    /// Create a Result type.
-    pub fn result_type(&self, _ok_type: BasicTypeEnum<'ctx>, _err_type: BasicTypeEnum<'ctx>) -> StructType<'ctx> {
-        // Result: { i8 is_ok, ptr value } — i8 for C ABI compatibility
-        self.context.struct_type(
-            &[
-                self.context.i8_type().into(),  // is_ok (i8 for ABI)
-                self.context.ptr_type(AddressSpace::default()).into(),  // value
-            ],
-            false,
-        )
-    }
+        MirType::Enum { variants, .. } => {
+            // Enum: { i32 tag, union payload }
+            let max_payload = variants
+                .iter()
+                .filter_map(|(_, payload_types)| {
+                    if payload_types.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            payload_types
+                                .iter()
+                                .filter_map(|t| mir_to_llvm(t, ctx))
+                                .collect::<Vec<_>>(),
+                        )
+                    }
+                })
+                .map(|types| if types.is_empty() { 0 } else { types.len() })
+                .max()
+                .unwrap_or(0);
 
-    /// Create an optional type.
-    pub fn optional_type(&self, inner_type: BasicTypeEnum<'ctx>) -> StructType<'ctx> {
-        // Optional: { i8 has_value, T value } — i8 for C ABI compatibility
-        self.context.struct_type(
-            &[
-                self.context.i8_type().into(),  // has_value (i8 for ABI)
-                inner_type,  // value
-            ],
-            false,
-        )
-    }
+            let payload_ty = if max_payload > 0 {
+                ctx.context.i64_type().into()
+            } else {
+                ctx.context.i64_type().into()
+            };
 
-    /// Create a tuple type.
-    pub fn tuple_type(&self, element_types: &[BasicTypeEnum<'ctx>]) -> StructType<'ctx> {
-        self.context.struct_type(element_types, false)
-    }
+            Some(
+                ctx.context
+                    .struct_type(&[ctx.context.i32_type().into(), payload_ty], false)
+                    .into(),
+            )
+        }
 
-    /// Create a closure type.
-    pub fn closure_type(&self) -> StructType<'ctx> {
-        // Closure: { ptr func, ptr env }
-        self.context.struct_type(
-            &[
-                self.context.ptr_type(AddressSpace::default()).into(),  // func
-                self.context.ptr_type(AddressSpace::default()).into(),  // env
-            ],
-            false,
-        )
-    }
+        MirType::Function { params, ret } => {
+            // Function pointer: ptr to function type
+            let _ = mir_to_llvm(ret, ctx);
+            for p in params {
+                let _ = mir_to_llvm(p, ctx);
+            }
+            Some(ctx.context.ptr_type(AddressSpace::default()).into())
+        }
 
-    /// Check if a type is a primitive (Copy type).
-    pub fn is_primitive(&self, type_id: TypeId) -> bool {
-        type_id == builtin::INT ||
-        type_id == builtin::FLOAT ||
-        type_id == builtin::BOOL ||
-        type_id == builtin::VOID
-    }
-
-    /// Check if a type needs Drop (non-primitive, owns heap data).
-    pub fn needs_drop(&self, type_id: TypeId) -> bool {
-        !self.is_primitive(type_id)
-    }
-}
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_map_primitive_types() {
-        let ctx = Context::create();
-        let mapper = TypeMapper::new(&ctx);
-
-        let int_type = mapper.map_type(builtin::INT);
-        assert!(int_type.is_int_type());
-
-        let float_type = mapper.map_type(builtin::FLOAT);
-        assert!(float_type.is_float_type());
-
-        let bool_type = mapper.map_type(builtin::BOOL);
-        assert!(bool_type.is_int_type());
-    }
-
-    #[test]
-    fn test_is_primitive() {
-        let ctx = Context::create();
-        let mapper = TypeMapper::new(&ctx);
-
-        assert!(mapper.is_primitive(builtin::INT));
-        assert!(mapper.is_primitive(builtin::BOOL));
-        assert!(!mapper.is_primitive(builtin::STR));
+        MirType::Closure { .. } => {
+            // Closure: { fn_ptr, env_ptr }
+            let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+            Some(
+                ctx.context
+                    .struct_type(&[ptr_ty.into(), ptr_ty.into()], false)
+                    .into(),
+            )
+        }
     }
 }

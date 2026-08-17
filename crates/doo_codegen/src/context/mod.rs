@@ -14,7 +14,7 @@ mod locals;
 mod metadata;
 mod type_cache;
 
-use doo_core::types::{TypeId, TypeKind, TypeRegistry};
+use doo_core::types::{builtin, TypeId, TypeKind, TypeRegistry};
 use inkwell::attributes::AttributeLoc;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -314,6 +314,38 @@ impl<'ctx> CodegenContext<'ctx> {
             enum_inheritance: FxHashMap::default(),
             static_globals: FxHashMap::default(),
         }
+    }
+
+    pub fn get_llvm_type(&self, type_id: TypeId) -> BasicTypeEnum<'ctx> {
+        if let Some(ty) = self.type_cache.get(&type_id) {
+            *ty
+        } else if type_id == builtin::INT {
+            self.context.i64_type().into()
+        } else if type_id == builtin::FLOAT {
+            self.context.f64_type().into()
+        } else if type_id == builtin::BOOL {
+            self.context.bool_type().into()
+        } else if type_id == builtin::STR {
+            self.context.ptr_type(AddressSpace::default()).into()
+        } else {
+            self.context.i64_type().into()
+        }
+    }
+
+    pub fn get_struct_type(&self, _name: &str, fields: &[BasicTypeEnum<'ctx>]) -> StructType<'ctx> {
+        self.context.struct_type(fields, false)
+    }
+
+    pub fn physical_field_index(&self, _struct_name: &str, logical_index: usize) -> usize {
+        logical_index
+    }
+
+    pub fn lookup_struct_type(&self, name: &str) -> Option<StructType<'ctx>> {
+        self.module.get_struct_type(name)
+    }
+
+    pub fn get_or_build_struct_type(&self, name: &str) -> Option<StructType<'ctx>> {
+        self.module.get_struct_type(name)
     }
 
     /// Set the data layout on the module by temporarily creating a TargetMachine

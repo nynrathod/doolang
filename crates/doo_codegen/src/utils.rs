@@ -1,337 +1,306 @@
-//! Codegen Utilities
+//! Codegen Utilities — constant conversion and helper functions.
 //!
-//! Common helper functions used across instruction handlers.
+//! Provides conversion from MIR constants to LLVM values, and shared
+//! helper functions used across instruction handlers.
 
 use crate::context::CodegenContext;
-use doo_core::doo_debug;
-use doo_core::types::{builtin, TypeId, TypeKind};
 use doo_mir::sym::resolve;
 use doo_mir::{MirConst, MirOperand};
-use inkwell::types::BasicTypeEnum;
-use inkwell::values::PointerValue;
-use inkwell::values::{BasicValueEnum, IntValue};
-use inkwell::IntPredicate;
+use inkwell::types::{BasicType, BasicTypeEnum};
+use inkwell::values::{BasicValueEnum, FloatValue, IntValue, PointerValue, StructValue};
+use inkwell::AddressSpace;
 
-/// Convert a MirOperand to a BasicValueEnum.
+/// Convert a MIR constant to an LLVM constant value.
+pub fn const_to_llvm<'ctx>(ctx: &CodegenContext<'ctx>, c: &MirConst) -> BasicValueEnum<'ctx> {
+    match c {
+        MirConst::Int(v) => llvm_const_int(ctx, *v).into(),
+        MirConst::Float(v) => llvm_const_float(ctx, *v).into(),
+        MirConst::Bool(v) => llvm_const_bool(ctx, *v).into(),
+        MirConst::Nil => ctx.context.i64_type().const_zero().into(),
+        MirConst::Str(s) => llvm_const_string(ctx, s).into(),
+    }
+}
+
+/// Create an LLVM i64 constant.
+pub fn llvm_const_int<'ctx>(ctx: &CodegenContext<'ctx>, val: i64) -> IntValue<'ctx> {
+    ctx.context.i64_type().const_int(val as u64, true)
+}
+
+/// Create an LLVM f64 constant.
+pub fn llvm_const_float<'ctx>(ctx: &CodegenContext<'ctx>, val: f64) -> FloatValue<'ctx> {
+    ctx.context.f64_type().const_float(val)
+}
+
+/// Create an LLVM boolean (i1) constant.
+pub fn llvm_const_bool<'ctx>(ctx: &CodegenContext<'ctx>, val: bool) -> IntValue<'ctx> {
+    ctx.context.bool_type().const_int(val as u64, false)
+}
+
+/// Create an LLVM fat string constant ({ i8*, i64 }).
+///
+/// Creates a global constant string and wraps it in the fat pointer struct.
+pub fn llvm_const_string<'ctx>(ctx: &CodegenContext<'ctx>, s: &str) -> StructValue<'ctx> {
+    let ptr_ty = ctx.context.ptr_type(AddressSpace::default());
+    let str_type = ctx
+        .context
+        .struct_type(&[ptr_ty.into(), ctx.context.i64_type().into()], false);
+
+    let global = ctx.module.add_global(
+        ctx.context.i8_type().array_type(s.len() as u32 + 1),
+        Some(AddressSpace::default()),
+        "",
+    );
+    global.set_constant(true);
+    global.set_initializer(&ctx.context.const_string(s.as_bytes(), true));
+
+    let ptr_val = global.as_pointer_value();
+    let len_val = ctx.context.i64_type().const_int(s.len() as u64, false);
+
+    let mut str_val = str_type.get_undef();
+    str_val = ctx
+        .builder
+        .build_insert_value(str_val, ptr_val, 0, "str_ptr")
+        .ok()
+        .map(|v| v.into_struct_value())
+        .unwrap_or(str_val);
+    str_val = ctx
+        .builder
+        .build_insert_value(str_val, len_val, 1, "str_len")
+        .ok()
+        .map(|v| v.into_struct_value())
+        .unwrap_or(str_val);
+
+    str_val
+}
+
+/// Null-coerce a string pointer to prevent UB from null string operands.
+///
+/// LLVM infers `nonnull` and `dereferenceable(1)` on string function arguments
+/// (strlen, strcmp, etc.). A null pointer triggers undefined behavior that
+/// LLVM O3 can exploit. This replaces null with a pointer to an empty string.
+pub fn null_coerce_str<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    ptr: PointerValue<'ctx>,
+) -> PointerValue<'ctx> {
+    let is_null = ctx.builder.build_is_null(ptr, "str_null_check").ok();
+
+    if let Some(is_null) = is_null {
+        let empty_str = ctx
+            .builder
+            .build_global_string_ptr("", "empty_str_fallback")
+            .map(|g| g.as_pointer_value())
+            .unwrap_or_else(|_| {
+                ctx.context
+                    .i8_type()
+                    .ptr_type(AddressSpace::default())
+                    .const_null()
+            });
+
+        let safe = ctx
+            .builder
+            .build_select(is_null, empty_str, ptr, "safe_str")
+            .ok()
+            .map(|v| v.into_pointer_value())
+            .unwrap_or(ptr);
+
+        safe
+    } else {
+        ptr
+    }
+}
+
+/// Convert a MirOperand to an LLVM value.
 pub fn operand_to_value<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
     operand: &MirOperand,
 ) -> Option<BasicValueEnum<'ctx>> {
     match operand {
+        MirOperand::Const(c) => Some(const_to_llvm(ctx, c)),
         MirOperand::Local(name) | MirOperand::Temp(name) | MirOperand::Global(name) => {
             let name_str = resolve(*name);
-            // Check if this is a static global — directly read from OnceLock global
-            if let Some(_) = ctx.static_globals.get(&name_str) {
-                if let Some(once_lock) = ctx.module.get_global(&name_str) {
+
+            // Check static globals (case-insensitive lookup)
+            let resolved_static_name = if ctx.static_globals.contains_key(&name_str) {
+                Some(name_str.clone())
+            } else {
+                let lowered = name_str.to_lowercase();
+                ctx.static_globals
+                    .keys()
+                    .find(|k| k.to_lowercase() == lowered)
+                    .cloned()
+            };
+
+            if let Some(static_name) = resolved_static_name {
+                if let Some(once_lock) = ctx.module.get_global(&static_name) {
                     let once_lock_ptr = once_lock.as_pointer_value();
                     let once_lock_type = ctx.context.struct_type(
                         &[
                             ctx.context.bool_type().into(),
-                            ctx.context.ptr_type(inkwell::AddressSpace::default()).into(),
+                            ctx.context.ptr_type(AddressSpace::default()).into(),
                         ],
                         false,
                     );
-                    // GEP to field 1 (ptr), load the stored pointer
-                    let ptr_field = ctx.builder.build_struct_gep(
+                    if let Ok(ptr_field) = ctx.builder.build_struct_gep(
                         once_lock_type,
                         once_lock_ptr,
                         1,
                         "static_get_ptr",
-                    );
-                    if let Ok(ptr_field) = ptr_field {
-                        let loaded = ctx.builder.build_load(
-                            ctx.context.ptr_type(inkwell::AddressSpace::default()),
+                    ) {
+                        if let Ok(loaded) = ctx.builder.build_load(
+                            ctx.context.ptr_type(AddressSpace::default()),
                             ptr_field,
                             "static_val",
-                        ).ok();
-                        if let Some(loaded_val) = loaded {
-                            return Some(loaded_val);
+                        ) {
+                            return Some(loaded);
                         }
                     }
                 }
-                // Fallback: return null pointer
                 return Some(
                     ctx.context
-                        .ptr_type(inkwell::AddressSpace::default())
+                        .ptr_type(AddressSpace::default())
                         .const_null()
                         .into(),
                 );
             }
-            // First try to get as a value (local variable, temp, etc.)
-            if let Some(val) = ctx.get_value(&name_str) {
-                return Some(val);
-            }
-            // Fall back to function reference - convert function to pointer value
-            if let Some(func) = ctx.get_function(&name_str) {
-                return Some(func.as_global_value().as_pointer_value().into());
-            }
-            // Check if this is a type name (e.g., receiver of static method call like Service.new())
-            // Return null pointer — associated/static methods don't need an instance receiver
+
+            // Check if this is a type name
             if ctx.type_registry.lookup(&name_str).is_some() {
                 return Some(
                     ctx.context
-                        .ptr_type(inkwell::AddressSpace::default())
+                        .ptr_type(AddressSpace::default())
                         .const_null()
                         .into(),
                 );
+            }
+
+            // Check temps and locals
+            if let Some(val) = ctx.get_value(&name_str) {
+                return Some(val);
+            }
+
+            // Fall back to function reference
+            if let Some(func) = ctx.get_function(&name_str) {
+                return Some(func.as_global_value().as_pointer_value().into());
             }
             None
         }
         MirOperand::FuncRef(name) => {
             let name_str = resolve(*name);
-            // Explicit function reference - return function as pointer value
-            // Used when passing functions to FFI (e.g., app.get("/users", getUserHandler))
             if let Some(func) = ctx.get_function(&name_str) {
-                return Some(func.as_global_value().as_pointer_value().into());
-            }
-            // Try mangled name for methods
-            if let Some(func) = ctx.get_function(&format!("_{}", name_str)) {
                 return Some(func.as_global_value().as_pointer_value().into());
             }
             None
         }
-        MirOperand::Const(c) => match c {
-            MirConst::Int(val) => Some(ctx.const_i64(*val).into()),
-            MirConst::Float(val) => Some(ctx.const_f64(*val).into()),
-            MirConst::Bool(val) => Some(ctx.const_bool(*val).into()),
-            MirConst::Str(s) => {
-                let global = ctx.builder.build_global_string_ptr(s, "str_const").ok()?;
-                Some(global.as_pointer_value().into())
-            }
-            MirConst::Nil => Some(ctx.const_i64(0).into()),
-        },
     }
 }
 
-/// Emit equality comparison for two values of the given type.
-/// Accepts TypeId and maps to basic comparison strategy.
-/// Falls back to LLVM value type inspection when TypeId doesn't match known types.
+/// Emit an equality comparison between two values of the same type.
 pub fn emit_eq<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
-    ty: TypeId,
+    type_id: doo_core::types::TypeId,
     lhs: BasicValueEnum<'ctx>,
     rhs: BasicValueEnum<'ctx>,
-) -> Option<IntValue<'ctx>> {
-    // First, try to use TypeKind from the registry for more accurate type info
-    if let Some(kind) = ctx.get_type_kind(ty) {
-        return match kind {
-            TypeKind::Int | TypeKind::Bool => {
-                let mut lhs_int = lhs.into_int_value();
-                let mut rhs_int = rhs.into_int_value();
-                // Normalize int widths (e.g., Bool variable i64 vs Bool literal i1)
-                let lw = lhs_int.get_type().get_bit_width();
-                let rw = rhs_int.get_type().get_bit_width();
-                if lw > rw {
-                    rhs_int = ctx.builder.build_int_z_extend(rhs_int, lhs_int.get_type(), "zext").ok()?;
-                } else if rw > lw {
-                    lhs_int = ctx.builder.build_int_z_extend(lhs_int, rhs_int.get_type(), "zext").ok()?;
-                }
-                ctx.builder
-                    .build_int_compare(IntPredicate::EQ, lhs_int, rhs_int, "eq")
-                    .ok()
-            }
-            TypeKind::Float32 | TypeKind::Float64 => ctx
+) -> Option<inkwell::values::IntValue<'ctx>> {
+    use doo_core::types::TypeKind;
+    use inkwell::IntPredicate;
+
+    let kind = ctx.get_type_kind(type_id)?;
+
+    match kind {
+        TypeKind::Int
+        | TypeKind::Int8
+        | TypeKind::Int16
+        | TypeKind::Int32
+        | TypeKind::Int64
+        | TypeKind::UInt
+        | TypeKind::UInt8
+        | TypeKind::UInt16
+        | TypeKind::UInt32
+        | TypeKind::UInt64
+        | TypeKind::Bool
+        | TypeKind::Char => {
+            let lhs_int = lhs.into_int_value();
+            let rhs_int = rhs.into_int_value();
+            ctx.builder
+                .build_int_compare(IntPredicate::EQ, lhs_int, rhs_int, "eq")
+                .ok()
+        }
+        TypeKind::Float32 | TypeKind::Float64 => {
+            let lhs_f = lhs.into_float_value();
+            let rhs_f = rhs.into_float_value();
+            ctx.builder
+                .build_float_compare(inkwell::FloatPredicate::OEQ, lhs_f, rhs_f, "feq")
+                .ok()
+        }
+        TypeKind::Str => {
+            let safe_lhs = null_coerce_str(ctx, lhs.into_pointer_value());
+            let safe_rhs = null_coerce_str(ctx, rhs.into_pointer_value());
+            let strcmp = ctx
+                .module
+                .get_function(doo_core::constants::ffi_names::STRCMP)
+                .unwrap_or_else(|| {
+                    let ptr_type = ctx.context.ptr_type(AddressSpace::default());
+                    let fn_type = ctx
+                        .context
+                        .i32_type()
+                        .fn_type(&[ptr_type.into(), ptr_type.into()], false);
+                    ctx.module
+                        .add_function(doo_core::constants::ffi_names::STRCMP, fn_type, None)
+                });
+            let cmp_result = ctx
                 .builder
-                .build_float_compare(
-                    inkwell::FloatPredicate::OEQ,
-                    lhs.into_float_value(),
-                    rhs.into_float_value(),
-                    "eq",
+                .build_call(strcmp, &[safe_lhs.into(), safe_rhs.into()], "strcmp")
+                .ok()?
+                .try_as_basic_value()
+                .basic()?
+                .into_int_value();
+            ctx.builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    cmp_result,
+                    ctx.context.i32_type().const_zero(),
+                    "str_eq",
                 )
-                .ok(),
-            TypeKind::Str => emit_str_eq(ctx, lhs, rhs),
-            _ => {
-                // For other types, fallback to LLVM value inspection
-                emit_eq_by_llvm_type(ctx, lhs, rhs)
+                .ok()
+        }
+        _ => {
+            // For other types, compare pointers
+            if lhs.is_pointer_value() && rhs.is_pointer_value() {
+                ctx.builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        ctx.builder
+                            .build_ptr_to_int(lhs.into_pointer_value(), ctx.context.i64_type(), "l")
+                            .ok()?,
+                        ctx.builder
+                            .build_ptr_to_int(rhs.into_pointer_value(), ctx.context.i64_type(), "r")
+                            .ok()?,
+                        "ptr_eq",
+                    )
+                    .ok()
+            } else {
+                None
             }
-        };
-    }
-
-    // Fallback: check builtin TypeId constants
-    if ty == builtin::INT || ty == builtin::BOOL {
-        let mut lhs_int = lhs.into_int_value();
-        let mut rhs_int = rhs.into_int_value();
-        let lw = lhs_int.get_type().get_bit_width();
-        let rw = rhs_int.get_type().get_bit_width();
-        if lw > rw {
-            rhs_int = ctx.builder.build_int_z_extend(rhs_int, lhs_int.get_type(), "zext").ok()?;
-        } else if rw > lw {
-            lhs_int = ctx.builder.build_int_z_extend(lhs_int, rhs_int.get_type(), "zext").ok()?;
         }
-        ctx.builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                lhs_int,
-                rhs_int,
-                "eq",
-            )
-            .ok()
-    } else if ty == builtin::FLOAT {
-        ctx.builder
-            .build_float_compare(
-                inkwell::FloatPredicate::OEQ,
-                lhs.into_float_value(),
-                rhs.into_float_value(),
-                "eq",
-            )
-            .ok()
-    } else if ty == builtin::STR {
-        emit_str_eq(ctx, lhs, rhs)
-    } else {
-        // Final fallback: inspect actual LLVM types
-        emit_eq_by_llvm_type(ctx, lhs, rhs)
     }
 }
 
-/// Coerce a potentially-null string pointer to a valid empty string.
-/// This prevents undefined behavior when the pointer is passed to strlen/strcmp/memcpy,
-/// because LLVM infers `nonnull dereferenceable(1)` on those function arguments
-/// when it recognizes them as standard C library functions.
-/// A null pointer with nonnull annotation is UB that LLVM can exploit to miscompile code.
-pub fn null_coerce_str<'ctx>(
-    ctx: &mut CodegenContext<'ctx>,
-    ptr: PointerValue<'ctx>,
-) -> PointerValue<'ctx> {
-    let is_null = match ctx.builder.build_is_null(ptr, "str_is_null") {
-        Ok(v) => v,
-        Err(_) => return ptr,
-    };
-    let empty = match ctx.builder.build_global_string_ptr("", "empty_str") {
-        Ok(v) => v.as_pointer_value(),
-        Err(_) => return ptr,
-    };
-    match ctx
-        .builder
-        .build_select(is_null, empty, ptr, "safe_str")
-    {
-        Ok(v) => v.into_pointer_value(),
-        Err(_) => ptr,
-    }
-}
-
-/// Emit string equality comparison using strcmp.
-/// SAFETY: Both operands are null-coerced to prevent UB from LLVM's
-/// nonnull inference on strcmp arguments.
-fn emit_str_eq<'ctx>(
-    ctx: &mut CodegenContext<'ctx>,
-    lhs: BasicValueEnum<'ctx>,
-    rhs: BasicValueEnum<'ctx>,
-) -> Option<IntValue<'ctx>> {
-    use doo_core::constants::ffi_names;
-    let strcmp = ctx
-        .module
-        .get_function(ffi_names::STRCMP)
-        .unwrap_or_else(|| {
-            let i32_ty = ctx.context.i32_type();
-            let ptr_ty = ctx.context.ptr_type(inkwell::AddressSpace::default());
-            let fn_ty = i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
-            ctx.module.add_function(ffi_names::STRCMP, fn_ty, None)
-        });
-
-    // Null-coerce both operands: LLVM infers nonnull+dereferenceable(1) on
-    // strcmp args because it recognizes the function name. If either operand
-    // is null (e.g., from a try-expression error path), the nonnull annotation
-    // triggers UB-based miscompilation in large functions.
-    let safe_lhs = null_coerce_str(ctx, lhs.into_pointer_value());
-    let safe_rhs = null_coerce_str(ctx, rhs.into_pointer_value());
-
-    let result = ctx
-        .builder
-        .build_call(strcmp, &[safe_lhs.into(), safe_rhs.into()], "strcmp_result")
-        .ok()?
-        .try_as_basic_value()
-        .basic()?
-        .into_int_value();
-
-    ctx.builder
-        .build_int_compare(
-            IntPredicate::EQ,
-            result,
-            ctx.context.i32_type().const_zero(),
-            "str_eq",
-        )
-        .ok()
-}
-
-/// Emit equality by inspecting actual LLVM value types.
-/// This is a fallback when TypeId doesn't provide enough info.
-fn emit_eq_by_llvm_type<'ctx>(
-    ctx: &mut CodegenContext<'ctx>,
-    lhs: BasicValueEnum<'ctx>,
-    rhs: BasicValueEnum<'ctx>,
-) -> Option<IntValue<'ctx>> {
-    // Check if both are int values
-    if lhs.is_int_value() && rhs.is_int_value() {
-        let mut lhs_int = lhs.into_int_value();
-        let mut rhs_int = rhs.into_int_value();
-        // Normalize int widths (e.g., Bool i64 vs i1)
-        let lw = lhs_int.get_type().get_bit_width();
-        let rw = rhs_int.get_type().get_bit_width();
-        if lw > rw {
-            rhs_int = ctx.builder.build_int_z_extend(rhs_int, lhs_int.get_type(), "zext").ok()?;
-        } else if rw > lw {
-            lhs_int = ctx.builder.build_int_z_extend(lhs_int, rhs_int.get_type(), "zext").ok()?;
-        }
-        return ctx
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                lhs_int,
-                rhs_int,
-                "eq",
-            )
-            .ok();
-    }
-
-    // Check if both are float values
-    if lhs.is_float_value() && rhs.is_float_value() {
-        return ctx
-            .builder
-            .build_float_compare(
-                inkwell::FloatPredicate::OEQ,
-                lhs.into_float_value(),
-                rhs.into_float_value(),
-                "eq",
-            )
-            .ok();
-    }
-
-    // Check if both are pointer values (strings or complex types)
-    if lhs.is_pointer_value() && rhs.is_pointer_value() {
-        // Pointer equality comparison
-        return ctx
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                ctx.builder
-                    .build_ptr_to_int(lhs.into_pointer_value(), ctx.context.i64_type(), "ptr1")
-                    .ok()?,
-                ctx.builder
-                    .build_ptr_to_int(rhs.into_pointer_value(), ctx.context.i64_type(), "ptr2")
-                    .ok()?,
-                "ptr_eq",
-            )
-            .ok();
-    }
-
-    // If types don't match, try to handle common mismatches gracefully
-    // For example, one might be int and other might be pointer (shouldn't happen in well-typed code)
-    // Return None to signal failure
-    None
-}
-
-/// Get default value for a type (zero/null).
+/// Generate a default value for a given LLVM type.
+///
+/// Used for map lookups that don't find a key, and optional unwrapping
+/// when the value is absent.
 pub fn default_for_type<'ctx>(
-    _ctx: &CodegenContext<'ctx>,
-    ty: BasicTypeEnum<'ctx>,
+    ctx: &CodegenContext<'ctx>,
+    ty: impl BasicType<'ctx>,
 ) -> BasicValueEnum<'ctx> {
-    match ty {
+    let ty_enum: BasicTypeEnum = ty.as_basic_type_enum();
+    match ty_enum {
         BasicTypeEnum::IntType(it) => it.const_zero().into(),
         BasicTypeEnum::FloatType(ft) => ft.const_zero().into(),
         BasicTypeEnum::PointerType(pt) => pt.const_null().into(),
         BasicTypeEnum::StructType(st) => st.const_zero().into(),
         BasicTypeEnum::ArrayType(at) => at.const_zero().into(),
         BasicTypeEnum::VectorType(vt) => vt.const_zero().into(),
-        BasicTypeEnum::ScalableVectorType(svt) => svt.const_zero().into(),
+        BasicTypeEnum::ScalableVectorType(_) => ctx.context.i64_type().const_zero().into(), // Add this line
     }
 }
