@@ -2,8 +2,11 @@
 //!
 //! Converts HIR to MIR with lowering of high-level constructs.
 
+pub mod async_lowering;
 pub mod capture;
+pub mod closure_lowering;
 pub mod expr;
+pub mod go_lowering;
 pub mod pattern;
 pub mod stmt;
 
