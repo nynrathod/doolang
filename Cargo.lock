@@ -997,6 +997,7 @@ dependencies = [
  "doo_analysis",
  "doo_core",
  "doo_hir",
+ "doo_thir",
  "pretty_assertions",
  "rustc-hash 1.1.0",
  "serde",
