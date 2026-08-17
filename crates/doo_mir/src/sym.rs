@@ -15,7 +15,10 @@
 //! Delegates to the global shared interner in `doo_core::intern` so that
 //! symbols interned in any compiler phase share a single namespace.
 
+use crate::types::{MirConst, MirFunction, MirGlobal, MirType};
 use doo_core::symbol::Symbol;
+use doo_core::types::TypeId;
+use rustc_hash::FxHashMap;
 
 /// A MIR symbol — a 4-byte interned string ID.
 /// `Copy + Clone + Eq + Hash` — cloning is a simple integer copy (zero cost).
@@ -47,6 +50,39 @@ pub fn with_resolved<R>(s: Sym, f: impl FnOnce(&str) -> R) -> R {
 #[inline]
 pub fn get(s: &str) -> Option<Sym> {
     doo_core::intern::get(s)
+}
+
+/// MIR Symbol Table
+///
+/// Tracks locals, globals, and functions within a MIR program.
+pub struct MirSymbolTable {
+    pub locals: FxHashMap<Sym, MirLocal>,
+    pub globals: FxHashMap<Sym, MirGlobal>,
+    pub functions: FxHashMap<Sym, MirFunction>,
+}
+
+impl MirSymbolTable {
+    pub fn new() -> Self {
+        Self {
+            locals: FxHashMap::default(),
+            globals: FxHashMap::default(),
+            functions: FxHashMap::default(),
+        }
+    }
+}
+
+impl Default for MirSymbolTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A local variable definition in MIR.
+#[derive(Debug, Clone)]
+pub struct MirLocal {
+    pub name: Sym,
+    pub ty: MirType,
+    pub mutable: bool,
 }
 
 #[cfg(test)]

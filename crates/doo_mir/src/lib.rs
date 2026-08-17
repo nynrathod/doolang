@@ -9,28 +9,46 @@
 //! - **Minimal IR**: Only essential instructions, LLVM handles optimization
 //! - **Single Source of Truth**: Integrates with doo_core for types
 
-pub mod types;
 pub mod builder;
 pub mod optimize;
 pub mod sym;
+pub mod types;
 
-pub use sym::Sym;
+pub use sym::{MirLocal, MirSymbolTable, Sym};
 pub use types::{
-    // Program structure
-    MirProgram, MirFunction, MirBlock, MirGlobal, GlobalKind,
-    // Instructions
-    MirInstr, MirInstrKind, MirTerminator,
-    // Operands
-    MirOperand, MirConst,
     // Operators
-    BinaryOp, UnaryOp,
-    // Metadata
-    StructDef, EnumDef, FieldDef, VariantDef, Decorator,
-    ParamDef, LocalDef, FfiLinkage,
-    // Metadata
-    Span,
+    BinaryOp,
+    BlockId,
+    Decorator,
+    EnumDef,
+    FfiLinkage,
+    FieldDef,
+    GlobalKind,
+    LocalDef,
+    MirBlock,
+    MirConst,
     // Errors
     MirError,
+    MirFunction,
+    MirGlobal,
+    // Instructions
+    MirInstr,
+    MirInstrKind,
+    MirInstruction,
+    // Operands
+    MirOperand,
+    // Program structure
+    MirProgram,
+    MirTerminator,
+    MirType,
+    MirValue,
+    ParamDef,
+    // Metadata
+    Span,
+    // Metadata
+    StructDef,
+    UnaryOp,
+    VariantDef,
 };
 
 pub use doo_core::types::TypeId;

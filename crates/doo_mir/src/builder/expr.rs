@@ -1,11 +1,13 @@
 use super::{ContainerKind, Decision, MirBuilder, LocalDef};
 use crate::{BinaryOp, MirConst, MirInstrKind, MirOperand, MirTerminator};
 use crate::sym::{Sym, sym, resolve};
+use crate::types::{MirInstruction, MirValue};
 use doo_core::{
     constants::ffi_names,
     types::{builtin, TypeId as CoreTypeId, TypeKind},
 };
 use doo_hir::{HirBinOp, HirExpr, HirExprKind, HirMatchPattern};
+use doo_thir::{ThirExpr, ThirExprKind};
 
 /// Build an expression with an expected type hint.
 /// This is used for return statements where we know the expected return type.
@@ -205,18 +207,18 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         );
                         MirOperand::Temp(dest)
                     }
-										 Decision::Drop => {
-											// Dropping acts like a move: the value is consumed and 
-											// ownership is transferred to the drop logic.
-											builder.emit(
-													MirInstrKind::Move {
-															dest,
-															src: MirOperand::Local(sym(name)),
-													},
-													span,
-											);
-											MirOperand::Temp(dest)
-									}
+                                         Decision::Drop => {
+                                            // Dropping acts like a move: the value is consumed and 
+                                            // ownership is transferred to the drop logic.
+                                            builder.emit(
+                                                    MirInstrKind::Move {
+                                                            dest,
+                                                            src: MirOperand::Local(sym(name)),
+                                                    },
+                                                    span,
+                                            );
+                                            MirOperand::Temp(dest)
+                                    }
                 }
             } else {
                 // No ownership decision available - default to direct reference
@@ -2198,5 +2200,31 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             );
             MirOperand::Temp(result_dest)
         }
+    }
+}
+
+/// Build MIR instructions from a THIR expression.
+pub fn build_thir_expr(builder: &mut MirBuilder, expr: &ThirExpr) -> MirValue {
+    let span = builder.convert_span(expr.span);
+    match &expr.kind {
+        ThirExprKind::Literal(lit) => {
+            let c = match lit {
+                doo_thir::ThirLiteral::Int(i) => MirConst::Int(*i),
+                doo_thir::ThirLiteral::Float(f) => MirConst::Float(*f),
+                doo_thir::ThirLiteral::String(s) => MirConst::Str(s.clone()),
+                doo_thir::ThirLiteral::Bool(b) => MirConst::Bool(*b),
+                doo_thir::ThirLiteral::Null => MirConst::Nil,
+            };
+            MirValue::Const(c)
+        }
+        ThirExprKind::Var(name) => MirValue::Local(sym(name)),
+        ThirExprKind::Binary { op, lhs, rhs, .. } => {
+            let l = build_thir_expr(builder, lhs);
+            let r = build_thir_expr(builder, rhs);
+            let temp = builder.next_temp_id();
+            // MIR BinaryOp mapping would go here
+            MirValue::Temp(temp)
+        }
+        _ => MirValue::Const(MirConst::Nil),
     }
 }

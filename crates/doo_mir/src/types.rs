@@ -1040,6 +1040,151 @@ impl std::fmt::Display for MirError {
 impl std::error::Error for MirError {}
 
 // ============================================================================
+// Phase 29-31: Monomorphized MIR Types and Instructions
+// ============================================================================
+
+/// Identifier for a basic block in the CFG.
+pub type BlockId = u32;
+
+/// MIR Type System (Phase 29.1)
+/// Monomorphized, concrete types for LLVM codegen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MirType {
+    Int,
+    Float,
+    Bool,
+    Str,
+    Void,
+    Never,
+    Char,
+    Ptr(Box<MirType>),
+    Struct {
+        name: Sym,
+        fields: Vec<(Sym, MirType)>,
+    },
+    Enum {
+        name: Sym,
+        variants: Vec<(Sym, Vec<MirType>)>,
+        tag_size: usize,
+    },
+    Array(Box<MirType>),
+    Map {
+        key: Box<MirType>,
+        val: Box<MirType>,
+    },
+    Optional(Box<MirType>),
+    Result {
+        ok: Box<MirType>,
+        err: Box<MirType>,
+    },
+    Tuple(Vec<MirType>),
+    Function {
+        params: Vec<MirType>,
+        ret: Box<MirType>,
+    },
+    Closure {
+        captures: Vec<(Sym, MirType)>,
+        env_ty: Box<MirType>,
+    },
+}
+
+/// MIR Value (Phase 31.1)
+/// Represents an operand in MIR instructions.
+#[derive(Debug, Clone)]
+pub enum MirValue {
+    Local(Sym),
+    Global(Sym),
+    Const(MirConst),
+    Temp(u32),
+}
+
+/// MIR Instruction (Phase 31.1)
+/// Explicit instructions for LLVM codegen.
+#[derive(Debug, Clone)]
+pub enum MirInstruction {
+    // Values
+    LoadLocal(Sym, MirType),
+    StoreLocal(Sym, MirValue),
+    LoadGlobal(Sym, MirType),
+    LoadConst(MirConst),
+
+    // Arithmetic
+    Add(MirValue, MirValue, MirType),
+    Sub(MirValue, MirValue, MirType),
+    Mul(MirValue, MirValue, MirType),
+    Div(MirValue, MirValue, MirType),
+    Mod(MirValue, MirValue, MirType),
+    Neg(MirValue, MirType),
+
+    // Comparison
+    Eq(MirValue, MirValue, MirType),
+    Ne(MirValue, MirValue, MirType),
+    Lt(MirValue, MirValue, MirType),
+    Gt(MirValue, MirValue, MirType),
+    Le(MirValue, MirValue, MirType),
+    Ge(MirValue, MirValue, MirType),
+
+    // Logic
+    And(MirValue, MirValue),
+    Or(MirValue, MirValue),
+    Not(MirValue),
+
+    // Memory
+    Alloc(MirType),
+    HeapAlloc(MirType),
+    HeapFree(MirValue),
+    GetField(MirValue, usize, MirType),
+    SetField(MirValue, usize, MirValue),
+    GetIndex(MirValue, MirValue, MirType),
+    SetIndex(MirValue, MirValue, MirValue),
+
+    // Calls
+    Call {
+        func: MirValue,
+        args: Vec<MirValue>,
+        ret_ty: MirType,
+    },
+    CallExtern {
+        name: Sym,
+        args: Vec<MirValue>,
+        ret_ty: MirType,
+    },
+
+    // Control
+    Jump(BlockId),
+    Branch {
+        cond: MirValue,
+        then_block: BlockId,
+        else_block: BlockId,
+    },
+    Switch {
+        value: MirValue,
+        cases: Vec<(MirConst, BlockId)>,
+        default: BlockId,
+    },
+    Return(MirValue),
+    Unreachable,
+
+    // Drop
+    Drop(MirValue, MirType),
+
+    // Closures
+    MakeClosure {
+        func: Sym,
+        env: Vec<(Sym, MirValue)>,
+    },
+
+    // Async
+    MakeAsync {
+        body: BlockId,
+    },
+    Await(MirValue),
+
+    // Concurrency
+    Spawn(MirValue),
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 

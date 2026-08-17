@@ -835,6 +835,18 @@ impl<'a> MirBuilder<'a> {
         name
     }
 
+    /// Generate a new temporary ID for THIR-based MIR building.
+    pub(crate) fn next_temp_id(&mut self) -> u32 {
+        let id = self.temp_counter as u32;
+        self.temp_counter += 1;
+        id
+    }
+
+    /// Build MIR instructions from a THIR expression.
+    pub fn build_thir_expr(&mut self, expr: &doo_thir::ThirExpr) -> crate::types::MirValue {
+        crate::builder::expr::build_thir_expr(self, expr)
+    }
+
     /// Add a temporary variable to func.locals so codegen can access its type.
     /// This is needed for temps that hold intermediate values (like if-expr results)
     /// which need proper LLVM types during alloca creation.
