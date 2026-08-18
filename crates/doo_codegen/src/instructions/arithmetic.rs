@@ -816,11 +816,11 @@ fn value_to_string<'ctx>(
         let f64_ty = ctx.f64_type();
         let format_fn = ctx
             .module
-            .get_function(ffi_names::DOO_FORMAT_FLOAT)
+            .get_function("doo_format_float")
             .unwrap_or_else(|| {
                 let fn_ty = ptr_ty.fn_type(&[f64_ty.into()], false);
                 ctx.module
-                    .add_function(ffi_names::DOO_FORMAT_FLOAT, fn_ty, None)
+                    .add_function("doo_format_float", fn_ty, None)
             });
         let result = ctx
             .builder

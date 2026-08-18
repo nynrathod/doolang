@@ -43,7 +43,7 @@ impl<'ctx> InstructionHandler<'ctx> for CastHandler {
                     if target_type_id == builtin::INT {
                         let cast_fn = ctx
                             .module
-                            .get_function(ffi_names::DOO_CAST_STR_TO_INT)
+                            .get_function("doo_cast_str_to_int")
                             .unwrap_or_else(|| {
                                 let i64_ty = ctx.context.i64_type();
                                 let ptr_ty = ctx
@@ -52,7 +52,7 @@ impl<'ctx> InstructionHandler<'ctx> for CastHandler {
                                     .ptr_type(inkwell::AddressSpace::default());
                                 let fn_ty = i64_ty.fn_type(&[ptr_ty.into()], false);
                                 ctx.module
-                                    .add_function(ffi_names::DOO_CAST_STR_TO_INT, fn_ty, None)
+                                    .add_function("doo_cast_str_to_int", fn_ty, None)
                             });
 
                         Some(
@@ -67,7 +67,7 @@ impl<'ctx> InstructionHandler<'ctx> for CastHandler {
                         // Use centralized FFI function for str->float conversion
                         let cast_fn = ctx
                             .module
-                            .get_function(ffi_names::DOO_CAST_STR_TO_FLOAT)
+                            .get_function("doo_cast_str_to_float")
                             .unwrap_or_else(|| {
                                 let f64_ty = ctx.context.f64_type();
                                 let ptr_ty = ctx
@@ -76,7 +76,7 @@ impl<'ctx> InstructionHandler<'ctx> for CastHandler {
                                     .ptr_type(inkwell::AddressSpace::default());
                                 let fn_ty = f64_ty.fn_type(&[ptr_ty.into()], false);
                                 ctx.module.add_function(
-                                    ffi_names::DOO_CAST_STR_TO_FLOAT,
+                                    "doo_cast_str_to_float",
                                     fn_ty,
                                     None,
                                 )
@@ -286,11 +286,11 @@ fn emit_string_from_value<'ctx>(
         let f64_ty = ctx.f64_type();
         let format_fn = ctx
             .module
-            .get_function(ffi_names::DOO_FORMAT_FLOAT)
+            .get_function("doo_format_float")
             .unwrap_or_else(|| {
                 let fn_ty = ptr_ty.fn_type(&[f64_ty.into()], false);
                 ctx.module
-                    .add_function(ffi_names::DOO_FORMAT_FLOAT, fn_ty, None)
+                    .add_function("doo_format_float", fn_ty, None)
             });
         let result = ctx
             .builder

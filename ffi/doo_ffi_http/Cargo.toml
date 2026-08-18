@@ -21,9 +21,9 @@ serde_json = "1.0"
 libc = "0.2"
 chrono = "0.4"
 urlencoding = "2"
-doo_ffi_core = { path = "../doo_ffi_core" }
-doo_ffi_json = { path = "../doo_ffi_json" }
-doo_ffi_runtime = { path = "../doo_ffi_runtime" }
+doo_ffi_core = { path = "../../library/ffi/doo_ffi_core" }
+doo_ffi_json = { path = "../../library/ffi/doo_ffi_json" }
+doo_ffi_runtime = { path = "../../library/ffi/doo_ffi_runtime" }
 itoa = "1"
 ryu = "1"
 bcrypt = "0.18"

@@ -269,25 +269,25 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                     // Get or declare doo_map_new, doo_map_set, doo_map_set_str_array
                     let map_new_fn = ctx
                         .module
-                        .get_function(ffi_names::DOO_MAP_NEW)
+                        .get_function("doo_map_new")
                         .unwrap_or_else(|| {
                             let fn_ty = ptr_type.fn_type(&[], false);
-                            ctx.module.add_function(ffi_names::DOO_MAP_NEW, fn_ty, None)
+                            ctx.module.add_function("doo_map_new", fn_ty, None)
                         });
                     let map_set_fn = ctx
                         .module
-                        .get_function(ffi_names::DOO_MAP_SET)
+                        .get_function("doo_map_set")
                         .unwrap_or_else(|| {
                             let void_ty = ctx.context.void_type();
                             let fn_ty = void_ty.fn_type(
                                 &[ptr_type.into(), ptr_type.into(), ptr_type.into()],
                                 false,
                             );
-                            ctx.module.add_function(ffi_names::DOO_MAP_SET, fn_ty, None)
+                            ctx.module.add_function("doo_map_set", fn_ty, None)
                         });
                     let map_set_arr_fn = ctx
                         .module
-                        .get_function(ffi_names::DOO_MAP_SET_STR_ARRAY)
+                        .get_function("doo_map_set_str_array")
                         .unwrap_or_else(|| {
                             let void_ty = ctx.context.void_type();
                             let fn_ty = void_ty.fn_type(
@@ -295,7 +295,7 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                 false,
                             );
                             ctx.module
-                                .add_function(ffi_names::DOO_MAP_SET_STR_ARRAY, fn_ty, None)
+                                .add_function("doo_map_set_str_array", fn_ty, None)
                         });
 
                     // Get or declare sprintf for int/bool to string conversion
@@ -443,11 +443,11 @@ impl<'ctx> InstructionHandler<'ctx> for CompositeHandler {
                                     let f64_type = ctx.f64_type();
                                     let format_fn = ctx
                                         .module
-                                        .get_function(ffi_names::DOO_FORMAT_FLOAT)
+                                        .get_function("doo_format_float")
                                         .unwrap_or_else(|| {
                                             let fn_ty = ptr_type.fn_type(&[f64_type.into()], false);
                                             ctx.module.add_function(
-                                                ffi_names::DOO_FORMAT_FLOAT,
+                                                "doo_format_float",
                                                 fn_ty,
                                                 None,
                                             )

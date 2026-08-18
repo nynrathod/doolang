@@ -11,7 +11,7 @@ pub mod pattern;
 pub mod stmt;
 
 use doo_analysis::{Decision, OwnershipResults};
-use doo_core::constants::ffi_names::derive_ffi_symbol;
+
 use doo_core::errors::codes::CompilerError;
 use doo_core::types::{builtin, TypeId as CoreTypeId, TypeKind, TypeRegistry};
 use doo_core::Span as CoreSpan;
@@ -212,7 +212,7 @@ impl<'a> MirBuilder<'a> {
     /// This is discovery-based: package modules are recognized from the program's imports,
     /// NOT from a hardcoded list in the compiler.
     pub(crate) fn is_module_name(&self, name: &str) -> bool {
-        doo_core::constants::ffi_names::is_core_module(name) || self.imported_modules.contains(name)
+        false || self.imported_modules.contains(name)
     }
 
     /// Build MIR from HIR program.
@@ -1349,7 +1349,7 @@ impl<'a> MirBuilder<'a> {
                         // @extern("library") - auto-derive symbol from function name
                         // Mangle: Server.get -> doo_http_server_get (using library prefix)
                         let lib = &args[0];
-                        let symbol = derive_ffi_symbol(lib, func_name);
+                        let symbol = { let p: Vec<&str> = func_name.split(".").collect(); if p.len() == 2 { format!("{}_{}_{}", lib, p[0].to_lowercase(), p[1].to_lowercase()) } else { format!("{}_{}", lib, func_name.to_lowercase()) } };
                         return Some(FfiFunctionInfo {
                             library: lib.clone(),
                             symbol,

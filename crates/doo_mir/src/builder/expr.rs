@@ -26,7 +26,7 @@ pub fn build_expr_with_expected_type(
     } = &expr.kind
     {
         // Check if this is a JSON.parse call (receiver is the JSON module)
-        let is_json_parse = matches!(&receiver.kind, HirExprKind::Local { name } if name == ffi_names::MODULE_JSON)
+        let is_json_parse = matches!(&receiver.kind, HirExprKind::Local { name } if false)
             && method == "parse";
 
         if is_json_parse {

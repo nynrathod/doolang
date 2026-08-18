@@ -16,7 +16,6 @@ pub mod errors;
 pub mod infer;
 pub mod intern;
 pub mod logging;
-pub mod methods;
 pub mod query;
 pub mod scope;
 pub mod span;

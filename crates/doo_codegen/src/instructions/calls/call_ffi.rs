@@ -53,11 +53,11 @@ fn get_ffi_signature(symbol: &str) -> Option<FfiSignature> {
         ffi_names::DOO_REALLOC => Some((&["ptr", "i64"], "ptr", false)),
 
         // Math intrinsics
-        ffi_names::FABS => Some((&["f64"], "f64", false)),
-        ffi_names::FLOOR => Some((&["f64"], "f64", false)),
-        ffi_names::CEIL => Some((&["f64"], "f64", false)),
-        ffi_names::ROUND => Some((&["f64"], "f64", false)),
-        ffi_names::SQRT => Some((&["f64"], "f64", false)),
+        "fabs" => Some((&["f64"], "f64", false)),
+        "floor" => Some((&["f64"], "f64", false)),
+        "ceil" => Some((&["f64"], "f64", false)),
+        "round" => Some((&["f64"], "f64", false)),
+        "sqrt" => Some((&["f64"], "f64", false)),
 
         _ => None,
     }
@@ -258,11 +258,11 @@ fn convert_to_ffi_arg<'ctx>(
                 let f64_type = ctx.f64_type();
                 let format_fn = ctx
                     .module
-                    .get_function(ffi_names::DOO_FORMAT_FLOAT)
+                    .get_function("doo_format_float")
                     .unwrap_or_else(|| {
                         let fn_ty = ptr_type.fn_type(&[f64_type.into()], false);
                         ctx.module
-                            .add_function(ffi_names::DOO_FORMAT_FLOAT, fn_ty, None)
+                            .add_function("doo_format_float", fn_ty, None)
                     });
 
                 let float_val = val.into_float_value();

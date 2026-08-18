@@ -1,0 +1,77 @@
+struct Str {
+    data: Int
+    len: Int
+}
+
+@extern("c", "strlen")
+fn dooStrLen(ptr: Int) -> Int
+
+@extern("c", "malloc")
+fn dooStrAlloc(size: Int) -> Int
+
+@extern("c", "memcpy")
+fn dooStrCopy(dst: Int, src: Int, n: Int) -> Void
+
+@extern("c", "free")
+fn dooStrFree(ptr: Int) -> Void
+
+@extern("c", "strcmp")
+fn dooStrCmp(a: Int, b: Int) -> Int
+
+impl Str {
+    fn len(self) -> Int {
+        return self.len
+    }
+
+    fn isEmpty(self) -> Bool {
+        return self.len == 0
+    }
+
+    fn concat(self, other: Str) -> Str {
+        let newLen = self.len + other.len
+        let result = dooStrAlloc(newLen + 1)
+        dooStrCopy(result, self.data, self.len)
+        dooStrCopy(result + self.len, other.data, other.len + 1)
+        return Str { data: result, len: newLen }
+    }
+
+    fn equals(self, other: Str) -> Bool {
+        if self.len != other.len {
+            return false
+        }
+        return dooStrCmp(self.data, other.data) == 0
+    }
+
+    @extern("doo_string", "doo_string_clone")
+    fn clone(self) -> Str
+
+    @extern("doo_string", "doo_string_substring")
+    fn substring(self, start: Int, end: Int) -> Str
+
+    @extern("doo_string", "doo_string_index_of")
+    fn indexOf(self, needle: Str) -> Int
+
+    @extern("doo_string", "doo_string_to_upper")
+    fn toUpper(self) -> Str
+
+    @extern("doo_string", "doo_string_to_lower")
+    fn toLower(self) -> Str
+
+    @extern("doo_string", "doo_string_trim")
+    fn trim(self) -> Str
+
+    @extern("doo_string", "doo_string_replace_all")
+    fn replace(self, old: Str, new: Str) -> Str
+
+    @extern("doo_string", "doo_string_contains")
+    fn contains(self, needle: Str) -> Bool
+
+    @extern("doo_string", "doo_string_starts_with")
+    fn startsWith(self, prefix: Str) -> Bool
+
+    @extern("doo_string", "doo_string_ends_with")
+    fn endsWith(self, suffix: Str) -> Bool
+
+    @extern("doo_string", "doo_string_split")
+    fn split(self, delimiter: Str) -> Array<Str>
+}

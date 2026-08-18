@@ -1,0 +1,32 @@
+@extern("c", "sqrt")
+fn sqrt(val: Float) -> Float
+
+@extern("c", "floor")
+fn floor(val: Float) -> Float
+
+@extern("c", "ceil")
+fn ceil(val: Float) -> Float
+
+@extern("c", "round")
+fn round(val: Float) -> Float
+
+@extern("c", "fabs")
+fn abs(val: Float) -> Float
+
+@extern("c", "pow")
+fn pow(base: Float, exp: Float) -> Float
+
+@extern("c", "sin")
+fn sin(val: Float) -> Float
+
+@extern("c", "cos")
+fn cos(val: Float) -> Float
+
+@extern("c", "tan")
+fn tan(val: Float) -> Float
+
+@extern("c", "log")
+fn log(val: Float) -> Float
+
+const Pi = 3.14159265358979323846
+const E = 2.71828182845904523536

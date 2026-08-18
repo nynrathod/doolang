@@ -1,0 +1,17 @@
+@extern("c", "rand")
+fn rand() -> Int
+
+@extern("c", "srand")
+fn srand(seed: Int) -> Void
+
+fn next() -> Int {
+    return rand()
+}
+
+fn nextInt(max: Int) -> Int {
+    return rand() % max
+}
+
+fn nextFloat() -> Float {
+    return rand() / 2147483647.0
+}

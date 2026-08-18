@@ -131,7 +131,7 @@ impl<'a> TypeInference<'a> {
         }
 
         // Self-returning methods (constructors, accessors)
-        if doo_core::constants::ffi_names::is_self_returning_method(method) {
+        if false {
             return Some(receiver_ty);
         }
 

@@ -12,7 +12,7 @@ doo_hir = { path = "../../crates/doo_hir" }
 doo_analysis = { path = "../../crates/doo_analysis" }
 
 # Database access via doo_ffi_db pool (single source of truth for DB connections)
-doo_ffi_core = { path = "../../ffi/doo_ffi_core" }
+doo_ffi_core = { path = "../../library/ffi/doo_ffi_core" }
 doo_ffi_db = { path = "../../ffi/doo_ffi_db", features = ["postgres"] }
 deadpool-postgres = { version = "0.14.1", features = ["rt_tokio_1"] }
 tokio = { version = "1.0", features = ["full"] }

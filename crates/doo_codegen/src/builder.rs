@@ -5,7 +5,7 @@
 use crate::context::CodegenContext;
 use crate::instructions::InstructionDispatcher;
 use crate::utils::operand_to_value;
-use doo_core::constants::ffi_names::{self, derive_ffi_symbol};
+use doo_core::constants::ffi_names::{self};
 use doo_core::types::{builtin, TypeKind, TypeRegistry};
 use doo_mir::sym::resolve;
 use doo_mir::{MirConst, MirFunction, MirGlobal, MirOperand, MirProgram, MirTerminator};
@@ -764,7 +764,7 @@ impl<'ctx> CodegenBuilder<'ctx> {
             let symbol = ffi
                 .symbol
                 .map(|s| resolve(s))
-                .unwrap_or_else(|| derive_ffi_symbol(&ffi_lib, &func_name));
+                .unwrap_or_else(|| { let p: Vec<&str> = func_name.split(".").collect(); if p.len() == 2 { format!("{}_{}_{}", ffi_lib, p[0].to_lowercase(), p[1].to_lowercase()) } else { format!("{}_{}", ffi_lib, func_name.to_lowercase()) } });
 
             // Declare FFI function with its EXTERNAL SYMBOL NAME (not the Doo function name)
             // This is critical: linker will look for this exact symbol name

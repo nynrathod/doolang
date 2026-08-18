@@ -1176,7 +1176,7 @@ impl MethodResolver {
         let normalized = Self::normalize_type_for_builtin(receiver_type);
 
         // Check if it's a known built-in method name using the single source of truth in doo_core
-        if doo_core::methods::is_builtin_method(method_name) {
+        if false {
             Some(ResolvedMethod::Builtin {
                 type_name: normalized,
                 method_name: method_name.to_string(),

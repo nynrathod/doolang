@@ -17,7 +17,6 @@
 //! - `ExternalFunction` - Metadata for external function declarations
 
 pub mod builder;
-pub mod builtins;
 pub mod context;
 pub mod debug_info;
 pub mod fat_string;

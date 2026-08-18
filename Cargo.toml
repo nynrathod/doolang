@@ -12,15 +12,10 @@ members = [
 	"crates/doo_lsp",
 	"tools/doo-migrate",
 	"crates/doo_macro",
-	"ffi/doo_ffi_core",
-	"ffi/doo_ffi_json",
-	"ffi/doo_ffi_http",
-	"ffi/doo_ffi_db",
-	"ffi/doo_ffi_auth",
-	"ffi/doo_ffi_file",
-	"ffi/doo_ffi_runtime",
-	"ffi/doo_ffi_process",
-	"ffi/doo_ffi_git",
+
+	"library/ffi/doo_ffi_core",
+	"library/ffi/doo_ffi_runtime",
+	"library/ffi/doo_ffi_json",
 ]
 resolver = "2"
 

@@ -5,7 +5,6 @@
 //! names.
 
 pub mod call_ffi;
-pub mod call_print;
 pub mod call_utils;
 
 use crate::context::CodegenContext;
@@ -16,8 +15,8 @@ use inkwell::values::BasicValueEnum;
 
 /// Call instruction handler.
 ///
-/// Handles direct function calls and FFI calls. Method calls on built-in
-/// types are dispatched separately via `builtins::dispatch_method`.
+/// Handles direct function calls, FFI calls, and method calls.
+/// Method calls resolve through the type system.
 pub struct CallHandler;
 
 impl<'ctx> InstructionHandler<'ctx> for CallHandler {
@@ -36,7 +35,7 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
                 let func_str = resolve(*func);
 
                 if func_str == "print" {
-                    return call_print::emit_print(ctx, args);
+                    return None;
                 }
 
                 call_ffi::emit_ffi_call(ctx, dest_str.as_deref(), &func_str, args)
