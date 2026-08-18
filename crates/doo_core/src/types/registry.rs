@@ -143,6 +143,7 @@ impl TypeInfo {
 // ============================================================================
 
 /// The central type registry - SINGLE SOURCE OF TRUTH for all types.
+#[derive(Clone)]
 pub struct TypeRegistry {
     types: FxHashMap<TypeId, TypeInfo>,
     name_to_id: HashMap<String, TypeId>,

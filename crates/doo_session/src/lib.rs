@@ -203,7 +203,7 @@ pub struct CompileSession {
     /// Collected compiler errors.
     pub errors: Vec<CompilerError>,
     /// Maps file paths to FileIds assigned by the SourceMap.
-    file_id_map: HashMap<PathBuf, FileId>,
+    pub file_id_map: HashMap<PathBuf, FileId>,
 }
 
 impl CompileSession {
@@ -317,6 +317,16 @@ impl CompileSession {
     /// mutable access to the source map.
     pub fn source_map(&self) -> std::cell::Ref<'_, SourceMap> {
         self.source_map.borrow()
+    }
+
+    /// Get mutable access to the type registry.
+    pub fn type_registry_mut(&mut self) -> &mut TypeRegistry {
+        &mut self.type_registry
+    }
+
+    /// Get read-only access to the type registry.
+    pub fn type_registry(&self) -> &TypeRegistry {
+        &self.type_registry
     }
 }
 

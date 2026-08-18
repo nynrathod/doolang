@@ -8,6 +8,7 @@ pub mod commands;
 pub mod compile;
 pub mod incremental;
 pub mod loader;
+pub mod macro_expand;
 
 use std::env;
 use std::fs;

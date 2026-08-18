@@ -675,7 +675,9 @@ dependencies = [
  "doo_diagnostics",
  "doo_frontend",
  "doo_hir",
+ "doo_macro",
  "doo_mir",
+ "doo_session",
  "doo_thir",
  "inkwell",
  "rustc-hash 1.1.0",
@@ -785,6 +787,10 @@ dependencies = [
 [[package]]
 name = "doo_macro"
 version = "0.5.0"
+dependencies = [
+ "doo_core",
+ "rustc-hash 1.1.0",
+]
 
 [[package]]
 name = "doo_migrate"
@@ -819,6 +825,14 @@ dependencies = [
  "rustc-hash 1.1.0",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "doo_session"
+version = "0.5.0"
+dependencies = [
+ "doo_core",
+ "doo_diagnostics",
 ]
 
 [[package]]
