@@ -36,8 +36,6 @@ use doo_analysis::{
         exhaustiveness_errors_to_compiler, ownership_errors_to_compiler, scope_errors_to_compiler,
         type_errors_to_compiler,
     },
-    // AST transformations
-    transform::{transform_inline_closures, transform_route_groups},
     // Borrow checking
     BorrowChecker,
     DropInserter,
@@ -278,11 +276,13 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     program.items.extend(import_resolution.items);
     timings.push(("Import resolution", t.elapsed()));
 
-    // Phase 3.5: AST Transformations (AFTER imports so all files are transformed)
-    // Transform route DSL (groups, decorators) into explicit route registrations
+    // Phase 3.5: AST Transformations — removed (framework route DSL).
+    // Route group transforms and inline closure transforms are framework
+    // concerns that belong in a macro crate, not in the pure compiler.
+    // The doo_analysis::transform module has been deleted.
     let t = Instant::now();
-    transform_route_groups(&mut program);
-    transform_inline_closures(&mut program);
+    // transform_route_groups(&mut program);       // REMOVED: framework DSL
+    // transform_inline_closures(&mut program);   // REMOVED: framework DSL
     timings.push(("AST transforms", t.elapsed()));
 
     if opts.print_ast {
@@ -361,8 +361,6 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
         }
     }
 
-    // Phase 5: Semantic Analysis (type checking, name resolution, etc.)
-
     // ========================================================================
     // Phase 5: Semantic Analysis
     // ========================================================================
@@ -381,8 +379,6 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     source_map.add_file(main_filename, &source); // file_id = 0
 
     // Register all imported module sources in the SourceMap.
-    // The loader assigns file_ids starting from 1, and SourceMap.add_file()
-    // returns sequential indices. We must add them in file_id order so indices match.
     let mut imported = loader.imported_sources().to_vec();
     imported.sort_by_key(|(fid, _, _)| *fid);
     for (expected_id, name, src) in &imported {
@@ -404,7 +400,6 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     }
 
     // 5.1: Type Checking
-    // Validates type compatibility across the program
     let mut type_checker = TypeChecker::new(type_registry.as_ref());
     let mut thir_lowerer = doo_thir::ThirLoweringContext::new(type_registry.as_ref());
     let thir = thir_lowerer.lower_program(&hir);
@@ -414,7 +409,6 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     }
 
     // 5.2: Ownership Analysis
-    // Tracks variable ownership and decides Move/Copy/Clone automatically
     let mut ownership_analyzer = OwnershipAnalyzer::new();
     let ownership_results = match ownership_analyzer.analyze(&hir) {
         Ok(results) => Some(results),
@@ -425,15 +419,12 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     };
 
     // 5.3: Borrow Checking
-    // Ensures safe memory access - the ONLY error users can see is concurrent mutable borrow
     let mut borrow_checker = BorrowChecker::new();
     if let Err(errors) = borrow_checker.check(&hir) {
         analysis_errors.extend(borrow_errors_to_compiler(errors));
     }
 
     // 5.4: Drop Insertion
-    // Automatically inserts Drop statements at optimal points (after last use)
-    // Uses ownership results to skip dropping moved variables
     let mut drop_inserter = if let Some(ref results) = ownership_results {
         DropInserter::with_ownership_results(results)
     } else {
@@ -442,21 +433,18 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     drop_inserter.insert_drops_program(&mut hir);
 
     // 5.5: Error Flow Checking
-    // Ensures all Result types are properly handled
     let mut error_flow_checker = ErrorFlowChecker::new(&type_registry);
     if let Err(errors) = error_flow_checker.check_thir(&thir) {
         analysis_errors.extend(error_flow_errors_to_compiler(errors));
     }
 
     // 5.6: Exhaustiveness Checking
-    // Ensures all match expressions cover all possible patterns
     let mut exhaustiveness_checker = ExhaustivenessChecker::new(&type_registry);
     if let Err(errors) = exhaustiveness_checker.check_program(&thir) {
         analysis_errors.extend(exhaustiveness_errors_to_compiler(errors));
     }
 
     // Report any analysis errors via the diagnostic emitter
-    // Filter warnings unless --warn flag is passed, and deduplicate by (code, span)
     let show_warnings = opts.show_warnings;
     let errors_only: Vec<CompilerError> = {
         let mut seen = HashSet::new();
@@ -468,7 +456,6 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
                     || show_warnings
             })
             .filter(|e| {
-                // Deduplicate by (error_code discriminant, span start, span end, file_id)
                 let key = (
                     std::mem::discriminant(&e.code),
                     e.span.start,
@@ -517,8 +504,6 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
 
     // Phase 6: Build MIR
     let t = Instant::now();
-    // Pass ownership analysis results to MIR builder so it can emit
-    // Move/Copy/Clone/Borrow instructions based on ownership decisions
     let mut mir_builder = if let Some(results) = ownership_results {
         MirBuilder::with_ownership(&type_registry, results)
     } else {
@@ -531,7 +516,6 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
         eprintln!("{:#?}", mir_program);
     }
 
-    // Debug: Show MIR functions
     if doo_core::debug::is_enabled() {
         doo_debug!("DEBUG", "MIR functions: {}", mir_program.functions.len());
         for f in &mir_program.functions {
@@ -539,14 +523,12 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
         }
     }
 
-    // Validate MIR
     doo_debug!("DEBUG", "Validating MIR...");
     if let Err(e) = mir_program.validate() {
         return Err(format!("MIR validation failed: {}", e));
     }
     doo_debug!("DEBUG", "MIR validation passed");
 
-    // Check for main function
     let has_main = mir_program
         .functions
         .iter()
@@ -571,9 +553,6 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     timings.push(("LLVM codegen", t.elapsed()));
 
     // Phase 8: Verify module (SKIPPED: crashes with LLVM 22 on Windows)
-    // module.verify() calls into LLVM's verifier which crashes due to CRT mismatch
-    // or opaque pointer verification bugs in LLVM 22. The module is validated
-    // indirectly by successful compilation and linking.
     let t = Instant::now();
     doo_debug!(
         "DEBUG",
@@ -592,36 +571,20 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     // >8 bytes use sret (hidden stack pointer). If the backend honours a `tail
     // call` inside such a function, it reuses the caller's frame while sret
     // still points into it → corrupted return address → DEP violation.
-    //
-    // Four-pronged fix:
-    //   1. Re-apply "disable-tail-calls" to ALL functions (attribute-level guard)
-    //   2. Strip `tail` marker from ALL call instructions (instruction-level guard)
-    //   3. Add "frame-pointer"="all" to prevent frame pointer elimination,
-    //      which stabilises stack frames and prevents backend frame reuse
-    //   4. Add stack canary (sspstrong) for buffer overflow detection
     {
         use inkwell::values::InstructionOpcode;
 
         let no_tail = context.create_string_attribute("disable-tail-calls", "true");
         let frame_ptr = context.create_string_attribute("frame-pointer", "all");
-        // Stack canary: sspstrong inserts canaries for functions with arrays or address-taken vars
         let ssp = context.create_string_attribute("sspstrong", "");
         let ssp_buf_size = context.create_string_attribute("ssp-buffer-size", "4");
         let mut func = module.get_first_function();
         while let Some(f) = func {
-            // (1) Function-level attribute: tell backend "no tail calls"
             f.add_attribute(inkwell::attributes::AttributeLoc::Function, no_tail);
-            // (3) Preserve frame pointer in every function
             f.add_attribute(inkwell::attributes::AttributeLoc::Function, frame_ptr);
-            // (4) Stack canary for buffer overflow detection
             f.add_attribute(inkwell::attributes::AttributeLoc::Function, ssp);
             f.add_attribute(inkwell::attributes::AttributeLoc::Function, ssp_buf_size);
 
-            // (2) Walk every instruction and clear the `tail` flag on calls.
-            //     O3 adds `tail call` markers to many calls (printf, malloc,
-            //     strlen, FFI, etc.). Even with disable-tail-calls, belt-and-
-            //     suspenders: remove the IR-level hint so the backend can never
-            //     see it.
             let mut bb = f.get_first_basic_block();
             while let Some(block) = bb {
                 let mut instr = block.get_first_instruction();
@@ -643,9 +606,6 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     }
 
     // Phase 9.5: Add POSIX compatibility stubs AFTER optimization (Windows only)
-    // Must be after optimization so the stubs aren't removed by dead code elimination.
-    // FFI C code (libgit2, libssh2) uses POSIX names (close, read) which on
-    // Windows map to _close, _read. These stubs enable lld-link auto-import.
     #[cfg(target_os = "windows")]
     add_posix_compat_stubs(&module);
     timings.push(("Optimize + harden", t.elapsed()));
@@ -655,7 +615,6 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
         let ll_file = format!("{}.ll", opts.output_name);
         let ir_string = module.print_to_string();
         let ir_rust = ir_string.to_str().unwrap_or("").to_string();
-        // Leak the LLVMString to avoid LLVMDisposeMessage crash (LLVM 22 CRT mismatch)
         std::mem::forget(ir_string);
         fs::write(&ll_file, &ir_rust).map_err(|e| format!("Failed to write LLVM IR: {}", e))?;
     }
@@ -691,8 +650,6 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
 // Input Resolution
 // ============================================================================
 
-/// Resolve the input path to an actual main.doo file.
-/// Print phase-by-phase timing information.
 fn print_timings(timings: &[(&str, std::time::Duration)], total: std::time::Duration) {
     eprintln!();
     eprintln!("=== Compilation Timings ===");
@@ -727,8 +684,6 @@ fn print_timings(timings: &[(&str, std::time::Duration)], total: std::time::Dura
     eprintln!();
 }
 
-/// Try to find `main.doo` or `src/main.doo` in a directory.
-/// Returns the path to main.doo if found, in order: `dir/main.doo` then `dir/src/main.doo`.
 fn try_find_main_in(dir: &Path) -> Option<PathBuf> {
     let main_file = dir.join("main.doo");
     if main_file.exists() {
@@ -741,9 +696,6 @@ fn try_find_main_in(dir: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Walk UP the directory tree from `start` looking for a project root
-/// (a directory containing `main.doo` or `src/main.doo`).
-/// Returns (project_root, path_to_main.doo) if found.
 fn find_project_up(start: &Path) -> Option<(PathBuf, PathBuf)> {
     let mut current = if start.is_dir() {
         start.to_path_buf()
@@ -760,25 +712,21 @@ fn find_project_up(start: &Path) -> Option<(PathBuf, PathBuf)> {
 }
 
 fn resolve_input_path(input: &Path) -> Result<PathBuf, String> {
-    // 1. Input is a file → use directly
     if input.is_file() {
         return Ok(input.to_path_buf());
     }
 
-    // 2. Input is an existing directory → try main.doo / src/main.doo
     if input.is_dir() {
         if let Some(main_path) = try_find_main_in(input) {
             return Ok(main_path);
         }
     }
 
-    // 3. Walk UP from CWD to find project root → direct, fast (O(depth) stat calls)
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     if let Some((_root, main_path)) = find_project_up(&cwd) {
         return Ok(main_path);
     }
 
-    // 4. Last resort: deep BFS scan from CWD (handles monorepos, nested projects)
     let search_root = if input.is_dir() {
         input.to_path_buf()
     } else {
@@ -798,7 +746,6 @@ fn resolve_input_path(input: &Path) -> Result<PathBuf, String> {
         ));
     }
 
-    // 5. DOO_ENTRY env var for explicit override
     if let Ok(entry) = env::var("DOO_ENTRY") {
         let entry_path = PathBuf::from(&entry);
         let entry_path = if entry_path.is_absolute() {
@@ -815,7 +762,6 @@ fn resolve_input_path(input: &Path) -> Result<PathBuf, String> {
         }
     }
 
-    // Multiple candidates — ambiguous
     let display_path = if input.is_dir() || input.is_file() {
         input
     } else {
@@ -849,7 +795,6 @@ pub fn discover_main_doo_candidates(
             continue;
         }
 
-        // Check main.doo
         let main_file = dir.join("main.doo");
         if main_file.exists() {
             results.push(main_file);
@@ -858,7 +803,6 @@ pub fn discover_main_doo_candidates(
             }
         }
 
-        // Check src/main.doo
         let src_main = dir.join("src").join("main.doo");
         if src_main.exists() {
             results.push(src_main);
@@ -867,7 +811,6 @@ pub fn discover_main_doo_candidates(
             }
         }
 
-        // Explore subdirectories
         if depth < max_depth {
             if let Ok(entries) = fs::read_dir(&dir) {
                 for entry in entries.flatten() {
@@ -877,7 +820,6 @@ pub fn discover_main_doo_candidates(
                     }
 
                     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                    // Skip hidden, target, and node_modules
                     if name.starts_with('.')
                         || name == "target"
                         || name == "target-windows"
@@ -902,7 +844,6 @@ pub fn discover_main_doo_candidates(
 // Object File Generation
 // ============================================================================
 
-/// Compile LLVM module to object file.
 fn compile_to_object(
     module: &inkwell::module::Module,
     opts: &CompileOptions,
@@ -936,54 +877,38 @@ fn compile_to_object(
         .write_to_file(module, FileType::Object, &obj_path)
         .map_err(|e| format!("Failed to write object file: {}", e))?;
 
-    // Leak ALL LLVM resources to avoid LLVMDispose* crashes on Windows (LLVM 22 CRT mismatch).
     std::mem::forget(target_machine);
     std::mem::forget(triple);
     std::mem::forget(cpu_llvm);
     std::mem::forget(features_llvm);
-    // Note: 'target' is just a reference (LLVMTargetRef), no dispose needed.
 
     Ok(obj_path)
 }
 
 // ============================================================================
-// Linking
+// Linking — Pure compiler: links only Tier A runtime + @extern-declared libs
 // ============================================================================
 
-/// Normalize FFI library name from @extern decorator to actual crate name.
-///
-/// Generic rule: `doo_X` → `doo_ffi_X`.
-/// Only special-cases are aliases where the short name differs from the crate suffix.
+/// Normalize FFI library name: `doo_X` → `doo_ffi_X`.
+/// No special cases — the compiler does not know which libraries exist.
 fn normalize_ffi_lib_name(name: &str) -> String {
-    // Already normalized
     if name.starts_with("doo_ffi_") {
         return name.to_string();
     }
-
-    // Generic rule: doo_X -> doo_ffi_X
     if let Some(suffix) = name.strip_prefix("doo_") {
-        match suffix {
-            // Aliases where short name doesn't match crate suffix
-            "database" => "doo_ffi_db".to_string(),
-            "ws" | "websocket" => "doo_ffi_http".to_string(), // WS lives in HTTP crate
-            "config" => "doo_ffi_core".to_string(),           // Config lives in core crate
-            _ => format!("doo_ffi_{}", suffix),
-        }
+        format!("doo_ffi_{}", suffix)
     } else {
-        // Not a doo library — pass through as-is
         name.to_string()
     }
 }
 
-/// Link object file into executable.
 fn link_object_file(
     obj_file: &Path,
     opts: &CompileOptions,
     mir_program: &doo_mir::MirProgram,
 ) -> Result<PathBuf, String> {
     // Collect FFI libraries from @extern declarations in MIR.
-    // This is entirely discovery-based — only libraries that the program
-    // actually imports via @extern will be linked.
+    // Only libraries the program actually imports will be linked.
     let mut ffi_libs: HashSet<String> = mir_program
         .functions
         .iter()
@@ -994,23 +919,17 @@ fn link_object_file(
         })
         .collect();
 
-    // Always include core runtime and JSON (language fundamentals)
+    // Always include Tier A runtime (language fundamentals)
     ffi_libs.insert("doo_ffi_core".to_string());
     ffi_libs.insert("doo_ffi_json".to_string());
 
-    // Transitive dependency: async runtime is needed by HTTP server, WebSocket,
-    // and Process — link it when any of those are present or async features used.
-    if mir_program.has_async_features()
-        || ffi_libs.contains("doo_ffi_http")
-        || ffi_libs.contains("doo_ffi_process")
-    {
+    // Link async runtime when the program uses async features
+    if mir_program.has_async_features() {
         ffi_libs.insert("doo_ffi_runtime".to_string());
     }
 
-    // Build search paths
     let search_paths = build_library_search_paths();
 
-    // Platform-specific linking
     #[cfg(target_os = "windows")]
     {
         link_windows(obj_file, opts, &ffi_libs, &search_paths)
@@ -1022,22 +941,18 @@ fn link_object_file(
     }
 }
 
-/// Build list of paths to search for FFI libraries.
 fn build_library_search_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
-    // Same directory as doo executable
     if let Ok(exe_path) = env::current_exe() {
         if let Some(dir) = exe_path.parent() {
             paths.push(dir.to_path_buf());
 
-            // Search lib/ subdirectory next to executable (installed .lib files)
             let lib_dir = dir.join("lib");
             if lib_dir.exists() {
                 paths.push(lib_dir);
             }
 
-            // Search packages/ subdirectories next to executable
             let packages_dir = dir.join("packages");
             if packages_dir.exists() {
                 if let Ok(entries) = fs::read_dir(&packages_dir) {
@@ -1051,7 +966,6 @@ fn build_library_search_paths() -> Vec<PathBuf> {
         }
     }
 
-    // Current working directory targets
     if let Ok(cwd) = env::current_dir() {
         paths.push(cwd.join("target").join("release"));
         paths.push(cwd.join("target").join("debug"));
@@ -1062,7 +976,6 @@ fn build_library_search_paths() -> Vec<PathBuf> {
         #[cfg(target_os = "linux")]
         paths.push(cwd.join("target-linux").join("release"));
 
-        // Search packages/ subdirectories in project root
         let packages_dir = cwd.join("packages");
         if packages_dir.exists() {
             if let Ok(entries) = fs::read_dir(&packages_dir) {
@@ -1075,7 +988,6 @@ fn build_library_search_paths() -> Vec<PathBuf> {
         }
     }
 
-    // User home directories
     if let Ok(home) = env::var("HOME").or_else(|_| env::var("USERPROFILE")) {
         let home_path = PathBuf::from(&home);
         paths.push(home_path.join(".local").join("bin").join("doo"));
@@ -1083,7 +995,6 @@ fn build_library_search_paths() -> Vec<PathBuf> {
         paths.push(home_path.join(".doo").join("lib"));
     }
 
-    // System paths (Unix)
     #[cfg(not(target_os = "windows"))]
     {
         paths.push(PathBuf::from("/usr/local/lib"));
@@ -1093,12 +1004,10 @@ fn build_library_search_paths() -> Vec<PathBuf> {
     paths
 }
 
-/// Find an FFI library in search paths.
 fn find_ffi_library(lib_name: &str, paths: &[PathBuf]) -> Option<(PathBuf, PathBuf)> {
     for search_path in paths {
         #[cfg(target_os = "windows")]
         {
-            // Windows: .dll.lib or .lib
             let dll_lib = search_path.join(format!("{}.dll.lib", lib_name));
             if dll_lib.exists() {
                 return Some((search_path.clone(), dll_lib));
@@ -1111,7 +1020,6 @@ fn find_ffi_library(lib_name: &str, paths: &[PathBuf]) -> Option<(PathBuf, PathB
 
         #[cfg(not(target_os = "windows"))]
         {
-            // Unix: lib*.so, lib*.dylib, lib*.a
             let so = search_path.join(format!("lib{}.so", lib_name));
             if so.exists() {
                 return Some((search_path.clone(), so));
@@ -1136,15 +1044,6 @@ fn find_ffi_library(lib_name: &str, paths: &[PathBuf]) -> Option<(PathBuf, PathB
 #[cfg(target_os = "windows")]
 const EMBEDDED_LINKER: &[u8] = include_bytes!("../../../linkers/lld-link.exe");
 
-/// Add POSIX-to-MSVC forwarding stubs to the LLVM module.
-/// On Windows, C code compiled for MSVC uses _close/_read (underscore-prefixed)
-/// but some FFI libraries (libgit2, libssh2) reference the unprefixed POSIX names
-/// via __declspec(dllimport). The dllimport mechanism looks for __imp_close etc.
-/// We define these as global pointers pointing to the MSVC-named functions.
-///
-/// H04: Uses dynamic discovery instead of a hardcoded table. Scans the module
-/// for external function references and generates stubs for any POSIX names
-/// that have a corresponding MSVC `_`-prefixed equivalent in the UCRT.
 #[cfg(target_os = "windows")]
 fn add_posix_compat_stubs(module: &inkwell::module::Module) {
     use inkwell::module::Linkage;
@@ -1153,9 +1052,6 @@ fn add_posix_compat_stubs(module: &inkwell::module::Module) {
     let ctx = module.get_context();
     let ptr_type = ctx.ptr_type(AddressSpace::default());
 
-    // Known POSIX names that have _-prefixed MSVC equivalents in libucrt.
-    // This set is authoritative: only these names get stubs (prevents false matches).
-    // New FFI crates just need to use standard POSIX calls — no manual updates needed.
     static POSIX_STUBS: &[&str] = &[
         "close", "read", "open", "write", "lseek", "access", "chmod", "mkdir", "rmdir", "unlink",
         "stat", "fstat", "dup", "dup2", "fileno", "isatty", "getcwd", "chdir", "umask", "mktemp",
@@ -1163,29 +1059,21 @@ fn add_posix_compat_stubs(module: &inkwell::module::Module) {
         "getpid", "swab", "tempnam", "tzset", "wopen", "waccess", "wstat",
     ];
 
-    // Scan module for external function references matching known POSIX names.
-    // Generate stubs for ALL known POSIX names — external FFI libraries (.lib files)
-    // may reference these symbols (e.g., libgit2 uses close/read/write) but those
-    // references aren't visible in the LLVM module. The linker ignores unused stubs.
     let generic_fn_ty = ctx.void_type().fn_type(&[], false);
 
     for posix_name in POSIX_STUBS {
         let imp_name = format!("__imp_{}", posix_name);
 
-        // Skip if stub already exists
         if module.get_global(&imp_name).is_some() {
             continue;
         }
 
-        // Build the MSVC-prefixed name
         let msvc_name = format!("_{}", posix_name);
 
-        // Declare the MSVC-named function (if not already present)
         let msvc_fn = module.get_function(&msvc_name).unwrap_or_else(|| {
             module.add_function(&msvc_name, generic_fn_ty, Some(Linkage::External))
         });
 
-        // Create __imp_<posix_name> = constant pointer to _<posix_name>
         let imp_global = module.add_global(ptr_type, Some(AddressSpace::default()), &imp_name);
         imp_global.set_initializer(&msvc_fn.as_global_value().as_pointer_value());
         imp_global.set_linkage(Linkage::External);
@@ -1227,17 +1115,6 @@ fn link_windows(
 
     let sdk_paths = find_windows_sdk_paths();
 
-    // Prefer MSVC's native link.exe over embedded lld-link.
-    //
-    // MSVC's linker correctly handles .pdata/.xdata associative COMDAT
-    // deduplication when /FORCE:MULTIPLE is used. The embedded lld-link
-    // (LLVM 18) has a known bug where it does not properly discard
-    // .pdata entries for COMDATs removed during duplicate resolution,
-    // leaving stale exception table entries that corrupt SEH unwinding
-    // and cause DEP crashes at the module base address.
-    //
-    // This is especially critical for FFI crates containing C code
-    // (libgit2, zlib, etc.) whose functions have complex .pdata entries.
     let linker = sdk_paths
         .as_ref()
         .and_then(|p| p.msvc_lib.as_ref())
@@ -1247,60 +1124,26 @@ fn link_windows(
 
     let mut cmd = Command::new(&linker);
 
-    // Generate MAP file for crash debugging (maps addresses to function names)
     let map_path = exe_path.with_extension("map");
     cmd.arg(format!("/MAP:{}", map_path.display()));
 
     cmd.arg(format!("/OUT:{}", exe_path.display()))
         .arg(obj_file)
         .arg("/SUBSYSTEM:CONSOLE")
-        // Use mainCRTStartup (from libcmt.lib) as the entry point.
-        // This initializes the C runtime (TLS, heap, static ctors) before
-        // calling main(). Without this, Tokio/async runtimes fail silently
-        // because thread-local storage isn't set up.
         .arg("/ENTRY:mainCRTStartup");
 
-    // When linking multiple Rust static libraries, each contains its own copy of
-    // the Rust runtime symbols (__rust_alloc, compiler-builtins, etc.).
-    // Allow duplicates so the linker uses the first definition and ignores the rest.
-    //
-    // IMPORTANT: /FORCE:MULTIPLE disables /OPT:REF by default (per MSVC docs).
-    // Do NOT re-enable /OPT:REF with /FORCE:MULTIPLE — it can strip sections
-    // that surviving duplicate copies still reference, corrupting .pdata/.xdata
-    // exception tables and causing DEP crashes at the module base address.
     let use_force_multiple = ffi_libs.len() > 1;
     if use_force_multiple {
         cmd.arg("/FORCE:MULTIPLE");
-        // CRITICAL: Explicitly disable ICF and REF to prevent .pdata corruption.
-        //
-        // /FORCE:MULTIPLE only implies /OPT:NOREF (per MSVC docs), but ICF
-        // (Identical COMDAT Folding) REMAINS ENABLED by default for non-debug
-        // builds. ICF folds COMDATs with identical machine code but potentially
-        // different .pdata/.xdata exception table entries, corrupting SEH
-        // unwind data and causing DEP crashes at the module base address.
-        //
-        // This is the root cause of the DEP crash in FFI C code (libgit2, etc.):
-        //  1. Multiple Rust static libraries define identical generic functions
-        //  2. ICF folds them into one, discarding some .pdata entries
-        //  3. An exception in the surviving function finds a stale .pdata entry
-        //  4. The SEH unwinder jumps to a corrupted address (module base) → DEP
-        //
-        // /OPT:NOICF prevents content-based folding, keeping all .pdata entries valid.
-        // /OPT:NOREF prevents section garbage collection, keeping all code referenced.
-        // The size increase is negligible (~100KB) vs. the risk of silent DEP crashes.
         cmd.arg("/OPT:NOICF,NOREF");
-        // Also produce a MAP file for crash diagnostics
         let map_path = exe_path.with_extension("map");
         cmd.arg(format!("/MAP:{}", map_path.display()));
     }
 
-    // Suppress dynamic CRT defaultlib to avoid MSVCRT.lib(utility.obj) conflicts.
-    // All CRT symbols come from the static set instead.
     cmd.arg("/NODEFAULTLIB:MSVCRT")
         .arg("/NODEFAULTLIB:MSVCRTD")
         .arg("/NODEFAULTLIB:libcmtd");
 
-    // Add Windows SDK paths
     if let Some(paths) = sdk_paths {
         if let Some(ucrt) = paths.ucrt_lib {
             cmd.arg(format!("/LIBPATH:{}", ucrt));
@@ -1311,41 +1154,20 @@ fn link_windows(
         if let Some(msvc) = paths.msvc_lib {
             cmd.arg(format!("/LIBPATH:{}", msvc));
         }
-        // STATIC CRT strategy for single-binary FFI linking:
-        //
-        //   libcmt.lib        → CRT startup, _tls_used, atexit
-        //   libvcruntime.lib  → __vcrt_initialize, __chkstk, __security_cookie
-        //   libucrt.lib       → All C runtime functions (getenv, malloc, etc.)
-        //
-        // /WHOLEARCHIVE:libucrt.lib forces ALL UCRT objects to load,
-        // enabling lld-link's __imp_X → X auto-import resolution for
-        // FFI C code compiled with /MD (__declspec(dllimport)).
-        // This produces harmless LNK4217 warnings.
         cmd.arg("/WHOLEARCHIVE:libucrt.lib")
             .arg("libvcruntime.lib")
             .arg("libcmt.lib")
             .arg("legacy_stdio_definitions.lib");
     }
 
-    // Windows system libraries required by FFI crates (added once, not per-lib)
-    cmd.arg("ws2_32.lib")
-        .arg("userenv.lib")
-        .arg("bcrypt.lib")
-        .arg("kernel32.lib")
+    // Core Windows runtime libraries only — no framework system libraries.
+    // Framework packages (HTTP, DB, Auth) declare their own system dependencies.
+    cmd.arg("kernel32.lib")
         .arg("advapi32.lib")
         .arg("ntdll.lib")
-        .arg("winhttp.lib")
-        .arg("ole32.lib")
-        .arg("rpcrt4.lib")
-        .arg("secur32.lib")
-        .arg("crypt32.lib")
-        .arg("user32.lib")
-        .arg("shell32.lib");
+        .arg("userenv.lib");
 
-    // Link FFI libraries in deterministic alphabetical order.
-    // With /FORCE:MULTIPLE, the FIRST definition of each duplicate symbol wins.
-    // Alphabetical order ensures doo_ffi_core's runtime symbols win deduplication,
-    // which is correct since core provides the canonical runtime implementation.
+    // Link FFI libraries in alphabetical order for deterministic builds.
     let mut lib_entries: Vec<(&String, PathBuf, PathBuf)> = Vec::new();
     for lib in ffi_libs.iter() {
         if let Some((lib_dir, lib_file)) = find_ffi_library(lib, search_paths) {
@@ -1360,7 +1182,6 @@ fn link_windows(
         }
     }
 
-    // Alphabetical by library name for deterministic, reproducible builds.
     lib_entries.sort_by(|a, b| a.0.cmp(b.0));
 
     let mut added_paths = HashSet::new();
@@ -1374,8 +1195,6 @@ fn link_windows(
     let result = cmd.output();
     match result {
         Ok(r) if r.status.success() => {
-            // Show linker warnings even on success — critical for diagnosing
-            // symbol conflicts with /FORCE:MULTIPLE linking.
             let stderr = String::from_utf8_lossy(&r.stderr);
             if !stderr.is_empty() {
                 let debug = std::env::var("DOO_DEBUG").is_ok();
@@ -1453,11 +1272,7 @@ fn find_msvc_lib_path(base: &str) -> Option<String> {
         return None;
     }
 
-    // Dynamically scan all Visual Studio installation years and editions.
-    // This avoids hardcoding year/edition lists (2022, 2019, etc.) and
-    // automatically supports future VS releases (2025, 2027, etc.).
-    // Picks the newest year + newest MSVC toolchain version.
-    let mut best: Option<(String, String)> = None; // (year_sort_key, full_path)
+    let mut best: Option<(String, String)> = None;
 
     if let Ok(years) = fs::read_dir(base_path) {
         for year_entry in years.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()) {
@@ -1490,20 +1305,9 @@ fn find_msvc_lib_path(base: &str) -> Option<String> {
     best.map(|(_, path)| path)
 }
 
-/// Find MSVC's native link.exe from the Visual Studio installation.
-///
-/// MSVC's link.exe handles /FORCE:MULTIPLE + .pdata/.xdata correctly,
-/// unlike lld-link (LLVM 18) which has known bugs with associative
-/// COMDAT deduplication that corrupt SEH exception tables and cause
-/// DEP crashes at the module base address.
-///
-/// The path is derived from the MSVC lib directory:
-///   .../VC/Tools/MSVC/{version}/lib/x64  →
-///   .../VC/Tools/MSVC/{version}/bin/Hostx64/x64/link.exe
 #[cfg(target_os = "windows")]
 fn find_msvc_linker(msvc_lib: &str) -> Option<PathBuf> {
     let path = Path::new(msvc_lib);
-    // Go up from lib/x64 to the MSVC version root
     let msvc_version_root = path.parent()?.parent()?;
     let linker = msvc_version_root
         .join("bin")
@@ -1528,7 +1332,6 @@ fn link_unix(
     ffi_libs: &HashSet<String>,
     search_paths: &[PathBuf],
 ) -> Result<PathBuf, String> {
-    // Check for clang
     if Command::new("clang").arg("--version").output().is_err() {
         return Err("Clang not found. Install with:\n\
             - Ubuntu/Debian: sudo apt install clang\n\
@@ -1542,13 +1345,8 @@ fn link_unix(
     let mut cmd = Command::new("clang");
     cmd.arg(obj_file).arg("-o").arg(&exe_path).arg("-lm");
 
-    // Enable per-function/data section GC — critical for static linking performance.
-    // Combined with --gc-sections in the linker, this eliminates unused code from
-    // the Rust runtime copies embedded in each static library.
     cmd.arg("-ffunction-sections").arg("-fdata-sections");
 
-    // Use lld if available — much faster than GNU ld for large Rust static libraries.
-    // lld can be 10-50x faster for linking multiple Rust static archives.
     #[cfg(target_os = "linux")]
     let _has_lld = {
         let lld_available = Command::new("ld.lld").arg("--version").output().is_ok();
@@ -1560,24 +1358,15 @@ fn link_unix(
         lld_available
     };
 
-    // Platform-specific system libraries
+    // Core system libraries only — no framework dependencies.
+    // Framework packages declare their own system library dependencies.
     #[cfg(target_os = "linux")]
     {
         cmd.arg("-lpthread").arg("-ldl");
-        // GC unused sections — critical for static linking performance.
-        // Each Rust static library embeds the full runtime; --gc-sections
-        // strips the 8 duplicate copies, drastically reducing link time.
         cmd.arg("-Wl,--gc-sections");
-        // Export symbols to dynamic table when multiple FFI libs are linked —
-        // cross-crate FFI uses dlsym for runtime symbol resolution
-        // (e.g., auth → http register, http → db bridge).
-        // Programs with a single FFI lib skip this overhead.
         if ffi_libs.len() > 1 {
             cmd.arg("-rdynamic");
         }
-        // When linking multiple Rust static libraries, each contains its own copy of
-        // the Rust runtime symbols (__rust_alloc, compiler-builtins, etc.).
-        // Allow duplicates so the linker uses the first definition and ignores the rest.
         if ffi_libs.len() > 1 {
             cmd.arg("-Wl,--allow-multiple-definition");
         }
@@ -1586,39 +1375,15 @@ fn link_unix(
     #[cfg(target_os = "macos")]
     {
         cmd.arg("-lpthread");
-        cmd.arg("-framework").arg("Security");
-        cmd.arg("-framework").arg("CoreFoundation");
-        cmd.arg("-framework").arg("SystemConfiguration");
-        // When linking multiple Rust static libraries, each contains its own copy of
-        // the Rust runtime symbols (__rust_alloc, compiler-builtins, etc.).
-        // Allow duplicates so the linker uses the first definition and ignores the rest.
         if ffi_libs.len() > 1 {
             cmd.arg("-Wl,-multiply_defined,suppress");
-            // Export dynamic symbols so dlsym(RTLD_DEFAULT) can find cross-crate
-            // bridge symbols at runtime (macOS equivalent of -rdynamic on Linux).
             cmd.arg("-Wl,-export_dynamic");
         }
     }
 
-    // Link FFI libraries in dependency order
-    // Names must match the normalized names in ffi_libs (doo_ffi_* format)
-    let lib_order = [
-        "doo_ffi_http",
-        "doo_ffi_auth",
-        "doo_ffi_db",
-        "doo_ffi_git",
-        "doo_ffi_file",
-        "doo_ffi_process",
-        "doo_ffi_runtime",
-        "doo_ffi_core",
-        "doo_ffi_json",
-    ];
-
-    let mut sorted_libs: Vec<&String> = lib_order
-        .iter()
-        .filter_map(|lib| ffi_libs.iter().find(|l| l.as_str() == *lib))
-        .collect();
-    sorted_libs.extend(ffi_libs.iter().filter(|l| !lib_order.contains(&l.as_str())));
+    // Link all FFI libraries in alphabetical order — no hardcoded dependency list.
+    let mut sorted_libs: Vec<&String> = ffi_libs.iter().collect();
+    sorted_libs.sort();
 
     let mut added_paths = HashSet::new();
     for lib in sorted_libs {
@@ -1635,29 +1400,8 @@ fn link_unix(
                 }
                 cmd.arg(format!("-l{}", lib));
             } else {
-                // Static archive (.a) linking.
-                // Only use --whole-archive for the HTTP server library — it has
-                // runtime-registered route handlers and init code that the linker
-                // can't see direct references to. Auth and DB symbols are called
-                // explicitly from compiler-generated code and don't need it.
-                // Minimizing --whole-archive usage is critical for link speed:
-                // each Rust static lib embeds ~10MB of runtime, and --whole-archive
-                // forces the linker to process ALL of it.
-                #[cfg(target_os = "linux")]
-                {
-                    let needs_whole_archive = lib.contains("http");
-                    if needs_whole_archive {
-                        cmd.arg("-Wl,--whole-archive");
-                        cmd.arg(lib_file.to_string_lossy().as_ref());
-                        cmd.arg("-Wl,--no-whole-archive");
-                    } else {
-                        cmd.arg(lib_file.to_string_lossy().as_ref());
-                    }
-                }
-                #[cfg(not(target_os = "linux"))]
-                {
-                    cmd.arg(lib_file.to_string_lossy().as_ref());
-                }
+                // Link all static archives the same way — no special whole-archive treatment.
+                cmd.arg(lib_file.to_string_lossy().as_ref());
             }
         } else {
             #[cfg(target_os = "macos")]
@@ -1672,16 +1416,6 @@ fn link_unix(
                 lib_name, search_paths
             ));
         }
-    }
-
-    // System library dependencies for FFI crates.
-    // These must come AFTER the static archives (linker resolves left-to-right).
-    // Discovered dynamically from the ffi_libs set — no hardcoded assumptions.
-    // When using the bundle, all system deps are needed since it contains all crates.
-    if ffi_libs.contains("doo_ffi_git") {
-        // libgit2 depends on zlib for compression. OpenSSL is vendored (statically
-        // compiled into the git2 static archive via `vendored-openssl` feature).
-        cmd.arg("-lz");
     }
 
     let result = cmd.output();
@@ -1704,22 +1438,16 @@ mod tests {
     use super::*;
     use doo_core::Span;
 
-    // Helper to create a test span
     fn test_span() -> Span {
         Span::new(0, 10)
     }
 
-    // Helper to create an empty HIR program
     fn empty_program() -> doo_hir::HirProgram {
         doo_hir::HirProgram {
             items: vec![],
             span: test_span(),
         }
     }
-
-    // ========================================================================
-    // Error Conversion Tests (analysis errors → CompilerError)
-    // ========================================================================
 
     #[test]
     fn test_type_error_to_compiler_error() {
@@ -1769,7 +1497,6 @@ mod tests {
         assert_eq!(compiler_errors.len(), 2);
         assert_eq!(compiler_errors[0].code, ErrorCode::ConcurrentMutableBorrow);
         assert_eq!(compiler_errors[1].code, ErrorCode::ConcurrentMutableBorrow);
-        // Should have secondary label pointing to original borrow
         assert_eq!(compiler_errors[0].labels.len(), 1);
     }
 
@@ -1836,55 +1563,41 @@ mod tests {
 
         let mut emitter = DiagnosticEmitter::new(false);
         emitter.emit(&err, &sm).unwrap();
-        // Should not panic — output goes to stderr
     }
-
-    // ========================================================================
-    // Analysis Integration Tests
-    // ========================================================================
 
     #[test]
     fn test_type_checker_new() {
         let registry = Arc::new(TypeRegistry::new());
         let _checker = TypeChecker::new(&registry);
-        // Should not panic
     }
 
     #[test]
     fn test_ownership_analyzer_new() {
         let _analyzer = OwnershipAnalyzer::new();
-        // Should not panic
     }
 
     #[test]
     fn test_borrow_checker_new() {
         let _checker = BorrowChecker::new();
-        // Should not panic
     }
 
     #[test]
     fn test_drop_inserter_new() {
         let _inserter = DropInserter::new();
-        // Should not panic
     }
 
     #[test]
     fn test_error_flow_checker_new() {
         let registry = TypeRegistry::new();
         let _checker = ErrorFlowChecker::new(&registry);
-        // Should not panic
     }
 
     #[test]
     fn test_exhaustiveness_checker_new() {
         let registry = TypeRegistry::new();
         let _checker = ExhaustivenessChecker::new(&registry);
-        // Should not panic
     }
 
-    // ========================================================================
-    // Analysis Pass Integration Tests (Empty Program)
-    // ========================================================================
     #[test]
     fn test_type_checker_empty_program() {
         let hir = empty_program();
@@ -1923,7 +1636,6 @@ mod tests {
         let mut hir = empty_program();
         let mut inserter = DropInserter::new();
         inserter.insert_drops_program(&mut hir);
-        // Should not panic
     }
 
     #[test]
@@ -1952,20 +1664,12 @@ mod tests {
         );
     }
 
-    // ========================================================================
-    // Path Resolution Tests
-    // ========================================================================
-
     #[test]
     fn test_discover_main_doo_candidates_nonexistent_dir() {
         let candidates =
             discover_main_doo_candidates(Path::new("/this/path/does/not/exist"), 4, 25);
         assert!(candidates.is_empty());
     }
-
-    // ========================================================================
-    // Compile Options Tests
-    // ========================================================================
 
     #[test]
     fn test_compile_options_default() {
@@ -1999,10 +1703,6 @@ mod tests {
         assert_eq!(opts1.keep_ll, opts2.keep_ll);
     }
 
-    // ========================================================================
-    // Compile Result Tests
-    // ========================================================================
-
     #[test]
     fn test_compile_result_success() {
         let result = CompileResult {
@@ -2027,15 +1727,10 @@ mod tests {
         assert!(result.exe_path.is_none());
     }
 
-    // ========================================================================
-    // Full Analysis Pipeline Integration Test
-    // ========================================================================
-
     #[test]
     fn test_full_analysis_pipeline_simple_function() {
         use doo_hir::{HirFunction, HirItem, HirProgram, HirStmt, HirStmtKind};
 
-        // Create a simple function with a return statement
         let hir = HirProgram {
             items: vec![HirItem::Function(HirFunction {
                 name: "main".to_string(),
@@ -2054,7 +1749,6 @@ mod tests {
             span: test_span(),
         };
 
-        // Run all analysis passes
         let registry = Arc::new(TypeRegistry::new());
         let mut lowerer = doo_thir::ThirLoweringContext::new(registry.as_ref());
         let thir = lowerer.lower_program(&hir);
@@ -2097,30 +1791,26 @@ mod tests {
             HirStmtKind, Ownership,
         };
 
-        // Create HIR with a variable declaration
         let hir = HirProgram {
             items: vec![HirItem::Function(HirFunction {
                 name: "main".to_string(),
                 params: vec![],
                 return_type: None,
                 error_type: None,
-                body: vec![
-                    // let x = 42
-                    HirStmt {
-                        kind: HirStmtKind::Let {
-                            name: "x".to_string(),
-                            value: HirExpr {
-                                kind: HirExprKind::Const(ConstValue::Int(42)),
-                                span: test_span(),
-                                type_id: Some(doo_core::types::builtin::INT),
-                            },
-                            mutable: false,
+                body: vec![HirStmt {
+                    kind: HirStmtKind::Let {
+                        name: "x".to_string(),
+                        value: HirExpr {
+                            kind: HirExprKind::Const(ConstValue::Int(42)),
+                            span: test_span(),
                             type_id: Some(doo_core::types::builtin::INT),
-                            ownership: Ownership::Owned,
                         },
-                        span: test_span(),
+                        mutable: false,
+                        type_id: Some(doo_core::types::builtin::INT),
+                        ownership: Ownership::Owned,
                     },
-                ],
+                    span: test_span(),
+                }],
                 span: test_span(),
                 decorators: vec![],
                 is_async: false,
@@ -2129,10 +1819,8 @@ mod tests {
             span: test_span(),
         };
 
-        // Run analysis passes
         let registry = Arc::new(TypeRegistry::new());
 
-        // Lower HIR to THIR for type checking
         let mut lowerer = doo_thir::ThirLoweringContext::new(registry.as_ref());
         let thir = lowerer.lower_program(&hir);
 
@@ -2145,7 +1833,6 @@ mod tests {
         let mut borrow_checker = BorrowChecker::new();
         assert!(borrow_checker.check(&hir).is_ok());
 
-        // Drop insertion should work
         let mut hir_mut = hir.clone();
         let mut drop_inserter = DropInserter::new();
         drop_inserter.insert_drops_program(&mut hir_mut);

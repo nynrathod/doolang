@@ -251,3 +251,260 @@ impl Default for CrossModuleResolver {
         Self::new()
     }
 }
+
+// ============================================================================
+// Binary Linker
+// ============================================================================
+
+/// Binary linker — invokes the system linker to produce an executable.
+///
+/// Links the compiled LLVM module with:
+/// - Tier A runtime libraries (libdoo_core, libdoo_runtime, libdoo_json)
+/// - Platform libc (automatic via cc)
+/// - Any @extern-specified libraries
+///
+/// Does NOT automatically link framework libraries (doo_ffi_http, doo_ffi_db).
+/// Those are only linked when the package explicitly declares them as dependencies.
+pub struct BinaryLinker {
+    /// Output executable name.
+    output_name: String,
+    /// Additional libraries specified via @extern declarations.
+    extern_libs: Vec<String>,
+    /// Path to the toolchain lib directory containing pre-compiled .a files.
+    toolchain_lib: std::path::PathBuf,
+}
+
+impl BinaryLinker {
+    /// Create a new binary linker.
+    ///
+    /// - `output_name`: name of the output executable (without extension)
+    /// - `extern_libs`: library names from @extern declarations (without "lib" prefix)
+    pub fn new(output_name: &str, extern_libs: Vec<String>) -> Self {
+        let toolchain_lib = resolve_toolchain_lib_path();
+        Self {
+            output_name: output_name.to_string(),
+            extern_libs,
+            toolchain_lib,
+        }
+    }
+
+    /// Link an LLVM module into an executable binary.
+    ///
+    /// Steps:
+    /// 1. Write the module to a temporary object file
+    /// 2. Invoke the system linker (cc/gcc/clang)
+    /// 3. Link Tier A runtime + libc + @extern libraries
+    /// 4. Clean up temporary files
+    pub fn link<'ctx>(
+        &self,
+        module: &Module<'ctx>,
+    ) -> Result<std::path::PathBuf, doo_core::errors::codes::CompilerError> {
+        use inkwell::targets::{
+            CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
+        };
+        use inkwell::OptimizationLevel;
+
+        // Initialize native target for object file emission.
+        Target::initialize_native(&InitializationConfig::default()).map_err(|e| {
+            doo_core::errors::codes::CompilerError::new(
+                doo_core::errors::codes::ErrorCode::LlvmError,
+                format!("failed to initialize native target: {}", e),
+                doo_core::Span::dummy(),
+            )
+        })?;
+
+        let triple = TargetMachine::get_default_triple();
+        let target = Target::from_triple(&triple).map_err(|e| {
+            doo_core::errors::codes::CompilerError::new(
+                doo_core::errors::codes::ErrorCode::LlvmError,
+                format!("failed to get target: {}", e),
+                doo_core::Span::dummy(),
+            )
+        })?;
+
+        let cpu = TargetMachine::get_host_cpu_name();
+        let features = TargetMachine::get_host_cpu_features();
+
+        let target_machine = target
+            .create_target_machine(
+                &triple,
+                cpu.to_str().unwrap_or("generic"),
+                features.to_str().unwrap_or(""),
+                OptimizationLevel::Default,
+                RelocMode::PIC,
+                CodeModel::Default,
+            )
+            .ok_or_else(|| {
+                doo_core::errors::codes::CompilerError::new(
+                    doo_core::errors::codes::ErrorCode::LlvmError,
+                    "failed to create target machine",
+                    doo_core::Span::dummy(),
+                )
+            })?;
+
+        // Set data layout on the module.
+        {
+            let td = target_machine.get_target_data();
+            let dl = td.get_data_layout();
+            module.set_data_layout(&dl);
+            std::mem::forget(td);
+            std::mem::forget(dl);
+        }
+
+        // Write object file to a temporary path.
+        let temp_dir = std::env::temp_dir();
+        let object_path = temp_dir.join(format!("doo_{}.o", std::process::id()));
+
+        target_machine
+            .write_to_file(module, FileType::Object, &object_path)
+            .map_err(|e| {
+                doo_core::errors::codes::CompilerError::new(
+                    doo_core::errors::codes::ErrorCode::LlvmError,
+                    format!("failed to write object file: {}", e),
+                    doo_core::Span::dummy(),
+                )
+            })?;
+
+        // Leak LLVM-allocated strings to avoid disposal crashes.
+        std::mem::forget(triple);
+        std::mem::forget(cpu);
+        std::mem::forget(features);
+        std::mem::forget(target_machine);
+
+        // Invoke the system linker.
+        let output_path = self.invoke_system_linker(&object_path)?;
+
+        // Clean up the temporary object file.
+        let _ = std::fs::remove_file(&object_path);
+
+        Ok(output_path)
+    }
+
+    /// Invoke the system linker (cc/gcc/clang) to produce the executable.
+    fn invoke_system_linker(
+        &self,
+        object_path: &std::path::Path,
+    ) -> Result<std::path::PathBuf, doo_core::errors::codes::CompilerError> {
+        let linker = find_system_linker();
+
+        let output_path = std::path::PathBuf::from(&self.output_name);
+
+        let mut cmd = std::process::Command::new(&linker);
+        cmd.arg("-o").arg(&output_path);
+        cmd.arg(object_path);
+
+        // Link Tier A runtime libraries.
+        if self.toolchain_lib.exists() {
+            cmd.arg("-L").arg(&self.toolchain_lib);
+            cmd.arg("-ldoo_core");
+            cmd.arg("-ldoo_runtime");
+            cmd.arg("-ldoo_json");
+        }
+
+        // Link math library (part of libc on most platforms).
+        cmd.arg("-lm");
+
+        // Link @extern-specified libraries.
+        for lib in &self.extern_libs {
+            cmd.arg(format!("-l{}", lib));
+        }
+
+        // Add standard library search paths.
+        cmd.arg("-lpthread");
+        cmd.arg("-ldl");
+
+        let output = cmd.output().map_err(|e| {
+            doo_core::errors::codes::CompilerError::new(
+                doo_core::errors::codes::ErrorCode::LlvmError,
+                format!("failed to invoke linker '{}': {}", linker, e),
+                doo_core::Span::dummy(),
+            )
+        })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(doo_core::errors::codes::CompilerError::new(
+                doo_core::errors::codes::ErrorCode::LlvmError,
+                format!("linker failed: {}", stderr),
+                doo_core::Span::dummy(),
+            ));
+        }
+
+        Ok(output_path)
+    }
+}
+
+/// Find a usable system linker (cc, gcc, or clang).
+fn find_system_linker() -> String {
+    if cfg!(target_os = "windows") {
+        // MSVC link.exe or clang-cl
+        for candidate in &["clang-cl", "cl", "clang", "gcc", "cc"] {
+            if std::process::Command::new(candidate)
+                .arg("--version")
+                .output()
+                .is_ok()
+            {
+                return candidate.to_string();
+            }
+        }
+        "link".to_string() // MSVC linker
+    } else {
+        for candidate in &["cc", "gcc", "clang"] {
+            if std::process::Command::new(candidate)
+                .arg("--version")
+                .output()
+                .is_ok()
+            {
+                return candidate.to_string();
+            }
+        }
+        "cc".to_string()
+    }
+}
+
+/// Resolve the toolchain library path from the DOO_STDLIB_PATH env var
+/// or fall back to a relative path from the executable.
+fn resolve_toolchain_lib_path() -> std::path::PathBuf {
+    use doo_core::constants::env_vars;
+
+    // 1. Explicit env var — highest priority
+    if let Ok(path) = std::env::var(env_vars::DOO_STDLIB_PATH) {
+        return std::path::PathBuf::from(path).join("lib");
+    }
+
+    // 2. Next to the compiler executable — works on all platforms
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let candidate = parent.join("lib");
+            if candidate.exists() {
+                return candidate;
+            }
+            // Windows: lib/ might be in ../lib relative to bin/
+            let candidate2 = parent.join("..").join("lib");
+            if candidate2.exists() {
+                return candidate2;
+            }
+        }
+    }
+
+    // 3. User home directory — ~/.doolang/toolchains/.../lib
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        let candidate = std::path::PathBuf::from(home)
+            .join(".doolang")
+            .join("toolchains")
+            .join("stable")
+            .join("lib");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+
+    // 4. System install paths (platform-specific last resort)
+    if cfg!(target_os = "windows") {
+        std::path::PathBuf::from("C:\\Program Files\\doolang\\lib")
+    } else if cfg!(target_os = "macos") {
+        std::path::PathBuf::from("/usr/local/lib")
+    } else {
+        std::path::PathBuf::from("/usr/lib/doolang")
+    }
+}

@@ -429,12 +429,6 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 .insert(resolve(*struct_name), field_decorators);
         }
 
-        // Populate RBAC policies from MIR
-        for (struct_name, policy_json) in &mir.policies {
-            ctx.rbac_policies
-                .insert(resolve(*struct_name), policy_json.clone());
-        }
-
         // Populate enum variant inheritance from MIR enums
         for (enum_name, enum_def) in &mir.enums {
             let mut inheritance: Vec<(String, Vec<String>)> = Vec::new();
@@ -761,10 +755,19 @@ impl<'ctx> CodegenBuilder<'ctx> {
 
             // Use explicit symbol if provided, otherwise derive from library + function name
             let ffi_lib = resolve(ffi.library);
-            let symbol = ffi
-                .symbol
-                .map(|s| resolve(s))
-                .unwrap_or_else(|| { let p: Vec<&str> = func_name.split(".").collect(); if p.len() == 2 { format!("{}_{}_{}", ffi_lib, p[0].to_lowercase(), p[1].to_lowercase()) } else { format!("{}_{}", ffi_lib, func_name.to_lowercase()) } });
+            let symbol = ffi.symbol.map(|s| resolve(s)).unwrap_or_else(|| {
+                let p: Vec<&str> = func_name.split(".").collect();
+                if p.len() == 2 {
+                    format!(
+                        "{}_{}_{}",
+                        ffi_lib,
+                        p[0].to_lowercase(),
+                        p[1].to_lowercase()
+                    )
+                } else {
+                    format!("{}_{}", ffi_lib, func_name.to_lowercase())
+                }
+            });
 
             // Declare FFI function with its EXTERNAL SYMBOL NAME (not the Doo function name)
             // This is critical: linker will look for this exact symbol name
@@ -1595,5 +1598,63 @@ impl<'ctx> CodegenBuilder<'ctx> {
             let fn_ty = i32_ty.fn_type(&[i32_ty.into()], false);
             ctx.module.add_function(ffi_names::PUTCHAR, fn_ty, None);
         }
+    }
+
+    /// Compile MIR to LLVM, then link into a native executable.
+    ///
+    /// Combines `build()` + `BinaryLinker::link()` so callers
+    /// (like doo_driver) don't need to depend on inkwell.
+    pub fn compile_and_link(
+        &self,
+        mir: &MirProgram,
+        module_name: &str,
+        type_registry: Arc<TypeRegistry>,
+        output_name: &str,
+        extern_libs: Vec<String>,
+    ) -> Result<std::path::PathBuf, doo_core::errors::codes::CompilerError> {
+        let module = self.build(mir, module_name, type_registry);
+        let linker = crate::linker::BinaryLinker::new(output_name, extern_libs);
+        linker.link(&module)
+    }
+}
+
+/// Wrapper that owns the LLVM Context, for callers that don't
+/// want to depend on inkwell directly (e.g. doo_driver).
+///
+/// Delegates to `CodegenBuilder` internally.
+pub struct OwnedCodegenBuilder {
+    context: Context,
+}
+
+impl OwnedCodegenBuilder {
+    pub fn new() -> Self {
+        Self {
+            context: Context::create(),
+        }
+    }
+
+    pub fn with_opt_level(self, _level: crate::optimize::OptLevel) -> Self {
+        // Opt level is passed to optimize_module separately after build().
+        // Stored here for future use when we wire it through.
+        self
+    }
+
+    /// Compile MIR to LLVM, optimize, and link into an executable.
+    pub fn compile_and_link(
+        &self,
+        mir: &MirProgram,
+        module_name: &str,
+        type_registry: Arc<TypeRegistry>,
+        output_name: &str,
+        extern_libs: Vec<String>,
+    ) -> Result<std::path::PathBuf, doo_core::errors::codes::CompilerError> {
+        let builder = CodegenBuilder::new(&self.context);
+        builder.compile_and_link(mir, module_name, type_registry, output_name, extern_libs)
+    }
+}
+
+impl Default for OwnedCodegenBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }

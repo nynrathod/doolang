@@ -1,20 +1,10 @@
 //! # Doo Codegen
 //!
-//! LLVM code generation from MIR.
+//! LLVM code generation for the Doo compiler.
 //!
-//! ## Architecture
-//!
-//! - `context` - CodegenContext with LLVM module, builder, types
-//! - `types` - Doo type to LLVM type mapping (single source of truth)
-//! - `instructions` - Per-category instruction handlers
-//! - `memory` - Memory management (alloca, load, store, drop)
-//! - `optimize` - LLVM optimization passes
-//!
-//! ## Multi-File Support
-//!
-//! - `ModuleLinker` - Links multiple LLVM modules together
-//! - `CrossModuleResolver` - Resolves cross-module function references
-//! - `ExternalFunction` - Metadata for external function declarations
+//! Translates MIR (Mid-level IR) into LLVM IR, then into native machine code.
+//! The compiler emits generic @extern calls only — no builtins/ directory,
+//! no framework-specific codegen. Method calls resolve through the type system.
 
 pub mod builder;
 pub mod context;
@@ -28,10 +18,9 @@ pub mod optimize;
 pub mod types;
 pub mod utils;
 
-pub use builder::CodegenBuilder;
-pub use context::{CodegenContext, ExternalFunction};
-pub use linker::{CrossModuleResolver, LinkError, ModuleLinker};
-pub use optimize::{
-    optimize_module, optimize_module_default, optimize_module_none, optimize_module_size,
-    optimize_module_with_config, OptLevel, OptimizationConfig,
-};
+pub use builder::{CodegenBuilder, OwnedCodegenBuilder};
+pub use context::CodegenContext;
+pub use debug_info::DebugInfo;
+pub use instructions::InstructionDispatcher;
+pub use linker::{BinaryLinker, CrossModuleResolver, LinkError, ModuleLinker};
+pub use optimize::{optimize_module, OptLevel, OptimizationConfig};
