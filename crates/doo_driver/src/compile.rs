@@ -182,7 +182,63 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
     // Add the main source file to the session's source map
     let main_file_id = session.add_source_file(&input_path, main_filename, &source);
 
-    // Phase 2: Parse (Parser creates lexer internally)
+    // === Parse doo.toml (if it exists) ===
+    let manifest_path = project_root.join("doo.toml");
+    let manifest = crate::manifest::DooManifest::from_file(&manifest_path)
+        .map_err(|e| format!("Failed to parse doo.toml: {}", e))?;
+
+    // === Resolve dependencies (if any) ===
+    let registry = crate::resolver::PackageRegistry::new();
+    let _lock = if manifest.has_dependencies() {
+        let lock_path = project_root.join("doo.lock");
+        let existing_lock = crate::lockfile::DooLock::from_file(&lock_path)
+            .map_err(|e| format!("Failed to parse doo.lock: {}", e))?;
+
+        let dep_names: Vec<String> = manifest
+            .dependency_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        if existing_lock.is_stale(&dep_names) {
+            let new_lock = crate::resolver::DependencyResolver::resolve(
+                &manifest,
+                &registry,
+                &project_root,
+            )
+            .map_err(|errors| format!("Dependency resolution failed: {}", errors.join(", ")))?;
+            let _ = new_lock.to_file(&lock_path);
+            new_lock
+        } else {
+            existing_lock
+        }
+    } else {
+        crate::lockfile::DooLock::new()
+    };
+
+    // Update session's package graph from manifest
+    session.package_graph = doo_session::PackageGraph {
+        packages: manifest
+            .dependencies
+            .iter()
+            .map(|dep| doo_session::PackageEntry {
+                name: dep.name.clone(),
+                version: dep.version_req.to_string(),
+                is_macro: false,
+                source: match &dep.source {
+                    crate::manifest::DependencySource::Registry => {
+                        doo_session::PackageSource::Registry
+                    }
+                    crate::manifest::DependencySource::Path { .. } => {
+                        doo_session::PackageSource::Path
+                    }
+                    crate::manifest::DependencySource::Git { .. } => {
+                        doo_session::PackageSource::Git
+                    }
+                },
+            })
+            .collect(),
+    };
+
     // Debug: Show source info
     doo_debug!("DEBUG", "Source length: {} chars", source.len());
     let t = Instant::now();

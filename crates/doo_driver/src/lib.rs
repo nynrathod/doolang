@@ -9,6 +9,9 @@ pub mod compile;
 pub mod incremental;
 pub mod loader;
 pub mod macro_expand;
+pub mod manifest;
+pub mod lockfile;
+pub mod resolver;
 
 use std::env;
 use std::fs;

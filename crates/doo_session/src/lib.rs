@@ -151,11 +151,48 @@ impl Default for TargetTriple {
 
 /// Package dependency graph resolved from doo.toml.
 ///
-/// Populated in Phase 52 when doo.toml parsing is implemented.
+/// Package dependency graph resolved from doo.toml.
 #[derive(Debug, Clone, Default)]
 pub struct PackageGraph {
-    /// Names of all resolved packages.
-    pub packages: Vec<String>,
+    pub packages: Vec<PackageEntry>,
+}
+
+/// A single package entry in the dependency graph.
+#[derive(Debug, Clone)]
+pub struct PackageEntry {
+    pub name: String,
+    pub version: String,
+    pub is_macro: bool,
+    pub source: PackageSource,
+}
+
+/// Where a package comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PackageSource {
+    Registry,
+    Path,
+    Git,
+}
+
+impl Default for PackageSource {
+    fn default() -> Self {
+        Self::Registry
+    }
+}
+
+impl PackageGraph {
+    /// Check if a package with the given name exists.
+    pub fn has(&self, name: &str) -> bool {
+        self.packages.iter().any(|p| p.name == name)
+    }
+
+    /// Get all macro crate names.
+    pub fn macro_crates(&self) -> impl Iterator<Item = &str> {
+        self.packages
+            .iter()
+            .filter(|p| p.is_macro)
+            .map(|p| p.name.as_str())
+    }
 }
 
 // ============================================================================
