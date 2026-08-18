@@ -2,11 +2,12 @@
 name = "doo_macro"
 version.workspace = true
 edition.workspace = true
-description = "Macro expansion engine for the Doo compiler — post-parse, pre-typecheck hook"
+description = "Macro expansion engine — TokenStream API, registry, and discovery"
 license = "MIT"
 
-# Phase 0: No dependencies. The macro engine operates on token streams,
-# but the concrete TokenStream type lives in doo_frontend. A dependency
-# on doo_frontend will be added in Phase 6 when the engine is implemented.
-
 [dependencies]
+doo_core = { path = "../doo_core" }
+rustc-hash = "1.1"
+
+[features]
+default = []
