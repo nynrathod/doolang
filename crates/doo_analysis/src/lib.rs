@@ -15,7 +15,6 @@ pub mod conversions;
 pub mod loader;
 pub mod ownership;
 pub mod semantic;
-pub mod transform;
 pub mod types;
 
 pub use borrow::{BorrowChecker, BorrowError, BorrowErrorKind};

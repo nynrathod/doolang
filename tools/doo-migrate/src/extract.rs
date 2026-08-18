@@ -76,10 +76,6 @@ fn try_extract_from_entry(path: &Path, project_root: &Path) -> Result<DatabaseSc
     let import_resolution =
         doo_driver_loader::resolve_imports(&program, &mut loader, project_root)?;
 
-    // AST transforms
-    doo_analysis::transform::transform_route_groups(&mut program);
-    doo_analysis::transform::transform_inline_closures(&mut program);
-
     // Lower to HIR
     let mut type_registry = TypeRegistry::new();
     let mut lowerer = Lower::new();
