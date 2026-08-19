@@ -339,7 +339,8 @@ impl Parser {
     fn parse_function_name(&mut self) -> ParseResult<(String, Option<String>, Option<String>)> {
         let first = self.expect_ident()?;
 
-        if self.check(TokenKind::Dot) {
+        // Support both `.` and `::` for method definitions
+        if self.check(TokenKind::Dot) || self.check(TokenKind::ColonColon) {
             self.advance();
             let method_name = self.expect_ident()?;
 
@@ -562,7 +563,7 @@ impl Parser {
         let start = self.current_span();
         self.expect(TokenKind::Impl)?;
 
-        let struct_name = self.expect_ident().map_err(|_| {
+        let mut struct_name = self.expect_ident().map_err(|_| {
             CompilerError::new(
                 ErrorCode::ExpectedIdentifier,
                 "expected struct name after `impl`",
@@ -570,6 +571,19 @@ impl Parser {
             )
             .with_suggestion("usage: impl StructName { fn method(self) -> ... }")
         })?;
+
+        // Support module paths: impl Module::Struct { ... }
+        while self.check(TokenKind::ColonColon) {
+            self.advance();
+            let next = self.expect_ident()?;
+            struct_name = format!("{}::{}", struct_name, next);
+        }
+
+        // Support generic impl: impl Array<T> { ... }
+        // Parse and discard the type parameters for now
+        if self.check(TokenKind::Lt) {
+            let _ = self.parse_type_params()?;
+        }
 
         self.expect(TokenKind::LBrace).map_err(|_| {
             CompilerError::new(

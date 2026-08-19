@@ -20,8 +20,40 @@
 //! - `errors` — Error codes (Auth, DB)
 //! - `helpers` — Common FFI helpers (string conversion, result builders)
 
+// On Windows, Rust's std pulls in Winsock and other system libraries.
+// When compiled as a staticlib, these dependencies must be explicitly
+// declared so link.exe knows to link them when the final executable is produced.
+#[cfg(target_os = "windows")]
+mod windows_links {
+    // Each #[link] emits a /DEFAULTLIB directive in the .lib file's
+    // .drectve section. link.exe reads this and auto-links the library.
+    #[link(name = "ws2_32")]
+    extern "C" {}
+    #[link(name = "userenv")]
+    extern "C" {}
+    #[link(name = "bcrypt")]
+    extern "C" {}
+    #[link(name = "ntdll")]
+    extern "C" {}
+    #[link(name = "advapi32")]
+    extern "C" {}
+    #[link(name = "kernel32")]
+    extern "C" {}
+    #[link(name = "secur32")]
+    extern "C" {}
+    #[link(name = "crypt32")]
+    extern "C" {}
+    #[link(name = "ole32")]
+    extern "C" {}
+    #[link(name = "oleaut32")]
+    extern "C" {}
+    #[link(name = "rpcrt4")]
+    extern "C" {}
+}
+
 #[macro_use]
-pub mod macros;
+mod macros;
+
 pub mod case;
 pub mod casts;
 pub mod config;
@@ -31,6 +63,7 @@ pub mod debug;
 pub mod errors;
 pub mod ffi_bridge;
 pub mod helpers;
+pub mod leak_tracker;
 pub mod memory;
 pub mod result;
 pub mod rfc7807;

@@ -75,3 +75,36 @@ pub const DOO_RUNTIME_BLOCK_ON: &str = "doo_runtime_block_on";
 pub const DOO_SLEEP: &str = "doo_sleep";
 pub const DOO_SLEEP_ASYNC: &str = "doo_sleep_async";
 pub const DOO_TIMEOUT: &str = "doo_timeout";
+
+// ============================================================================
+// Print/Debug Runtime — Tier A ABI
+//
+// Used by the HIR lowering to desugar the `print` statement.
+// Implemented in Rust in library/ffi/doo_ffi_core/src/debug.rs.
+// The codegen emits these as generic external calls via call_ffi.rs —
+// no special codegen handling (no builtins/).
+// ============================================================================
+
+/// Print a null-terminated string to stdout (no newline).
+pub const DOO_PRINT_STR: &str = "doo_print_str";
+
+/// Print a newline to stdout.
+pub const DOO_PRINTLN: &str = "doo_println";
+
+/// Flush stdout.
+pub const DOO_FLUSH: &str = "doo_flush";
+
+/// Convert an integer to a heap-allocated string. Caller must free with doo_str_free.
+pub const DOO_INT_TO_STR: &str = "doo_int_to_str";
+
+/// Convert a float to a heap-allocated string. Caller must free with doo_str_free.
+pub const DOO_FLOAT_TO_STR: &str = "doo_float_to_str";
+
+/// Convert a boolean to a heap-allocated string. Caller must free with doo_str_free.
+pub const DOO_BOOL_TO_STR: &str = "doo_bool_to_str";
+
+/// Format null as "<null>". Caller must free with doo_str_free.
+pub const DOO_NULL_TO_STR: &str = "doo_null_to_str";
+
+/// Free a string allocated by doo_int_to_str / doo_float_to_str / etc.
+pub const DOO_STR_FREE: &str = "doo_str_free";

@@ -29,7 +29,17 @@ impl Parser {
     /// Create a new parser from a lexer. Pre-tokenizes the entire input.
     pub fn new(source: &str, file_id: u32) -> Self {
         let lexer = Lexer::new(source, file_id);
-        let tokens: Vec<Token> = lexer.collect();
+        let mut tokens: Vec<Token> = lexer.collect();
+
+        // Architectural Invariant: The parser requires a trailing `Eof` token
+        // as a sentinel to safely bound all lookahead operations (e.g., `current()`).
+        // The `Iterator` implementation of `Lexer` drops the `Eof` token,
+        // so we enforce the invariant here at the parser boundary.
+        if tokens.last().map_or(true, |t| t.kind != TokenKind::Eof) {
+            let eof_span = tokens.last().map_or(Span::dummy(), |t| t.span);
+            tokens.push(Token::new(TokenKind::Eof, "", eof_span));
+        }
+
         Self {
             tokens,
             pos: 0,
@@ -51,11 +61,35 @@ impl Parser {
         let mut items = Vec::new();
 
         while !self.is_at_end() {
+            // Top-level recovery: skip stray closing delimiters to prevent infinite loops
+            if matches!(
+                self.current().kind,
+                TokenKind::RBrace | TokenKind::RParen | TokenKind::RBracket
+            ) {
+                self.errors.push(CompilerError::new(
+                    doo_core::ErrorCode::UnexpectedToken,
+                    format!(
+                        "unexpected `{}` at top level",
+                        self.current().kind.description()
+                    ),
+                    self.current().span,
+                ));
+                self.advance();
+                continue;
+            }
+
+            let pos_before = self.pos;
             match self.parse_item() {
                 Ok(item) => items.push(item),
                 Err(e) => {
                     self.errors.push(e);
                     self.synchronize();
+
+                    // GUARANTEE PROGRESS: if synchronize didn't advance, force advance
+                    // This is the ultimate safeguard against infinite loops.
+                    if self.pos == pos_before && !self.is_at_end() {
+                        self.advance();
+                    }
                 }
             }
         }
@@ -72,6 +106,15 @@ impl Parser {
 
     #[inline]
     pub fn current(&self) -> &Token {
+        // Safety net: pos should never exceed bounds if advance/is_at_end are correct,
+        // but we return the last token (guaranteed to be Eof) to absolutely prevent
+        // index-out-of-bounds panics.
+        if self.pos >= self.tokens.len() {
+            return self
+                .tokens
+                .last()
+                .expect("tokens must contain at least Eof");
+        }
         &self.tokens[self.pos]
     }
 
@@ -89,6 +132,13 @@ impl Parser {
         if !self.is_at_end() {
             self.pos += 1;
         }
+
+        // If pos is 0 (empty input, already at EOF), return the EOF token itself
+        // to prevent usize underflow on `self.pos - 1`.
+        if self.pos == 0 {
+            return self.current();
+        }
+
         &self.tokens[self.pos - 1]
     }
 
@@ -168,7 +218,12 @@ impl Parser {
         while !self.is_at_end() {
             match self.current().kind {
                 TokenKind::Semi => {
-                    self.advance();
+                    self.advance(); // Consume the semicolon and continue
+                    return;
+                }
+                TokenKind::RBrace => {
+                    // Do NOT consume the closing brace here!
+                    // Let the block parser consume it so blocks close correctly.
                     return;
                 }
                 TokenKind::Fn

@@ -84,7 +84,7 @@ impl Parser {
         Ok(left)
     }
 
-    /// Parse unary operators (`-x`, `!x`).
+    /// Parse unary operators (`-x`, `!x`, `await x`).
     fn parse_unary(&mut self) -> ParseResult<Expr> {
         if let Some(op) = UnaryOp::from_token(self.current().kind) {
             let op_span = self.current().span;
@@ -99,6 +99,19 @@ impl Parser {
                 span,
             ));
         }
+
+        // Support prefix `await` syntax
+        if self.check(TokenKind::Await) {
+            let span = self.current().span;
+            self.advance();
+            let expr = self.parse_unary()?; // Right associative
+            let span_end = self.prev_span();
+            return Ok(Expr::new(
+                ExprKind::Await(Box::new(expr)),
+                span.merge(span_end),
+            ));
+        }
+
         // Fix borrow checker: evaluate primary first, then pass it to postfix
         let primary = self.parse_primary()?;
         self.parse_postfix(primary)
@@ -153,6 +166,41 @@ impl Parser {
             TokenKind::Ident => {
                 let name = self.current().text.clone();
                 self.advance();
+
+                // Check for enum variant: `Color::Red` or `Color.Red`
+                if self.check(TokenKind::ColonColon) || self.check(TokenKind::Dot) {
+                    self.advance(); // consume `::` or `.`
+                    let variant = self.expect_ident()?;
+                    if self.check(TokenKind::LParen) {
+                        self.advance();
+                        let mut payload = Vec::new();
+                        while !self.check(TokenKind::RParen) && !self.is_at_end() {
+                            payload.push(self.parse_expression()?);
+                            if !self.check(TokenKind::RParen) {
+                                self.expect(TokenKind::Comma)?;
+                            }
+                        }
+                        let end_span = self.expect(TokenKind::RParen)?;
+                        return Ok(Expr::new(
+                            ExprKind::EnumVariant {
+                                enum_name: name,
+                                variant,
+                                payload,
+                            },
+                            span.merge(end_span),
+                        ));
+                    } else {
+                        return Ok(Expr::new(
+                            ExprKind::EnumVariant {
+                                enum_name: name,
+                                variant,
+                                payload: Vec::new(),
+                            },
+                            span.merge(self.prev_span()),
+                        ));
+                    }
+                }
+
                 Ok(Expr::new(ExprKind::Ident(name), span))
             }
             TokenKind::LParen => {
@@ -198,6 +246,33 @@ impl Parser {
                     span.merge(self.prev_span()),
                 ))
             }
+            // Support `go { ... }` or `go expr`
+            TokenKind::Go => {
+                self.advance();
+                let body = if self.check(TokenKind::LBrace) {
+                    let block = self.parse_block()?;
+                    Expr::new(ExprKind::Block(block, None), self.prev_span())
+                } else {
+                    self.parse_expression()?
+                };
+                let span_end = self.prev_span();
+                Ok(Expr::new(
+                    ExprKind::GoSpawn {
+                        body: Box::new(body),
+                    },
+                    span.merge(span_end),
+                ))
+            }
+            // Support `scope { ... }`
+            TokenKind::Scope => {
+                self.advance();
+                let stmts = self.parse_block()?;
+                let span_end = self.prev_span();
+                Ok(Expr::new(
+                    ExprKind::ScopeBlock { body: stmts },
+                    span.merge(span_end),
+                ))
+            }
             _ => Err(CompilerError::new(
                 ErrorCode::InvalidExpression,
                 format!(
@@ -208,8 +283,7 @@ impl Parser {
             )),
         }
     }
-
-    //// Parse postfix operations (`.`, `()`, `[]`, `await`, `?`, `!`, `??`).
+    //// Parse postfix operations (`.`, `::`, `()`, `[]`, `await`, `?`, `!`, `??`).
     fn parse_postfix(&mut self, mut expr: Expr) -> ParseResult<Expr> {
         loop {
             match self.current().kind {
@@ -245,6 +319,41 @@ impl Parser {
                                 span,
                             );
                         }
+                    }
+                }
+                // Support `::` for paths like `Color::Red` or `Module::function()`
+                TokenKind::ColonColon => {
+                    self.advance();
+                    let field = self.expect_ident()?;
+                    if self.check(TokenKind::LParen) {
+                        self.advance();
+                        let args = self.parse_list(TokenKind::RParen, |p| p.parse_expression())?;
+                        let end_span = self.expect(TokenKind::RParen)?;
+                        let span = expr.span.merge(end_span);
+                        // Reuse Field + Call for now, type checker will resolve it
+                        let path_expr = Expr::new(
+                            ExprKind::Field {
+                                object: Box::new(expr),
+                                field,
+                            },
+                            span,
+                        );
+                        expr = Expr::new(
+                            ExprKind::Call {
+                                func: Box::new(path_expr),
+                                args,
+                            },
+                            span,
+                        );
+                    } else {
+                        let span = expr.span.merge(self.prev_span());
+                        expr = Expr::new(
+                            ExprKind::Field {
+                                object: Box::new(expr),
+                                field,
+                            },
+                            span,
+                        );
                     }
                 }
                 TokenKind::LParen => {
@@ -283,18 +392,14 @@ impl Parser {
                 TokenKind::Bang => {
                     let span = expr.span.merge(self.current().span);
                     self.advance();
-                    // Check for optional message: `expr! "message"`
                     let message =
                         if matches!(self.current().kind, TokenKind::String | TokenKind::Ident) {
-                            // Only consume if it's a string literal or an identifier
                             if matches!(self.current().kind, TokenKind::String) {
                                 Box::new(self.parse_expression()?)
                             } else {
-                                // It's an identifier, could be a variable. Parse as expr.
                                 Box::new(self.parse_expression()?)
                             }
                         } else {
-                            // Default message if none provided
                             Box::new(Expr::new(
                                 ExprKind::StrLit("unwrap of None/Err".to_string()),
                                 span,

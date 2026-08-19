@@ -1074,6 +1074,6 @@ mod tests {
     #[test]
     fn test_pipeline_creation() {
         let pipeline = OptimizationPipeline::default_pipeline();
-        assert_eq!(pipeline.passes.len(), 9);
+        assert_eq!(pipeline.passes.len(), 10);
     }
 }

@@ -439,3 +439,23 @@ pub(crate) fn get_or_declare_doo_realloc<'ctx>(
     ctx.module
         .add_function(ffi_names::DOO_REALLOC, fn_type, Some(Linkage::External))
 }
+
+/// Get or declare doo_flush: void doo_flush()
+pub(crate) fn get_or_declare_doo_flush<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+) -> FunctionValue<'ctx> {
+    if let Some(f) = ctx.module.get_function(ffi_names::DOO_FLUSH) {
+        return f;
+    }
+    let void_type = ctx.context.void_type();
+    let fn_type = void_type.fn_type(&[], false);
+    ctx.module
+        .add_function(ffi_names::DOO_FLUSH, fn_type, Some(Linkage::External))
+}
+
+/// Emit a flush_stdout call at the current builder position.
+/// Call this at the end of main() before return.
+pub(crate) fn emit_flush_stdout<'ctx>(ctx: &mut CodegenContext<'ctx>) {
+    let flush_fn = get_or_declare_doo_flush(ctx);
+    let _ = ctx.builder.build_call(flush_fn, &[], "flush_stdout");
+}

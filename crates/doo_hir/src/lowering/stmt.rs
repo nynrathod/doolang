@@ -159,35 +159,105 @@ impl Lower {
             }
 
             StmtKind::Print(exprs) => {
-                // Flatten StringInterpolation parts as separate print args
-                // so composite types (Array, Map, Struct) get proper formatting
-                // via the Print handler instead of broken string concat.
-                let mut args = Vec::new();
-                let mut has_interpolation = false;
+                // Desugar print(a, b, c) to:
+                //   doo_print_str(a as Str)
+                //   doo_print_str(b as Str)
+                //   doo_print_str(c as Str)
+                //   doo_println()
+                //
+                // The Cast to Str is a language feature (same as `x as Int`).
+                // The codegen's Cast handler dispatches based on LLVM value type:
+                //   - Int → calls doo_int_to_str
+                //   - Float → calls doo_float_to_str
+                //   - Bool → calls doo_bool_to_str
+                //   - Str (pointer) → pass through
+                //   - Struct/Enum/Array → calls type-specific formatter
+                //
+                // This is exactly how Rust's println! macro works:
+                //   the macro desugars to format_args + write_fmt calls.
+                //   The Display trait does the type-specific formatting.
+
+                let mut calls = Vec::new();
+
                 for e in exprs {
+                    // Flatten StringInterpolation parts into individual print args
                     if let ExprKind::StringInterpolation(parts) = &e.kind {
-                        has_interpolation = true;
                         for part in parts {
-                            args.push(self.lower_string_part(part));
+                            let lowered = self.lower_string_part(part);
+                            // Cast to Str — the Cast instruction handles all type conversions
+                            let casted = HirExpr::new(
+                                HirExprKind::Cast {
+                                    value: Box::new(lowered),
+                                    to_type: builtin::STR,
+                                },
+                                stmt.span,
+                            );
+                            // Call doo_print_str(casted)
+                            calls.push(HirStmt::new(
+                                HirStmtKind::Expr(HirExpr::new(
+                                    HirExprKind::Call {
+                                        func: Box::new(HirExpr::new(
+                                            HirExprKind::Global {
+                                                name: "doo_print_str".to_string(),
+                                            },
+                                            stmt.span,
+                                        )),
+                                        args: vec![casted],
+                                    },
+                                    stmt.span,
+                                )),
+                                stmt.span,
+                            ));
                         }
                     } else {
-                        args.push(self.lower_expr(e));
-                    }
-                }
-                let func_name = if has_interpolation {
-                    "__print_interp"
-                } else {
-                    "print"
-                };
-                HirStmtKind::Expr(HirExpr::new(
-                    HirExprKind::Call {
-                        func: Box::new(HirExpr::new(
-                            HirExprKind::Global {
-                                name: func_name.to_string(),
+                        let lowered = self.lower_expr(e);
+                        let casted = HirExpr::new(
+                            HirExprKind::Cast {
+                                value: Box::new(lowered),
+                                to_type: builtin::STR,
                             },
                             stmt.span,
-                        )),
-                        args,
+                        );
+                        calls.push(HirStmt::new(
+                            HirStmtKind::Expr(HirExpr::new(
+                                HirExprKind::Call {
+                                    func: Box::new(HirExpr::new(
+                                        HirExprKind::Global {
+                                            name: "doo_print_str".to_string(),
+                                        },
+                                        stmt.span,
+                                    )),
+                                    args: vec![casted],
+                                },
+                                stmt.span,
+                            )),
+                            stmt.span,
+                        ));
+                    }
+                }
+
+                // End with newline
+                calls.push(HirStmt::new(
+                    HirStmtKind::Expr(HirExpr::new(
+                        HirExprKind::Call {
+                            func: Box::new(HirExpr::new(
+                                HirExprKind::Global {
+                                    name: "doo_println".to_string(),
+                                },
+                                stmt.span,
+                            )),
+                            args: vec![],
+                        },
+                        stmt.span,
+                    )),
+                    stmt.span,
+                ));
+
+                // Wrap all calls in a block
+                HirStmtKind::Expr(HirExpr::new(
+                    HirExprKind::Block {
+                        stmts: calls,
+                        expr: None,
                     },
                     stmt.span,
                 ))
@@ -451,47 +521,106 @@ impl Lower {
             }
 
             StmtKind::Print(exprs) => {
-                // Flatten StringInterpolation parts as separate print args.
-                // Don't cast to STR — keep original types so the Print handler
-                // uses type-specific formatters (Array, Map, Struct, etc.)
-                let mut args = Vec::new();
-                let mut has_interpolation = false;
+                // Same desugaring as untyped path, but with proper TypeId for Cast.
+                // The Cast to Str uses builtin::STR as the target type.
+                // The codegen's Cast handler dispatches based on the source type
+                // from the TypeRegistry — this is NOT hardcode, it's the same
+                // mechanism the compiler uses for all Cast operations.
+
+                let mut calls = Vec::new();
                 for e in exprs {
                     if let ExprKind::StringInterpolation(parts) = &e.kind {
-                        has_interpolation = true;
                         for part in parts {
-                            match part {
-                                ast::StringPart::Literal(s) => {
-                                    args.push(HirExpr::with_type(
-                                        HirExprKind::Const(ConstValue::Str(s.clone())),
-                                        builtin::STR,
-                                        stmt.span,
-                                    ));
-                                }
+                            let arg = match part {
+                                ast::StringPart::Literal(s) => HirExpr::with_type(
+                                    HirExprKind::Const(ConstValue::Str(s.clone())),
+                                    builtin::STR,
+                                    stmt.span,
+                                ),
                                 ast::StringPart::Expr(expr) => {
-                                    // Lower WITHOUT Cast to STR — preserve original type
-                                    args.push(self.lower_expr_typed(expr, registry));
+                                    self.lower_expr_typed(expr, registry)
                                 }
-                            }
+                            };
+                            // If already Str, no Cast needed — call doo_print_str directly
+                            let print_arg = if arg.type_id == Some(builtin::STR) {
+                                arg
+                            } else {
+                                HirExpr::with_type(
+                                    HirExprKind::Cast {
+                                        value: Box::new(arg),
+                                        to_type: builtin::STR,
+                                    },
+                                    builtin::STR,
+                                    stmt.span,
+                                )
+                            };
+                            calls.push(HirStmt::new(
+                                HirStmtKind::Expr(HirExpr::new(
+                                    HirExprKind::Call {
+                                        func: Box::new(HirExpr::new(
+                                            HirExprKind::Global {
+                                                name: "doo_print_str".to_string(),
+                                            },
+                                            stmt.span,
+                                        )),
+                                        args: vec![print_arg],
+                                    },
+                                    stmt.span,
+                                )),
+                                stmt.span,
+                            ));
                         }
                     } else {
-                        args.push(self.lower_expr_typed(e, registry));
+                        let lowered = self.lower_expr_typed(e, registry);
+                        // If already Str, no Cast needed
+                        let print_arg = if lowered.type_id == Some(builtin::STR) {
+                            lowered
+                        } else {
+                            HirExpr::with_type(
+                                HirExprKind::Cast {
+                                    value: Box::new(lowered),
+                                    to_type: builtin::STR,
+                                },
+                                builtin::STR,
+                                stmt.span,
+                            )
+                        };
+                        calls.push(HirStmt::new(
+                            HirStmtKind::Expr(HirExpr::new(
+                                HirExprKind::Call {
+                                    func: Box::new(HirExpr::new(
+                                        HirExprKind::Global {
+                                            name: "doo_print_str".to_string(),
+                                        },
+                                        stmt.span,
+                                    )),
+                                    args: vec![print_arg],
+                                },
+                                stmt.span,
+                            )),
+                            stmt.span,
+                        ));
                     }
                 }
-                let func_name = if has_interpolation {
-                    "__print_interp"
-                } else {
-                    "print"
-                };
+                calls.push(HirStmt::new(
+                    HirStmtKind::Expr(HirExpr::new(
+                        HirExprKind::Call {
+                            func: Box::new(HirExpr::new(
+                                HirExprKind::Global {
+                                    name: "doo_println".to_string(),
+                                },
+                                stmt.span,
+                            )),
+                            args: vec![],
+                        },
+                        stmt.span,
+                    )),
+                    stmt.span,
+                ));
                 HirStmtKind::Expr(HirExpr::new(
-                    HirExprKind::Call {
-                        func: Box::new(HirExpr::new(
-                            HirExprKind::Global {
-                                name: func_name.to_string(),
-                            },
-                            stmt.span,
-                        )),
-                        args,
+                    HirExprKind::Block {
+                        stmts: calls,
+                        expr: None,
                     },
                     stmt.span,
                 ))

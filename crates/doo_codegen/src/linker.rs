@@ -66,8 +66,6 @@ impl From<LinkError> for doo_core::errors::codes::CompilerError {
 ///
 /// Links multiple LLVM modules together, resolving cross-module references.
 ///
-/// ## Design
-///
 /// The Doo compiler uses a "merge all" approach:
 /// 1. Each source file is compiled to a separate LLVM module
 /// 2. Imported functions are declared as external in the importing module
@@ -97,21 +95,16 @@ impl<'ctx> ModuleLinker<'ctx> {
         }
     }
 
-    /// Add a module to be linked.
-    ///
-    /// Builds the symbol table from the module's function definitions.
+    /// Add a module to be linked. Builds the symbol table from function definitions.
     pub fn add_module(&mut self, module: Module<'ctx>) -> Result<(), LinkError> {
         let module_index = self.modules.len();
 
-        // Build symbol table from function definitions
         let mut func_iter = module.get_first_function();
         while let Some(func) = func_iter {
             let name = func.get_name().to_str().unwrap_or("").to_string();
 
-            // Only add functions with bodies (definitions, not declarations)
             if func.count_basic_blocks() > 0 {
                 if self.symbol_table.contains_key(&name) {
-                    // Allow redefinitions if the existing one is just a declaration
                     let existing_idx = self.symbol_table[&name];
                     if let Some(existing_module) = self.modules.get(existing_idx) {
                         if let Some(existing_func) = existing_module.get_function(&name) {
@@ -193,11 +186,8 @@ impl<'ctx> ModuleLinker<'ctx> {
 // Cross-Module Reference Resolver
 // ============================================================================
 
-/// Resolves cross-module function references.
-///
-/// When a function is called from another module, we need to:
-/// 1. Declare the function as external in the calling module
-/// 2. Track the dependency for linking
+/// Resolves cross-module function references by declaring
+/// external functions and tracking dependencies.
 pub struct CrossModuleResolver {
     /// External function declarations needed: (calling_module, function_name).
     pending_declarations: Vec<(String, String)>,
@@ -206,7 +196,6 @@ pub struct CrossModuleResolver {
 }
 
 impl CrossModuleResolver {
-    /// Create a new cross-module resolver.
     pub fn new() -> Self {
         Self {
             pending_declarations: Vec::new(),
@@ -226,7 +215,6 @@ impl CrossModuleResolver {
         }
     }
 
-    /// Get pending external declarations for a module.
     pub fn get_pending(&self, module: &str) -> Vec<String> {
         self.pending_declarations
             .iter()
@@ -235,12 +223,10 @@ impl CrossModuleResolver {
             .collect()
     }
 
-    /// Get the source module for a function.
     pub fn get_source(&self, function_name: &str) -> Option<&String> {
         self.resolved.get(function_name)
     }
 
-    /// Check if a function has been resolved.
     pub fn is_resolved(&self, function_name: &str) -> bool {
         self.resolved.contains_key(function_name)
     }
@@ -260,7 +246,8 @@ impl Default for CrossModuleResolver {
 ///
 /// Links the compiled LLVM module with:
 /// - Tier A runtime libraries (libdoo_core, libdoo_runtime, libdoo_json)
-/// - Platform libc (automatic via cc)
+/// - Platform libc (automatic via cc/clang)
+/// - Platform system libraries (ws2_32 on Windows, pthread/dl on Unix)
 /// - Any @extern-specified libraries
 ///
 /// Does NOT automatically link framework libraries (doo_ffi_http, doo_ffi_db).
@@ -293,7 +280,7 @@ impl BinaryLinker {
     /// Steps:
     /// 1. Write the module to a temporary object file
     /// 2. Invoke the system linker (cc/gcc/clang)
-    /// 3. Link Tier A runtime + libc + @extern libraries
+    /// 3. Link Tier A runtime + libc + system libraries + @extern libraries
     /// 4. Clean up temporary files
     pub fn link<'ctx>(
         &self,
@@ -304,7 +291,6 @@ impl BinaryLinker {
         };
         use inkwell::OptimizationLevel;
 
-        // Initialize native target for object file emission.
         Target::initialize_native(&InitializationConfig::default()).map_err(|e| {
             doo_core::errors::codes::CompilerError::new(
                 doo_core::errors::codes::ErrorCode::LlvmError,
@@ -342,7 +328,6 @@ impl BinaryLinker {
                 )
             })?;
 
-        // Set data layout on the module.
         {
             let td = target_machine.get_target_data();
             let dl = td.get_data_layout();
@@ -351,7 +336,6 @@ impl BinaryLinker {
             std::mem::forget(dl);
         }
 
-        // Write object file to a temporary path.
         let temp_dir = std::env::temp_dir();
         let object_path = temp_dir.join(format!("doo_{}.o", std::process::id()));
 
@@ -365,35 +349,34 @@ impl BinaryLinker {
                 )
             })?;
 
-        // Leak LLVM-allocated strings to avoid disposal crashes.
+        // Leak LLVM-allocated strings to avoid disposal crashes on LLVM 22.
         std::mem::forget(triple);
         std::mem::forget(cpu);
         std::mem::forget(features);
         std::mem::forget(target_machine);
 
-        // Invoke the system linker.
         let output_path = self.invoke_system_linker(&object_path)?;
 
-        // Clean up the temporary object file.
         let _ = std::fs::remove_file(&object_path);
 
         Ok(output_path)
     }
 
     /// Invoke the system linker (cc/gcc/clang) to produce the executable.
+    ///
+    /// Links the object file with Tier A runtime libraries, libc,
+    /// platform system libraries, and @extern-specified libraries.
     fn invoke_system_linker(
         &self,
         object_path: &std::path::Path,
     ) -> Result<std::path::PathBuf, doo_core::errors::codes::CompilerError> {
         let linker = find_system_linker();
-
         let output_path = std::path::PathBuf::from(&self.output_name);
 
         let mut cmd = std::process::Command::new(&linker);
         cmd.arg("-o").arg(&output_path);
         cmd.arg(object_path);
 
-        // Link Tier A runtime libraries.
         if self.toolchain_lib.exists() {
             cmd.arg("-L").arg(&self.toolchain_lib);
             cmd.arg("-ldoo_core");
@@ -401,17 +384,48 @@ impl BinaryLinker {
             cmd.arg("-ldoo_json");
         }
 
-        // Link math library (part of libc on most platforms).
         cmd.arg("-lm");
 
-        // Link @extern-specified libraries.
         for lib in &self.extern_libs {
             cmd.arg(format!("-l{}", lib));
         }
 
-        // Add standard library search paths.
-        cmd.arg("-lpthread");
-        cmd.arg("-ldl");
+        // Windows system libraries
+        if cfg!(target_os = "windows") {
+            cmd.arg("ws2_32.lib");
+            cmd.arg("userenv.lib");
+            cmd.arg("bcrypt.lib");
+            cmd.arg("ntdll.lib");
+            cmd.arg("advapi32.lib");
+            cmd.arg("kernel32.lib");
+            cmd.arg("secur32.lib");
+            cmd.arg("crypt32.lib");
+            cmd.arg("ole32.lib");
+            cmd.arg("oleaut32.lib");
+            cmd.arg("rpcrt4.lib");
+            cmd.arg("gdi32.lib");
+            cmd.arg("msvcrt.lib");
+        } else {
+            cmd.arg("-lpthread");
+            cmd.arg("-ldl");
+        }
+
+        // DEBUG: Print the full linker command
+        eprintln!("[LINKER] binary: {}", linker);
+        eprintln!(
+            "[LINKER] toolchain_lib exists: {}",
+            self.toolchain_lib.exists()
+        );
+        eprintln!(
+            "[LINKER] toolchain_lib path: {}",
+            self.toolchain_lib.display()
+        );
+        eprintln!("[LINKER] cfg!(windows): {}", cfg!(target_os = "windows"));
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_str().unwrap_or("<non-utf8>").to_string())
+            .collect();
+        eprintln!("[LINKER] full args: {}", args.join(" "));
 
         let output = cmd.output().map_err(|e| {
             doo_core::errors::codes::CompilerError::new(
@@ -437,7 +451,6 @@ impl BinaryLinker {
 /// Find a usable system linker (cc, gcc, or clang).
 fn find_system_linker() -> String {
     if cfg!(target_os = "windows") {
-        // MSVC link.exe or clang-cl
         for candidate in &["clang-cl", "cl", "clang", "gcc", "cc"] {
             if std::process::Command::new(candidate)
                 .arg("--version")
@@ -447,7 +460,7 @@ fn find_system_linker() -> String {
                 return candidate.to_string();
             }
         }
-        "link".to_string() // MSVC linker
+        "link".to_string()
     } else {
         for candidate in &["cc", "gcc", "clang"] {
             if std::process::Command::new(candidate)
@@ -472,14 +485,13 @@ fn resolve_toolchain_lib_path() -> std::path::PathBuf {
         return std::path::PathBuf::from(path).join("lib");
     }
 
-    // 2. Next to the compiler executable — works on all platforms
+    // 2. Next to the compiler executable
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
             let candidate = parent.join("lib");
             if candidate.exists() {
                 return candidate;
             }
-            // Windows: lib/ might be in ../lib relative to bin/
             let candidate2 = parent.join("..").join("lib");
             if candidate2.exists() {
                 return candidate2;
@@ -487,7 +499,7 @@ fn resolve_toolchain_lib_path() -> std::path::PathBuf {
         }
     }
 
-    // 3. User home directory — ~/.doolang/toolchains/.../lib
+    // 3. User home directory
     if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
         let candidate = std::path::PathBuf::from(home)
             .join(".doolang")

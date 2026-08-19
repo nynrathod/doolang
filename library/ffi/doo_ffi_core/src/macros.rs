@@ -103,3 +103,22 @@ macro_rules! ffi_safe_void {
         let _ = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
     }};
 }
+
+/// Debug logging macro for FFI layer.
+/// Only prints when DOO_DEBUG env var is set.
+#[macro_export]
+macro_rules! ffi_debug {
+    ($tag:expr, $($arg:tt)*) => {
+        if std::env::var("DOO_DEBUG").is_ok() {
+            eprintln!("[{}] {}", $tag, format!($($arg)*));
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! ffi_fatal {
+    ($($arg:tt)*) => {
+        eprintln!("[FATAL] {}", format!($($arg)*));
+        std::process::exit(1);
+    };
+}

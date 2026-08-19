@@ -16,9 +16,9 @@
 //! All returned strings are allocated via `doo_alloc_string` (libc::malloc).
 //! Caller owns the returned pointer and must free via `doo_free`.
 
+use crate::ffi_debug;
 use crate::helpers::{c_to_string, make_err, make_ok_string, string_to_c};
 use crate::result::DooResult;
-use crate::ffi_debug;
 use std::os::raw::c_char;
 
 // ============================================================================

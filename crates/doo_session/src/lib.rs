@@ -384,18 +384,17 @@ impl std::fmt::Debug for CompileSession {
 // Stdlib Path Resolution
 // ============================================================================
 
-/// Resolve the standard library directory path.
+/// Resolve the standard library directory path following the Rust model.
 ///
 /// Search order:
 /// 1. DOO_STDLIB_PATH environment variable
-/// 2. Next to the compiler executable (production install)
-/// 3. Walk up from the project root (development)
-/// 4. Walk up from the current working directory
-/// 5. Relative ./std (CI/testing fallback)
+/// 2. `library/std` relative to project root (Development mode)
+/// 3. `lib/std` relative to compiler executable (Production/Installed mode)
 ///
 /// Returns an empty path if no stdlib is found — single-file
 /// scripts do not require a stdlib.
 fn resolve_stdlib_path(project_root: &Path) -> PathBuf {
+    // 1. Environment variable override
     if let Ok(path) = std::env::var(env_vars::DOO_STDLIB_PATH) {
         let p = PathBuf::from(path);
         if p.exists() && is_valid_stdlib(&p) {
@@ -403,53 +402,39 @@ fn resolve_stdlib_path(project_root: &Path) -> PathBuf {
         }
     }
 
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let std_dir = dir.join("std");
-            if std_dir.exists() && is_valid_stdlib(&std_dir) {
-                return std_dir;
-            }
-
-            let mut current = dir.to_path_buf();
-            for _ in 0..10 {
-                if !current.pop() {
-                    break;
-                }
-                let std_dir = current.join("std");
-                if std_dir.exists() && is_valid_stdlib(&std_dir) {
-                    return std_dir;
-                }
-            }
-        }
-    }
-
+    // 2. Development mode: look for `library/std` walking up from project root
     let mut current = project_root.to_path_buf();
-    for _ in 0..20 {
-        let std_dir = current.join("std");
-        if std_dir.exists() && is_valid_stdlib(&std_dir) {
-            return std_dir;
+    for _ in 0..10 {
+        let lib_std = current.join("library").join("std");
+        if lib_std.exists() && is_valid_stdlib(&lib_std) {
+            return lib_std;
         }
         if !current.pop() {
             break;
         }
     }
 
-    if let Ok(cwd) = std::env::current_dir() {
-        let mut current = cwd;
-        for _ in 0..20 {
-            let std_dir = current.join("std");
-            if std_dir.exists() && is_valid_stdlib(&std_dir) {
-                return std_dir;
+    // 3. Production mode: look for `lib/std` next to the compiler executable
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            // Installed toolchain layout: bin/doo, lib/std
+            let lib_std = dir.join("lib").join("std");
+            if lib_std.exists() && is_valid_stdlib(&lib_std) {
+                return lib_std;
             }
-            if !current.pop() {
-                break;
+
+            // Walk up a bit in case running from target/debug inside the repo
+            let mut current = dir.to_path_buf();
+            for _ in 0..5 {
+                if !current.pop() {
+                    break;
+                }
+                let dev_std = current.join("library").join("std");
+                if dev_std.exists() && is_valid_stdlib(&dev_std) {
+                    return dev_std;
+                }
             }
         }
-    }
-
-    let dev_stdlib = PathBuf::from("./std");
-    if dev_stdlib.exists() && is_valid_stdlib(&dev_stdlib) {
-        return dev_stdlib;
     }
 
     PathBuf::new()

@@ -9,8 +9,8 @@ members = [
 	"crates/doo_codegen",
 	"crates/doo_driver",
 	"crates/doo_diagnostics",
-	"crates/doo_lsp",
-	"tools/doo-migrate",
+	# "crates/doo_lsp",
+	# "tools/doo-migrate",
 	"crates/doo_macro",
 
 	"library/ffi/doo_ffi_core",
@@ -45,7 +45,7 @@ default-run = "doo"
 [dependencies]
 # New compiler driver (Phase 10)
 doo_driver = { path = "crates/doo_driver" }
-doo_migrate = { path = "tools/doo-migrate" }
+# doo_migrate = { path = "tools/doo-migrate" }
 
 # Core types and debug infrastructure
 doo_core = { path = "crates/doo_core" }

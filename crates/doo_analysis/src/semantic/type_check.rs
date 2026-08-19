@@ -757,6 +757,13 @@ impl<'a> TypeChecker<'a> {
             return true;
         }
 
+        // Cast TO Str is always allowed from any type.
+        // Str is the universal string representation — the codegen's
+        // Cast handler converts any value to a string at runtime.
+        if to == builtin::STR {
+            return true;
+        }
+
         // Numeric casts: Int <-> Float, Int <-> Int sizes
         let numeric_types = [builtin::INT, builtin::FLOAT, builtin::BOOL, builtin::CHAR];
 

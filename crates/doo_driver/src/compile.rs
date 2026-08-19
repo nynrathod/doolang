@@ -1385,7 +1385,15 @@ fn link_windows(
     cmd.arg("kernel32.lib")
         .arg("advapi32.lib")
         .arg("ntdll.lib")
-        .arg("userenv.lib");
+        .arg("userenv.lib")
+        .arg("ws2_32.lib")
+        .arg("bcrypt.lib")
+        .arg("secur32.lib")
+        .arg("crypt32.lib")
+        .arg("ole32.lib")
+        .arg("oleaut32.lib")
+        .arg("rpcrt4.lib")
+        .arg("gdi32.lib");
 
     // Link FFI libraries in deterministic alphabetical order.
     // With /FORCE:MULTIPLE, the FIRST definition of each duplicate symbol wins.
