@@ -648,7 +648,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 }
             }
 
-            if method == "contains" && args.len() == 1 {
+                       if method == "contains" && args.len() == 1 {
                 if matches!(
                     builder.infer_container_kind(receiver),
                     Some(ContainerKind::Array)
@@ -661,11 +661,14 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     let needle = builder.build_expr(&args[0]);
                     let dest = builder.new_temp();
                     builder.emit(
-                        MirInstrKind::ArrayContains {
-                            dest,
-                            array: recv,
-                            value: needle,
-                            elem_type,
+                        MirInstrKind::MethodCall {
+                            dest: Some(dest),
+                            receiver: recv,
+                            receiver_type: receiver.type_id.unwrap_or(builtin::ANY),
+                            method: sym("contains"),
+                            args: vec![needle],
+                            arg_types: vec![elem_type],
+                            return_type: Some(builtin::BOOL),
                         },
                         span,
                     );
@@ -920,8 +923,20 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             // we need to write back the result to the original field since push/pop/etc
             // may reallocate the array and return a new pointer.
             // This is the SINGLE SOURCE OF TRUTH for field write-back on mutating operations.
+                       // For mutating methods that may reallocate (push, pop, etc),
+            // write the result back to the original variable/field.
+            // This is the SINGLE SOURCE OF TRUTH for write-back on mutating operations.
             if matches!(method.as_str(), "push" | "pop" | "clear" | "reverse" | "sort") {
-                if let HirExprKind::Field { object, field } = &receiver.kind {
+                if let HirExprKind::Local { name } = &receiver.kind {
+                    // Local variable: write back new pointer (push may reallocate)
+                    builder.emit(
+                        MirInstrKind::Assign {
+                            dest: sym(name),
+                            value: MirOperand::Temp(dest),
+                        },
+                        span,
+                    );
+                } else if let HirExprKind::Field { object, field } = &receiver.kind {
                     // The method result (in dest) needs to be written back to object.field
                     // CRITICAL: Use the original object reference directly, NOT build_expr(object)!
                     // build_expr may emit Clone instructions which would create a copy.

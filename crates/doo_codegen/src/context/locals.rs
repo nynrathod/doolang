@@ -118,33 +118,80 @@ impl<'ctx> CodegenContext<'ctx> {
     }
 
     /// Store a value to a local variable.
-    /// If an alloca exists (from create_local) with matching type, stores to it.
-    /// If there's a type mismatch (e.g., variable shadowing with different type),
-    /// stores as temp so get_value finds it first.
-    /// Otherwise, stores as a temp value.
+    ///
+    /// When value type doesn't match alloca type:
+    /// 1. FIRST: Recreate alloca with correct type (preserves pointer provenance)
+    /// 2. THEN: Try int→ptr or ptr→int as fallback
+    /// 3. LAST: Store as temp
     pub fn set_local(&mut self, name: String, value: BasicValueEnum<'ctx>) {
-        // If we have an alloca for this variable, check type compatibility
         if let Some((ptr, alloca_ty)) = self.locals.get(&name) {
-            // Check if value type matches alloca type
-            // For type mismatches (e.g., same variable name but different type due to shadowing),
-            // store as temp instead to avoid LLVM type errors
             let value_type = value.get_type();
             let types_match = *alloca_ty == value_type;
             if types_match {
-                // Types match - store to alloca
                 let _ = self.builder.build_store(*ptr, value);
-                // Clear any stale temp entry - the alloca is the source of truth now
-                // This prevents get_value from returning an old SSA value from a different block
                 self.temps.remove(&name);
             } else {
-                // Type mismatch - try implicit conversion before falling back to temp
                 let ptr = *ptr;
                 let alloca_ty = *alloca_ty;
 
-                // ptr -> int conversion: reverses the inttoptr done by UnwrapOk
-                // This handles cases like `let total: Int = db.rawWithParams(...)?;`
-                // where the FFI result was originally an i64, converted to ptr by UnwrapOk,
-                // and now needs to be stored back as an integer.
+                // ============================================================
+                // When value is a pointer but alloca is int type,
+                // recreate the alloca with the correct pointer type FIRST.
+                // This prevents ptr→i64 conversion that breaks ALL array/map/
+                // string operations (ArrayGet, ArraySet, MethodCall, Drop, etc.)
+                //
+                // ============================================================
+                if value.is_pointer_value() && alloca_ty.is_int_type() {
+                    // Try to recreate alloca with correct pointer type
+                    if let Some(current_bb) = self.builder.get_insert_block() {
+                        if let Some(func) = current_bb.get_parent() {
+                            if let Some(entry_bb) = func.get_first_basic_block() {
+                                let insert_point = entry_bb.get_first_instruction();
+                                if let Some(first_instr) = insert_point {
+                                    let mut last_alloca = None;
+                                    let mut instr = Some(first_instr);
+                                    while let Some(i) = instr {
+                                        if i.get_opcode()
+                                            == inkwell::values::InstructionOpcode::Alloca
+                                        {
+                                            last_alloca = Some(i);
+                                        } else {
+                                            break;
+                                        }
+                                        instr = i.get_next_instruction();
+                                    }
+                                    if let Some(la) = last_alloca {
+                                        if let Some(next) = la.get_next_instruction() {
+                                            self.builder.position_before(&next);
+                                        } else {
+                                            self.builder.position_at_end(entry_bb);
+                                        }
+                                    } else {
+                                        self.builder.position_before(&first_instr);
+                                    }
+                                } else {
+                                    self.builder.position_at_end(entry_bb);
+                                }
+                                if let Ok(new_alloca) = self.builder.build_alloca(value_type, &name)
+                                {
+                                    self.builder.position_at_end(current_bb);
+                                    let _ = self.builder.build_store(new_alloca, value);
+                                    self.locals.insert(name.clone(), (new_alloca, value_type));
+                                    self.temps.remove(&name);
+                                    return;
+                                }
+                                self.builder.position_at_end(current_bb);
+                            }
+                        }
+                    }
+                    // If alloca recreation failed, fall through to ptr→int below
+                }
+
+                // ============================================================
+                // Fallback conversions (only reached if alloca recreation failed)
+                // ============================================================
+
+                // ptr -> int conversion (last resort for pointer in int alloca)
                 if alloca_ty.is_int_type() && value.is_pointer_value() {
                     if let Ok(converted) = self.builder.build_ptr_to_int(
                         value.into_pointer_value(),
@@ -157,14 +204,7 @@ impl<'ctx> CodegenContext<'ctx> {
                     }
                 }
 
-                // int -> ptr conversion: handles tuple-destructured values that are
-                // stored as i64 (because TupleCreate uses uniform i64 layout) but the
-                // variable was declared as a string/pointer type.
-                // Example: `let resultJson, err = Process.run(...)` where resultJson
-                // is Str (ptr alloca) but TupleGet extracts it as i64.
-                // SAFETY: Validate the integer is a plausible user-space address.
-                // Zero and negative values (like -1/0xFFFFFFFFFFFFFFFF) produce
-                // invalid pointers that crash on dereference.
+                // int -> ptr conversion (for tuple-destructured values stored as i64)
                 if alloca_ty.is_pointer_type() && value.is_int_value() {
                     let int_val = value.into_int_value();
                     let ptr_type = alloca_ty.into_pointer_type();
@@ -201,19 +241,12 @@ impl<'ctx> CodegenContext<'ctx> {
                     }
                 }
 
-                // No conversion possible - recreate alloca with correct type in entry block
-                // This handles match/if expression results where the alloca was created
-                // with a generic type (ptr) but the actual values are concrete (i64, f64, etc.)
-                // CRITICAL: Without this, cross-block values stored as temps cause
-                // "Instruction does not dominate all uses" LLVM verification errors
+                // Last resort: recreate alloca with correct type
                 if let Some(current_bb) = self.builder.get_insert_block() {
                     if let Some(func) = current_bb.get_parent() {
                         if let Some(entry_bb) = func.get_first_basic_block() {
-                            // Position at the end of allocas in entry block
-                            // (before any non-alloca instructions)
                             let insert_point = entry_bb.get_first_instruction();
                             if let Some(first_instr) = insert_point {
-                                // Find the last alloca instruction
                                 let mut last_alloca = None;
                                 let mut instr = Some(first_instr);
                                 while let Some(i) = instr {
@@ -221,11 +254,10 @@ impl<'ctx> CodegenContext<'ctx> {
                                     {
                                         last_alloca = Some(i);
                                     } else {
-                                        break; // Allocas are always at the start
+                                        break;
                                     }
                                     instr = i.get_next_instruction();
                                 }
-                                // Position after last alloca (or at start if no allocas)
                                 if let Some(la) = last_alloca {
                                     if let Some(next) = la.get_next_instruction() {
                                         self.builder.position_before(&next);
@@ -238,27 +270,22 @@ impl<'ctx> CodegenContext<'ctx> {
                             } else {
                                 self.builder.position_at_end(entry_bb);
                             }
-                            // Create new alloca with the correct type
                             if let Ok(new_alloca) = self.builder.build_alloca(value_type, &name) {
-                                // Restore position to current block
                                 self.builder.position_at_end(current_bb);
                                 let _ = self.builder.build_store(new_alloca, value);
                                 self.locals.insert(name.clone(), (new_alloca, value_type));
                                 self.temps.remove(&name);
                                 return;
                             }
-                            // Restore position if alloca creation failed
                             self.builder.position_at_end(current_bb);
                         }
                     }
                 }
 
-                // Last resort - store as temp (shadows the local for this scope)
-                // get_value checks temps first, so this will be found before the alloca
+                // Final fallback: store as temp
                 self.temps.insert(name, value);
             }
         } else {
-            // Fallback to temp storage (for temporaries without allocas)
             self.temps.insert(name, value);
         }
     }

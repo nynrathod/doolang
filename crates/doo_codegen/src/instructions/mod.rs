@@ -56,7 +56,6 @@ impl<'ctx> InstructionDispatcher<'ctx> {
                 Box::new(composites::CompositeHandler),
                 Box::new(calls::CallHandler),
                 Box::new(calls::MethodCallHandler),
-                Box::new(calls::FfiCallHandler),
                 Box::new(enums::EnumHandler),
                 Box::new(closures::ClosureHandler),
                 Box::new(casts::CastHandler),
@@ -65,7 +64,6 @@ impl<'ctx> InstructionDispatcher<'ctx> {
         }
     }
 
-    /// Emit LLVM IR for an instruction.
     pub fn emit(
         &self,
         ctx: &mut CodegenContext<'ctx>,
@@ -73,17 +71,19 @@ impl<'ctx> InstructionDispatcher<'ctx> {
     ) -> Option<BasicValueEnum<'ctx>> {
         doo_debug!("codegen-dispatch", "instruction {:?}", instr.kind);
 
-        for handler in &self.handlers {
+        for (idx, handler) in self.handlers.iter().enumerate() {
             if handler.handles(instr) {
-                return handler.emit(ctx, instr);
+                eprintln!("[DISPATCH-DEBUG] handler #{} matched, calling emit()", idx);
+                let result = handler.emit(ctx, instr);
+                match &result {
+                    Some(v) => eprintln!("[DISPATCH-DEBUG] handler #{} returned Some value", idx),
+                    None => eprintln!("[DISPATCH-DEBUG] handler #{} returned None", idx),
+                }
+                return result;
             }
         }
 
-        doo_debug!(
-            "codegen-dispatch",
-            "no handler for {:?}",
-            instr.kind
-        );
+        doo_debug!("codegen-dispatch", "no handler for {:?}", instr.kind);
         None
     }
 }

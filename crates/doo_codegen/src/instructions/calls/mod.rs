@@ -1,28 +1,25 @@
-//! Call instruction handlers — generic FFI call dispatch.
-//!
-//! All function calls (both internal and @extern) flow through a single
-//! generic path. The compiler never matches on framework-specific symbol
-//! names.
+//! Call Instruction Handlers
 
 pub mod call_ffi;
 pub mod call_utils;
+pub mod method_call;
+
+pub use method_call::MethodCallHandler;
 
 use crate::context::CodegenContext;
 use crate::instructions::InstructionHandler;
 use crate::utils::operand_to_value;
-use doo_core::doo_debug;
 use doo_mir::sym::resolve;
-use doo_mir::{MirInstr, MirInstrKind};
-use inkwell::module::Linkage;
+use doo_mir::{MirInstr, MirInstrKind, MirOperand};
 use inkwell::types::BasicMetadataTypeEnum;
-use inkwell::values::BasicValueEnum;
+use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, FunctionValue};
+use inkwell::AddressSpace;
 
-/// Call instruction handler.
 pub struct CallHandler;
 
 impl<'ctx> InstructionHandler<'ctx> for CallHandler {
     fn handles(&self, instr: &MirInstr) -> bool {
-        matches!(instr.kind, MirInstrKind::Call { .. })
+        matches!(&instr.kind, MirInstrKind::Call { .. })
     }
 
     fn emit(
@@ -33,67 +30,50 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
         match &instr.kind {
             MirInstrKind::Call { dest, func, args } => {
                 let func_name = resolve(*func);
-                doo_debug!("codegen-Call", "emitting call {}", func_name);
+                eprintln!("[CALL-DEBUG] func={:?} args={}", func_name, args.len());
 
-                if call_ffi::is_runtime_symbol(&func_name)
-                    || ctx.ffi_type_signatures.contains_key(&func_name)
-                {
-                    let dest_str = dest.map(|s| resolve(s));
-                    return call_ffi::emit_ffi_call(ctx, dest_str.as_deref(), &func_name, args);
+                let func_val = get_or_declare_function(ctx, &func_name, args)?;
+                eprintln!("[CALL-DEBUG] function OK");
+
+                // Get param types from the function type
+                let fn_type = func_val.get_type();
+                let param_types: &[BasicMetadataTypeEnum<'ctx>] = &fn_type.get_param_types();
+
+                let mut arg_values: Vec<BasicMetadataValueEnum<'ctx>> = Vec::new();
+                for (i, arg) in args.iter().enumerate() {
+                    let arg_val = operand_to_value(ctx, arg)?;
+                    let casted = cast_arg(ctx, arg_val, param_types.get(i), i);
+                    arg_values.push(casted);
                 }
 
-                // Resolve arguments first so we know their LLVM types
-                let mut arg_vals = Vec::new();
-                for arg in args {
-                    if let Some(v) = operand_to_value(ctx, arg) {
-                        arg_vals.push(v);
-                    } else {
-                        doo_debug!(
-                            "codegen-Call",
-                            "failed to resolve argument for {}",
-                            func_name
-                        );
-                        return None;
+                let call_site =
+                    ctx.builder
+                        .build_call(func_val, &arg_values, &format!("call_{}", func_name));
+
+                match call_site {
+                    Ok(cs) => {
+                        let result = cs.try_as_basic_value().basic();
+                        match result {
+                            Some(val) => {
+                                if let Some(dest_name) = dest {
+                                    ctx.set_temp(&resolve(*dest_name), val);
+                                }
+                                Some(val)
+                            }
+                            None => {
+                                // Void function — store dummy for dest
+                                if let Some(dest_name) = dest {
+                                    let zero = ctx.context.i64_type().const_zero();
+                                    ctx.set_temp(&resolve(*dest_name), zero.into());
+                                }
+                                None
+                            }
+                        }
                     }
-                }
-
-                // Try to get the function, or declare it if it's missing (e.g., stdlib function)
-                let func_val = match ctx.get_function(&func_name) {
-                    Some(f) => f,
-                    None => {
-                        doo_debug!(
-                            "codegen-Call",
-                            "declaring external {}",
-                            func_name
-                        );
-
-                        // Infer parameter types from the arguments we just resolved
-                        let param_types: Vec<BasicMetadataTypeEnum> =
-                            arg_vals.iter().map(|v| v.get_type().into()).collect();
-
-                        // Infer return type: if dest is Some, assume i64, else void
-                        let fn_type = if dest.is_some() {
-                            ctx.i64_type().fn_type(&param_types, false)
-                        } else {
-                            ctx.context.void_type().fn_type(&param_types, false)
-                        };
-
-                        ctx.module
-                            .add_function(&func_name, fn_type, Some(Linkage::External))
+                    Err(e) => {
+                        eprintln!("[CALL-DEBUG] build_call FAILED: {:?}", e);
+                        None
                     }
-                };
-
-                let call_args: Vec<_> = arg_vals.iter().map(|v| (*v).into()).collect();
-                let call_site = ctx.builder.build_call(func_val, &call_args, "call").ok()?;
-
-                // FIX: Use .basic() instead of .left() for inkwell LLVM 22 compatibility
-                if let Some(result) = call_site.try_as_basic_value().basic() {
-                    if let Some(dest_name) = dest {
-                        ctx.set_temp(&resolve(*dest_name), result);
-                    }
-                    Some(result)
-                } else {
-                    None
                 }
             }
             _ => None,
@@ -101,135 +81,126 @@ impl<'ctx> InstructionHandler<'ctx> for CallHandler {
     }
 }
 
-/// Handles method calls. Since THIR resolved the method to a function,
-/// this just delegates to the standard Call path with `self` as the first arg.
-pub struct MethodCallHandler;
-
-impl<'ctx> InstructionHandler<'ctx> for MethodCallHandler {
-    fn handles(&self, instr: &MirInstr) -> bool {
-        matches!(instr.kind, MirInstrKind::MethodCall { .. })
+/// Get existing function from module, or declare it with correct signature.
+fn get_or_declare_function<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    name: &str,
+    args: &[MirOperand],
+) -> Option<FunctionValue<'ctx>> {
+    if let Some(f) = ctx.module.get_function(name) {
+        return Some(f);
     }
 
-    fn emit(
-        &self,
-        ctx: &mut CodegenContext<'ctx>,
-        instr: &MirInstr,
-    ) -> Option<BasicValueEnum<'ctx>> {
-        match &instr.kind {
-            MirInstrKind::MethodCall {
-                dest,
-                receiver,
-                method,
-                args,
-                ..
-            } => {
-                let func_name = resolve(*method);
-                doo_debug!("codegen-MethodCall", "emitting method {}", func_name);
+    let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+    let i64_type = ctx.context.i64_type();
+    let i32_type = ctx.context.i32_type();
+    let void_type = ctx.context.void_type();
 
-                if call_ffi::is_runtime_symbol(&func_name)
-                    || ctx.ffi_type_signatures.contains_key(&func_name)
-                {
-                    let mut ffi_args = vec![receiver.clone()];
-                    ffi_args.extend(args.iter().cloned());
-                    let dest_str = dest.map(|s| resolve(s));
-                    return call_ffi::emit_ffi_call(
-                        ctx,
-                        dest_str.as_deref(),
-                        &func_name,
-                        &ffi_args,
-                    );
-                }
+    eprintln!("[CALL-DEBUG] declaring new function: {}", name);
 
-                let recv_val = operand_to_value(ctx, receiver)?;
-
-                let mut all_args = vec![recv_val];
-                for arg in args {
-                    if let Some(v) = operand_to_value(ctx, arg) {
-                        all_args.push(v);
-                    } else {
-                        doo_debug!(
-                            "codegen-MethodCall",
-                            "failed to resolve argument for {}",
-                            func_name
-                        );
-                        return None;
-                    }
-                }
-
-                // Try to get the function, or declare it if it's missing
-                let func_val = match ctx
-                    .get_function(&func_name)
-                    .or_else(|| ctx.module.get_function(&func_name))
-                {
-                    Some(f) => f,
-                    None => {
-                        doo_debug!(
-                            "codegen-MethodCall",
-                            "declaring external {}",
-                            func_name
-                        );
-                        let param_types: Vec<BasicMetadataTypeEnum> =
-                            all_args.iter().map(|v| v.get_type().into()).collect();
-                        let fn_type = if dest.is_some() {
-                            ctx.i64_type().fn_type(&param_types, false)
-                        } else {
-                            ctx.context.void_type().fn_type(&param_types, false)
-                        };
-                        ctx.module
-                            .add_function(&func_name, fn_type, Some(Linkage::External))
-                    }
-                };
-
-                let call_args: Vec<_> = all_args.iter().map(|v| (*v).into()).collect();
-                let call_site = ctx
-                    .builder
-                    .build_call(func_val, &call_args, "method_call")
-                    .ok()?;
-
-                // FIX: Use .basic() instead of .left() for inkwell LLVM 22 compatibility
-                if let Some(result) = call_site.try_as_basic_value().basic() {
-                    if let Some(dest_name) = dest {
-                        ctx.set_temp(&resolve(*dest_name), result);
-                    }
-                    Some(result)
-                } else {
-                    None
-                }
-            }
-            _ => None,
+    // Use string literals to avoid missing constant issues
+    let fn_type = match name {
+        // Print functions (language level)
+        "doo_print_str" => {
+            eprintln!("[CALL-DEBUG]   signature: void(i8*)");
+            void_type.fn_type(&[ptr_type.into()], false)
         }
-    }
+        "doo_println" => {
+            eprintln!("[CALL-DEBUG]   signature: void()");
+            void_type.fn_type(&[], false)
+        }
+
+        // Memory
+        "malloc" | "doo_alloc" => ptr_type.fn_type(&[i64_type.into()], false),
+        "free" | "doo_free" => void_type.fn_type(&[ptr_type.into()], false),
+        "realloc" | "doo_realloc" => ptr_type.fn_type(&[ptr_type.into(), i64_type.into()], false),
+
+        // String
+        "strlen" => i64_type.fn_type(&[ptr_type.into()], false),
+        "memcpy" => void_type.fn_type(&[ptr_type.into(), ptr_type.into(), i64_type.into()], false),
+        "memset" => void_type.fn_type(&[ptr_type.into(), i32_type.into(), i64_type.into()], false),
+        "strcmp" => i32_type.fn_type(&[ptr_type.into(), ptr_type.into()], false),
+
+        // I/O
+        "printf" => i32_type.fn_type(&[ptr_type.into()], true),
+        "fflush" => i32_type.fn_type(&[ptr_type.into()], false),
+        "puts" => i32_type.fn_type(&[ptr_type.into()], false),
+        "exit" => void_type.fn_type(&[i32_type.into()], false),
+
+        // Default: generic i64(i64, i64, ...)
+        _ => {
+            eprintln!(
+                "[CALL-DEBUG]   generic signature: i64({} params)",
+                args.len()
+            );
+            let param_types: Vec<_> = (0..args.len()).map(|_| i64_type.into()).collect();
+            i64_type.fn_type(&param_types, false)
+        }
+    };
+
+    let func = ctx.module.add_function(name, fn_type, None);
+    eprintln!("[CALL-DEBUG] declared OK");
+    Some(func)
 }
 
-/// Handles @extern calls. Delegates to call_ffi.rs.
-pub struct FfiCallHandler;
+/// Cast an argument value to match the expected parameter type.
+/// Handles: i64→ptr, ptr→i64, int widening/narrowing.
+fn cast_arg<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    val: BasicValueEnum<'ctx>,
+    ptype: Option<&BasicMetadataTypeEnum<'ctx>>,
+    idx: usize,
+) -> BasicMetadataValueEnum<'ctx> {
+    let Some(ptype) = ptype else {
+        return val.into();
+    };
 
-impl<'ctx> InstructionHandler<'ctx> for FfiCallHandler {
-    fn handles(&self, instr: &MirInstr) -> bool {
-        matches!(instr.kind, MirInstrKind::FfiCall { .. })
-    }
-
-    fn emit(
-        &self,
-        ctx: &mut CodegenContext<'ctx>,
-        instr: &MirInstr,
-    ) -> Option<BasicValueEnum<'ctx>> {
-        match &instr.kind {
-            MirInstrKind::FfiCall {
-                dest, symbol, args, ..
-            } => {
-                let dest_str = dest.map(|s| resolve(s));
-                let symbol_str = resolve(*symbol);
-                doo_debug!("codegen-FfiCall", "emitting {}", symbol_str);
-
-                call_ffi::emit_ffi_call(
-                    ctx,
-                    dest_str.as_deref(),
-                    &symbol_str,
-                    args,
-                )
-            }
-            _ => None,
+    // i64 → pointer (arrays stored as i64, functions expect pointer)
+    if ptype.is_pointer_type() && val.is_int_value() {
+        let result = ctx.builder.build_int_to_ptr(
+            val.into_int_value(),
+            ptype.into_pointer_type(),
+            &format!("arg{}_i2p", idx),
+        );
+        if let Ok(p) = result {
+            return p.into();
         }
     }
+
+    // pointer → i64
+    if ptype.is_int_type() && val.is_pointer_value() {
+        let result = ctx.builder.build_ptr_to_int(
+            val.into_pointer_value(),
+            ptype.into_int_type(),
+            &format!("arg{}_p2i", idx),
+        );
+        if let Ok(i) = result {
+            return i.into();
+        }
+    }
+
+    // Integer widening (i8/i32 → i64)
+    if ptype.is_int_type() && val.is_int_value() {
+        let src_bw = val.get_type().into_int_type().get_bit_width();
+        let dst_bw = ptype.into_int_type().get_bit_width();
+        if src_bw < dst_bw {
+            if let Ok(e) = ctx.builder.build_int_z_extend(
+                val.into_int_value(),
+                ptype.into_int_type(),
+                &format!("arg{}_zext", idx),
+            ) {
+                return e.into();
+            }
+        } else if src_bw > dst_bw {
+            if let Ok(t) = ctx.builder.build_int_truncate(
+                val.into_int_value(),
+                ptype.into_int_type(),
+                &format!("arg{}_trunc", idx),
+            ) {
+                return t.into();
+            }
+        }
+    }
+
+    val.into()
 }
