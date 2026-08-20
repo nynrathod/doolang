@@ -1168,45 +1168,18 @@ impl MethodResolver {
         None
     }
 
-    /// Resolve a built-in method.
+    /// Resolve built-in methods.
     ///
-    /// Uses doo_core::methods registry for built-in method definitions.
-    fn resolve_builtin(&self, receiver_type: &str, method_name: &str) -> Option<ResolvedMethod> {
-        // Normalize type name for lookup
-        let normalized = Self::normalize_type_for_builtin(receiver_type);
-
-        // Use the methods registry from doo_core
-        let method_def = doo_core::methods::get_method(&normalized, method_name)?;
-
-        Some(ResolvedMethod::Builtin {
-            type_name: normalized,
-            method_name: method_name.to_string(),
-            param_types: method_def.params.iter().map(|s| s.to_string()).collect(),
-            return_type: method_def.return_type.to_string(),
-            mutates: method_def.mutates,
-        })
-    }
-
-    /// Normalize type name for built-in method lookup.
-    ///
-    /// Converts various type syntaxes to the form expected by doo_core::methods.
-    fn normalize_type_for_builtin(type_name: &str) -> String {
-        // String/Str normalization
-        if type_name == "String" {
-            return "Str".to_string();
-        }
-
-        // Array syntax normalization
-        if type_name.starts_with('[') || type_name.starts_with("Array") {
-            return type_name.to_string();
-        }
-
-        // Map syntax normalization
-        if type_name.starts_with('{') || type_name.starts_with("Map") {
-            return type_name.to_string();
-        }
-
-        type_name.to_string()
+    /// In the pure compiler architecture, there are no hardcoded builtin methods.
+    /// All methods (Array.push, Str.len, etc.) are defined in `library/std/*.doo`
+    /// and are resolved through the normal type system via `impl` blocks.
+    /// Therefore, this fallback returns None, forcing resolution through the type system.
+    pub fn resolve_builtin(
+        &self,
+        _receiver_type: &str,
+        _method_name: &str,
+    ) -> Option<ResolvedMethod> {
+        None
     }
 }
 
@@ -1216,7 +1189,7 @@ mod tests {
     use doo_core::Span;
 
     fn span() -> Span {
-        Span::new(0, 0, 0)
+        Span::dummy()
     }
 
     #[test]
@@ -1762,47 +1735,11 @@ mod tests {
     }
 
     #[test]
-    fn test_method_resolver_builtin_string() {
+    fn test_method_resolver_no_hardcoded_builtins() {
         let resolver = MethodResolver::new();
-
-        // Resolve Str.len() - built-in method
-        let result = resolver.resolve("Str", "len");
-        assert!(result.is_some());
-
-        let resolved = result.unwrap();
-        assert!(matches!(resolved, ResolvedMethod::Builtin { .. }));
-        assert_eq!(resolved.return_type(), "Int");
-        assert!(!resolved.mutates());
-    }
-
-    #[test]
-    fn test_method_resolver_builtin_array() {
-        let resolver = MethodResolver::new();
-
-        // Resolve [Int].push() - built-in method
-        let result = resolver.resolve("[Int]", "push");
-        assert!(result.is_some());
-
-        let resolved = result.unwrap();
-        assert!(matches!(resolved, ResolvedMethod::Builtin { .. }));
-        assert!(resolved.mutates());
-
-        // Resolve Array(String).len()
-        let result2 = resolver.resolve("Array(String)", "len");
-        assert!(result2.is_some());
-    }
-
-    #[test]
-    fn test_method_resolver_builtin_map() {
-        let resolver = MethodResolver::new();
-
-        // Resolve {Str: Int}.has() - built-in method
-        let result = resolver.resolve("{Str: Int}", "has");
-        assert!(result.is_some());
-
-        let resolved = result.unwrap();
-        assert!(matches!(resolved, ResolvedMethod::Builtin { .. }));
-        assert_eq!(resolved.return_type(), "Bool");
+        assert!(resolver.resolve("Str", "len").is_none());
+        assert!(resolver.resolve("[Int]", "push").is_none());
+        assert!(resolver.resolve("{Str: Int}", "has").is_none());
     }
 
     #[test]
@@ -1896,10 +1833,7 @@ mod tests {
 
         assert!(resolver.has_method("User", "isAdult"));
         assert!(!resolver.has_method("User", "getName"));
-
-        // Built-in methods
-        assert!(resolver.has_method("Str", "len"));
-        assert!(resolver.has_method("[Int]", "push"));
+        assert!(!resolver.has_method("Str", "len"));
     }
 
     #[test]

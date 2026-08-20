@@ -80,7 +80,6 @@ impl Lower {
         // Array/collection iteration
         self.lower_array_for_loop(pattern, iter_expr, body, span)
     }
-
     /// Lower range-based for-loop: `for i in start..end`
     pub(crate) fn lower_range_for_loop(
         &mut self,

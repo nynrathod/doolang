@@ -1,0 +1,28 @@
+// modules/engine.doo
+import Types::{NodeMeta, AccessLevel, IntegrityStatus};
+
+struct DataNode {
+    Id: Int,
+    Payload: Str,
+    Meta: NodeMeta,
+}
+
+// Accepts a cross-module nested struct, performs deep conditional mutation, and returns it
+fn ProcessIncomingNode(node: DataNode, systemClearance: AccessLevel) -> DataNode {
+    print("-> [Engine] Processing Node ID:");
+    print(node.Id);
+
+    // Deep cross-module read check
+    if node.Meta.Gate.Level == systemClearance {
+        print("   [Engine] Clearance matched. Elevating node status...");
+print("myIntegrityStatus", IntegrityStatus::Clean);
+        // Deep cross-module write check
+        node.Meta.Status = IntegrityStatus::Clean;
+        node.Meta.Gate.IsEncrypted = true;
+    } else {
+        print("   [Engine] Warning: Clearance mismatch. Marking node as untrusted.");
+        node.Meta.Status = IntegrityStatus::Untrusted;
+    }
+
+    return node;
+}

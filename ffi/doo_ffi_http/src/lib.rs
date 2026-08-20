@@ -15,7 +15,6 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod error;
 mod helpers;
-mod middleware;
 mod router;
 mod server;
 mod types;
@@ -30,7 +29,6 @@ use doo_ffi_core::ffi_safe_ptr;
 
 pub use error::*;
 pub use helpers::*;
-pub use middleware::*;
 pub use router::*;
 pub use types::*;
 
@@ -46,6 +44,7 @@ pub use types::*;
 
 /// Wrap an extern "C" fn that returns *mut DooResult.
 /// On panic → returns a 500 RFC 7807 error DooResult (HTTP-specific).
+#[macro_export]
 macro_rules! ffi_safe_result {
     ($body:expr) => {{
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| $body)) {
@@ -55,22 +54,22 @@ macro_rules! ffi_safe_result {
     }};
 }
 
-// New submodules (extracted from lib.rs monolith)
-mod auth;
-mod crud;
-mod db_bridge;
+// ============================================================================
+// FRAMEWORK SUBMODULE — extracted from root (Phase 4)
+// ============================================================================
+// These are HTTP framework features (auth, CRUD, webhooks, RBAC, etc.)
+// that depend on the transport layer but are not core transport themselves.
+pub mod framework;
+
+// Re-export framework middleware for backward compatibility
+pub use framework::middleware::*;
+
+// Transport layer submodules
 mod dispatch;
 mod fetch;
-mod map_ops;
-mod metadata;
-pub mod metrics;
-mod middleware_ffi;
-mod password_reset;
-mod rbac;
 mod request;
 mod response;
 mod routes;
-mod validation;
 mod ws_ffi;
 
 // ============================================================================
@@ -233,6 +232,19 @@ fn register_bridge_symbols() {
         doo_ffi_core::ffi_bridge::register(
             "doo_http_push_cookie",
             routes::doo_http_push_cookie as *const std::ffi::c_void,
+        );
+        // Webhook audit log functions now live in the framework submodule
+        doo_ffi_core::ffi_bridge::register(
+            "doo_http_webhooks_recent",
+            framework::webhook_log::doo_http_webhooks_recent as *const std::ffi::c_void,
+        );
+        doo_ffi_core::ffi_bridge::register(
+            "doo_http_webhooks_deliveries",
+            framework::webhook_log::doo_http_webhooks_deliveries as *const std::ffi::c_void,
+        );
+        doo_ffi_core::ffi_bridge::register(
+            "doo_http_webhooks_log_clear",
+            framework::webhook_log::doo_http_webhooks_log_clear as *const std::ffi::c_void,
         );
     });
 }

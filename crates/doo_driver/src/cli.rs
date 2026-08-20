@@ -1,137 +1,95 @@
-//! CLI structures for the driver.
+//! CLI argument parsing using clap.
 //!
-//! Single source of truth for CLI commands and flags.
-//! Phase 10: Clean compilation orchestration with debug/explain support.
+//! Pure compiler commands — no deploy, migrate, or init templates.
 
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
 
-/// CLI definition for the doo language tool.
+/// Doolang compiler.
 #[derive(Parser)]
-#[command(name = "doo")]
-#[command(about = "doo language CLI")]
-#[command(long_about = "doo language CLI\n\nIssues / support: https://github.com/nynrathod/doolang/issues")]
-#[command(version)]
+#[command(
+    name = "doo",
+    version,
+    about = "Doolang compiler — compile and run Doolang programs"
+)]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Option<Commands>,
+    pub command: Commands,
 
-    /// Enable debug output
-    #[arg(long, global = true)]
+    /// Optimization level (0, 1, 2, 3, s, z).
+    #[arg(short = 'O', long = "opt-level", default_value = "3", global = true)]
+    pub opt_level: String,
+
+    /// Generate DWARF debug information.
+    #[arg(long = "debug", global = true)]
     pub debug: bool,
 
-    /// Show compiler warnings (suppressed by default)
-    #[arg(long, short = 'W', global = true)]
-    pub warn: bool,
+    /// Verbose output.
+    #[arg(short, long, global = true)]
+    pub verbose: bool,
 
-    /// Explain error codes in detail
-    #[arg(long, global = true)]
-    pub explain: Option<String>,
+    /// Additional library search paths.
+    #[arg(short = 'L', long = "lib-path", global = true)]
+    pub lib_paths: Vec<String>,
+
+    /// Emit intermediate files (llvm-ir, obj, dep-info).
+    #[arg(long = "emit", value_name = "FORMAT", global = true)]
+    pub emit: Vec<String>,
+
+    /// Print intermediate representation (ast, hir, mir).
+    #[arg(long = "print", value_name = "KIND", global = true)]
+    pub print: Option<String>,
+
+    /// Print per-pass timing information.
+    #[arg(long = "time-passes", global = true)]
+    pub time_passes: bool,
+
+    /// Show warnings.
+    #[arg(long = "warnings", global = true)]
+    pub show_warnings: bool,
 }
 
-/// Supported subcommands for the doo CLI.
+/// Compiler subcommands.
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Initialize a new project from a template
-    Init {
-        /// Name of the project (optional, interactive if missing)
-        name: Option<String>,
-
-        /// Template to use (optional, interactive if missing)
-        #[arg(long, short)]
-        template: Option<String>,
-    },
-
-    /// Deploy the project to Fly.io or Railway
-    Deploy {
-        /// Show detailed build and deployment logs
-        #[arg(long, short)]
-        verbose: bool,
-    },
-
-    /// Build the project to a persistent binary
+    /// Compile to a native binary.
     Build {
-        /// Path to the project directory or .doo file
+        /// Source file or project directory.
         #[arg(default_value = ".")]
-        path: PathBuf,
+        path: String,
 
-        /// Name of the output binary
-        #[arg(short, long, default_value = "output")]
-        output: String,
-
-        /// Keep the generated LLVM IR (.ll) file
-        #[arg(long)]
-        keep_ll: bool,
-
-        /// Keep the object file (.o)
-        #[arg(long)]
-        keep_obj: bool,
-
-        /// Print AST (debug)
-        #[arg(long)]
-        print_ast: bool,
-
-        /// Print HIR (debug)
-        #[arg(long)]
-        print_hir: bool,
-
-        /// Print MIR (debug)
-        #[arg(long)]
-        print_mir: bool,
-
-        /// Print phase-by-phase compilation timings
-        #[arg(long)]
-        timings: bool,
+        /// Output file name.
+        #[arg(short = 'o', long = "output")]
+        output: Option<String>,
     },
 
-    /// Compile and run immediately (auto-cleanup)
+    /// Compile and immediately execute.
     Run {
-        /// Path to the project directory or main.doo file
+        /// Source file or project directory.
         #[arg(default_value = ".")]
-        path: PathBuf,
+        path: String,
 
-        /// Keep the generated LLVM IR (.ll) file
-        #[arg(long)]
-        keep_ll: bool,
-
-        /// Enable debug output (temporary, session-only)
-        #[arg(long)]
-        debug: bool,
-
-        /// Show verbose startup output (routes, timings, etc.)
-        #[arg(long, short)]
-        verbose: bool,
-
-        /// Arguments to pass to the program
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        /// Arguments to pass to the compiled program.
+        #[arg(trailing_var_arg = true)]
         args: Vec<String>,
     },
 
-    /// Check for errors without compiling
+    /// Type-check only — no codegen or linking.
     Check {
-        /// Path to the project directory or main.doo file
+        /// Source file or project directory.
         #[arg(default_value = ".")]
-        path: PathBuf,
+        path: String,
     },
 
-    /// Run database migrations
-    Migrate {
-        /// Path to the project directory or main.doo file with models
-        #[arg(default_value = ".")]
-        path: PathBuf,
-
-        /// Show migration SQL without executing
-        #[arg(long)]
-        dry_run: bool,
+    /// Explain an error code.
+    Explain {
+        /// Error code to explain (e.g. "E0001").
+        error: String,
     },
 
-    /// Upgrade doo to the latest version
-    Upgrade,
-
-    /// Clean build caches and temporary files
+    /// Remove build artifacts and incremental cache.
     Clean {
-        /// Path to the project directory (defaults to current directory)
+        /// Path to clean (defaults to current directory).
         #[arg(default_value = ".")]
-        path: PathBuf,
+        path: String,
     },
 }

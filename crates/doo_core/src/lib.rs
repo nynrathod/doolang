@@ -1,20 +1,13 @@
 //! # Doo Core
 //!
-//! Core types, traits, and infrastructure for the Doo compiler.
+//! Core types, traits, and utilities for the Doo compiler.
 //!
-//! ## Design Philosophy
+//! ## Architecture
 //!
-//! - **Single Source of Truth**: TypeRegistry is the ONLY place types are defined
-//! - **Centralized**: Symbols, spans, errors all in one place
-//! - **Minimal**: Only essential types, no domain-specific logic
-//!
-//! ## Modules
-//!
-//! - `types`: TypeRegistry and type definitions
-//! - `span`: Source location tracking
-//! - `symbol`: Symbol table with scopes
-//! - `errors`: Centralized error codes
-//! - `infer`: Type inference utilities (single source of truth)
+//! - **Arena**: Bump-allocated memory for AST/HIR/MIR nodes
+//! - **Interning**: String interning for O(1) symbol comparison
+//! - **Span**: Source locations for error reporting
+//! - **Types**: Centralized type registry
 
 pub mod arena;
 pub mod constants;
@@ -23,20 +16,21 @@ pub mod errors;
 pub mod infer;
 pub mod intern;
 pub mod logging;
-pub mod methods;
 pub mod query;
+pub mod scope;
 pub mod span;
+pub mod string;
 pub mod symbol;
 pub mod types;
 
-// Re-exports for convenience
-pub use arena::CompilerArena;
-pub use errors::{CompilerError, ErrorCode};
-pub use infer::{infer_binop_result_type, infer_unaryop_result_type, BinOpKind, UnaryOpKind};
-pub use intern::{resolve, sym, Symbol};
-pub use span::{LineIndex, Span, Spanned};
-pub use symbol::{SymbolInfo, SymbolKind, SymbolTable};
-pub use types::{
-    builtin, CollectionType, CompositeType, DecoratorDef, EnumDef, FieldDef, FunctionType,
-    PrimitiveType, StructDef, TypeId, TypeKind, TypeRegistry, VariantDef,
-};
+// Re-export key types for convenience
+pub use arena::{Arena, CompilerArena};
+pub use constants::ffi_names;
+pub use errors::{CompilerError, ErrorCode, ErrorSeverity};
+pub use intern::Interner;
+pub use query::TyCtxt;
+pub use scope::{Scope, ScopeError, ScopeKind, ScopeManager, Symbol as ScopeSymbol, SymbolKind};
+pub use span::{FileId, FileSpan, Span, Spanned};
+pub use string::DooStr;
+pub use symbol::Symbol;
+pub use types::{TypeId, TypeInfo, TypeKind, TypeRegistry};

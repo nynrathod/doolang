@@ -1,0 +1,121 @@
+// =============================================================================
+// DOO WEBHOOK CRUD TEST
+// =============================================================================
+// Tests that crudWithWebhooks properly registers and fires webhooks on
+// create / update / delete operations.
+//
+// Uses native Doo JSON.stringify() to build the webhook config JSON,
+// then passes it as the 4th arg to app.crud().
+// =============================================================================
+
+import std::Http::Server;
+import std::Database;
+import std::Auth::Jwt;
+
+// ─── Resource Struct ─────────────────────────────────────────────────────────
+
+struct Product {
+    id: Int @primary @auto,
+    Name: Str,
+    Price: Int,
+    Category: Str,
+}
+
+// ─── Webhook Config Structs ──────────────────────────────────────────────────
+// These match the WebhookConfigPayload / WebhookFilterPayload types.
+// JSON keys will follow Doo's JSON convention (PascalCase).
+
+struct WebhookFilter {
+    Id: Str,
+    Field: Str,
+    Operator: Str,
+    Value: Str,
+}
+
+struct WebhookConfig {
+    Id: Str,
+    Event: Str,
+    Url: Str,
+    Filters: [WebhookFilter],
+    PayloadFields: [Str],
+}
+
+// ─── Database ───────────────────────────────────────────────────────────────
+
+static DB: Database;
+
+// ─── Handlers ───────────────────────────────────────────────────────────────
+
+fn PingHandler() -> Str {
+    return "pong";
+}
+
+// ─── Main ───────────────────────────────────────────────────────────────────
+
+fn main() {
+    print("=========================================");
+    print("  DOO WEBHOOK CRUD TEST");
+    print("=========================================");
+    print("");
+
+    // ─── Build webhook configs using native Doo structs ───────────────────
+    // Uses JSON.stringify() to produce the JSON string at runtime.
+    // The Rust FFI will parse it with serde_json.
+
+    let whCreated = WebhookConfig {
+        Id: "wh-created",
+        Event: "created",
+        Url: "http://localhost:9999/webhook-created",
+        Filters: [],
+        PayloadFields: [],
+    };
+
+    let whUpdated = WebhookConfig {
+        Id: "wh-updated",
+        Event: "updated",
+        Url: "http://localhost:9999/webhook-updated",
+        Filters: [WebhookFilter {
+            Id: "f1",
+            Field: "Category",
+            Operator: "equals",
+            Value: "Electronics",
+        }],
+        PayloadFields: ["Name", "Price"],
+    };
+
+    let whDeleted = WebhookConfig {
+        Id: "wh-deleted",
+        Event: "deleted",
+        Url: "http://localhost:9999/webhook-deleted",
+        Filters: [WebhookFilter {
+            Id: "f2",
+            Field: "Price",
+            Operator: "greater_than",
+            Value: "500",
+        }],
+        PayloadFields: ["Name", "Price"],
+    };
+
+    let configs: [WebhookConfig] = [whCreated, whUpdated, whDeleted];
+    let webhooksJson: Str = JSON.stringify(configs);
+
+    print("Webhooks JSON: " + webhooksJson);
+
+    // ─── Database ─────────────────────────────────────────────────────────
+    print("Connecting to database...");
+    DB = Database::Postgres()?;
+    print("Database connected.");
+
+    let app = Server::new(":3105");
+
+    // Register CRUD with webhooks — 4th arg is the JSON webhook configs
+    print("Registering CRUD with webhooks...");
+    app.crud("/products", Product, DB, webhooksJson);
+    print("CRUD with webhooks registered.");
+
+    // Health check endpoint
+    app.get("/ping", PingHandler);
+
+    print("Starting server on port 3105...");
+    app.start();
+}

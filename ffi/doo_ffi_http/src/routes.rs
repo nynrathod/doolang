@@ -13,11 +13,14 @@ use std::ffi::c_void;
 use std::os::raw::c_char;
 
 use doo_ffi_core::constants::{MIDDLEWARE_CORS, MIDDLEWARE_JWT, MIDDLEWARE_RATELIMIT};
+use doo_ffi_core::ffi_debug;
 use doo_ffi_core::DooResult;
 
 use crate::helpers::c_to_string;
 use crate::make_ok_void;
-use crate::middleware::{cors_middleware_handler, jwt_middleware_handler, ratelimit_middleware_handler};
+use crate::framework::middleware::{
+    cors_middleware_handler, jwt_middleware_handler, ratelimit_middleware_handler,
+};
 use crate::router::get_routes;
 use crate::types::DooHandlerFn;
 
@@ -397,4 +400,139 @@ pub extern "C" fn doo_http_push_cookie(cookie_header_value: *const c_char) {
     // Parse the Set-Cookie header value and push as a ResponseCookie
     // into the HTTP DLL's thread-local pending cookies.
     doo_ffi_core::cookies::push_raw_cookie_header(header_val);
+}
+
+// ============================================================================
+// GENERIC ROUTE WEBHOOK REGISTRATION
+// ============================================================================
+
+/// Register webhook configs for a custom route handler.
+///
+/// This is the GENERIC webhook integration point for custom routes registered
+/// via `app.get()`, `app.post()`, etc. After the handler runs, the server
+/// dispatch checks for registered webhooks and fires them automatically.
+///
+/// Webhook key: `"route:{METHOD}:{PATH}"` (e.g., `"route:POST:/api/orders"`)
+/// Events: `"on_success"` (2xx), `"on_error"` (4xx/5xx)
+///
+/// Called from `Server.webhookForRoute()` in Http.doo, which users invoke
+/// after registering their route:
+/// ```doo
+/// app.post("/api/orders", createOrder);
+/// app.webhookForRoute("POST", "/api/orders", webhooksJson);
+/// ```
+#[no_mangle]
+pub extern "C" fn doo_http_register_route_webhook(
+    _server: *const c_void,
+    method: *const c_char,
+    path: *const c_char,
+    webhooks_json: *const c_char,
+) -> *mut DooResult {
+    ffi_safe_result!({
+        let method_str = c_to_string(method);
+        let path_str = c_to_string(path);
+        let wh_json = c_to_string(webhooks_json);
+
+        if !wh_json.is_empty() && wh_json != "[]" {
+            match crate::framework::webhook_engine::parse_configs(&wh_json) {
+                Ok(configs) if !configs.is_empty() => {
+                    let engine_key = format!("route:{}:{}", method_str.to_uppercase(), path_str);
+                    let count = configs.len();
+                    crate::framework::webhook_engine::register(&engine_key, configs);
+                    ffi_debug!(
+                        "HTTP",
+                        "Registered {} webhook(s) for route '{}'",
+                        count,
+                        engine_key
+                    );
+                }
+                Ok(_) => {
+                    ffi_debug!(
+                        "HTTP",
+                        "Empty webhook configs for route {} {}",
+                        method_str,
+                        path_str
+                    );
+                }
+                Err(e) => {
+                    ffi_debug!(
+                        "HTTP",
+                        "Failed to parse route webhook JSON for {} {}: {}",
+                        method_str,
+                        path_str,
+                        e
+                    );
+                }
+            }
+        }
+
+        make_ok_void()
+    })
+}
+
+// ============================================================================
+// UNIFIED ROUTE + WEBHOOK REGISTRATION (compiler-internal, not user-facing)
+// ============================================================================
+
+/// Register a route with optional middleware and optional webhooks — ALL in ONE call.
+///
+/// This is the SINGLE compiler target for ALL route registration patterns:
+/// - Simple routes: `app.get(path, handler)`
+/// - With middleware: `app.get(path, Jwt(), handler)`
+/// - With webhooks: `app.get(path, handler, webhooksJson)`
+/// - With middleware + webhooks: `app.get(path, Jwt(), handler, webhooksJson)`
+///
+/// The compiler transforms user-facing syntax into calls to this unified function.
+/// Parameters:
+/// - `method`: HTTP method ("GET", "POST", "PUT", "DELETE", "PATCH")
+/// - `path`: Route path pattern
+/// - `handler`: Handler function pointer
+/// - `middleware_names`: Comma-separated middleware names, or "" for none
+/// - `webhooks_json`: JSON array of webhook configs, or "" / "[]" for none
+#[no_mangle]
+pub extern "C" fn doo_http_register_route_full(
+    method: *const c_char,
+    path: *const c_char,
+    handler: DooHandlerFn,
+    middleware_names: *const c_char,
+    webhooks_json: *const c_char,
+) -> *mut DooResult {
+    ffi_safe_result!({
+        let method_str = c_to_string(method);
+        let path_str = c_to_string(path);
+
+        // 1. Register the route (with or without middleware)
+        let _route_result =
+            register_route_with_middleware_fn(&method_str, path, middleware_names, handler);
+
+        // 2. Register webhook configs (if any)
+        let wh_json = c_to_string(webhooks_json);
+        if !wh_json.is_empty() && wh_json != "[]" {
+            match crate::framework::webhook_engine::parse_configs(&wh_json) {
+                Ok(configs) if !configs.is_empty() => {
+                    let engine_key = format!("route:{}:{}", method_str.to_uppercase(), path_str);
+                    let count = configs.len();
+                    crate::framework::webhook_engine::register(&engine_key, configs);
+                    ffi_debug!(
+                        "HTTP",
+                        "routeFull: Registered {} webhook(s) for '{}'",
+                        count,
+                        engine_key
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    ffi_debug!(
+                        "HTTP",
+                        "routeFull: Failed to parse webhook JSON for {} {}: {}",
+                        method_str,
+                        path_str,
+                        e
+                    );
+                }
+            }
+        }
+
+        make_ok_void()
+    })
 }

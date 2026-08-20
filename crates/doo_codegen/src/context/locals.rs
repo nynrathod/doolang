@@ -7,6 +7,68 @@ use inkwell::values::{BasicValueEnum, PointerValue};
 
 use super::CodegenContext;
 
+use rustc_hash::FxHashMap;
+
+/// Maps MIR local names to LLVM alloca pointers with their types.
+///
+/// Each local variable gets an alloca at the function entry block.
+/// Stores both the pointer and its LLVM type for later loads and stores.
+pub struct LocalMap<'ctx> {
+    allocas: FxHashMap<String, (PointerValue<'ctx>, BasicTypeEnum<'ctx>)>,
+}
+
+impl<'ctx> LocalMap<'ctx> {
+    /// Create an empty local map.
+    pub fn new() -> Self {
+        Self {
+            allocas: FxHashMap::default(),
+        }
+    }
+
+    /// Insert a local variable's alloca pointer and type.
+    pub fn insert(&mut self, name: String, ptr: PointerValue<'ctx>, ty: BasicTypeEnum<'ctx>) {
+        self.allocas.insert(name, (ptr, ty));
+    }
+
+    /// Get the alloca pointer for a local variable.
+    pub fn get(&self, name: &str) -> Option<PointerValue<'ctx>> {
+        self.allocas.get(name).map(|(ptr, _)| *ptr)
+    }
+
+    /// Get both the alloca pointer and its LLVM type.
+    pub fn get_with_type(&self, name: &str) -> Option<(PointerValue<'ctx>, BasicTypeEnum<'ctx>)> {
+        self.allocas.get(name).copied()
+    }
+
+    /// Remove a local variable from the map.
+    pub fn remove(&mut self, name: &str) {
+        self.allocas.remove(name);
+    }
+
+    /// Clear all locals (e.g., between functions).
+    pub fn clear(&mut self) {
+        self.allocas.clear();
+    }
+
+    /// Check if a local variable exists.
+    pub fn contains(&self, name: &str) -> bool {
+        self.allocas.contains_key(name)
+    }
+
+    /// Iterate over all local variables.
+    pub fn iter(
+        &self,
+    ) -> impl Iterator<Item = (&String, &(PointerValue<'ctx>, BasicTypeEnum<'ctx>))> {
+        self.allocas.iter()
+    }
+}
+
+impl<'ctx> Default for LocalMap<'ctx> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<'ctx> CodegenContext<'ctx> {
     // ========================================================================
     // Local Variable Management
@@ -68,7 +130,7 @@ impl<'ctx> CodegenContext<'ctx> {
             // store as temp instead to avoid LLVM type errors
             let value_type = value.get_type();
             let types_match = *alloca_ty == value_type;
-if types_match {
+            if types_match {
                 // Types match - store to alloca
                 let _ = self.builder.build_store(*ptr, value);
                 // Clear any stale temp entry - the alloca is the source of truth now
@@ -91,7 +153,7 @@ if types_match {
                     ) {
                         let _ = self.builder.build_store(ptr, converted);
                         self.temps.remove(&name);
-return;
+                        return;
                     }
                 }
 
@@ -135,7 +197,7 @@ return;
                         let converted_val: BasicValueEnum = safe.into();
                         let _ = self.builder.build_store(ptr, converted_val);
                         self.temps.remove(&name);
-return;
+                        return;
                     }
                 }
 
@@ -183,7 +245,7 @@ return;
                                 let _ = self.builder.build_store(new_alloca, value);
                                 self.locals.insert(name.clone(), (new_alloca, value_type));
                                 self.temps.remove(&name);
-return;
+                                return;
                             }
                             // Restore position if alloca creation failed
                             self.builder.position_at_end(current_bb);
@@ -193,7 +255,7 @@ return;
 
                 // Last resort - store as temp (shadows the local for this scope)
                 // get_value checks temps first, so this will be found before the alloca
-self.temps.insert(name, value);
+                self.temps.insert(name, value);
             }
         } else {
             // Fallback to temp storage (for temporaries without allocas)
@@ -245,9 +307,7 @@ self.temps.insert(name, value);
 
     /// Store a temporary value.
     pub fn set_temp(&mut self, name: &str, value: BasicValueEnum<'ctx>) {
-        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-
-        }
+        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
         self.temps.insert(name.to_string(), value);
     }
 
@@ -266,23 +326,19 @@ self.temps.insert(name, value);
     pub fn get_value(&self, name: &str) -> Option<BasicValueEnum<'ctx>> {
         // Check temps first
         if let Some(v) = self.temps.get(name) {
-            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-
-            }
+            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
             return Some(*v);
         }
         // Check locals - return loaded value
         if let Some((ptr, ty)) = self.locals.get(name) {
-            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-            }
+            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
             let result = self.builder.build_load(*ty, *ptr, name);
             if result.is_err() {
-} else if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-
+            } else if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
             }
             return result.ok();
         }
-None
+        None
     }
 
     // ========================================================================

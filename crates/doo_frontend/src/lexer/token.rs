@@ -105,9 +105,12 @@ pub enum TokenKind {
     /// `impl`
     Impl,
 
-    // === RBAC ===
-    /// `policy`
-    Policy,
+    /// `use`
+    Use,
+    /// `throw`
+    Throw,
+    /// `Self` (type reference, not the `self` parameter)
+    Self_,
 
     // === Async & Concurrency ===
     /// `async`
@@ -240,6 +243,10 @@ pub enum TokenKind {
     Dollar,
     /// `_`
     Underscore,
+
+    // === Operators: Bitwise (ADD THESE) ===
+    /// `^` (bitwise XOR)
+    Caret,
 }
 
 impl TokenKind {
@@ -252,6 +259,7 @@ impl TokenKind {
             Self::Let => Some("let"),
             Self::Mut => Some("mut"),
             Self::Fn => Some("fn"),
+            Self::Use => Some("use"),
             Self::Import => Some("import"),
             Self::As => Some("as"),
             Self::Struct => Some("struct"),
@@ -271,15 +279,15 @@ impl TokenKind {
             Self::Match => Some("match"),
             Self::True => Some("true"),
             Self::False => Some("false"),
-            Self::Policy => Some("policy"),
             Self::Async => Some("async"),
             Self::Await => Some("await"),
             Self::Go => Some("go"),
             Self::Scope => Some("scope"),
+            Self::Throw => Some("throw"),
+            Self::Self_ => Some("Self"),
             _ => None,
         }
     }
-
     /// Check if this is a keyword.
     pub fn is_keyword(&self) -> bool {
         self.keyword_str().is_some()
@@ -319,6 +327,7 @@ impl TokenKind {
                 | Self::OrOr
                 | Self::And
                 | Self::Or
+                | Self::Caret
                 | Self::Eq
                 | Self::PlusEq
                 | Self::MinusEq
@@ -375,7 +384,6 @@ impl TokenKind {
             Self::Match => "`match`",
             Self::True => "`true`",
             Self::False => "`false`",
-            Self::Policy => "`policy`",
             Self::Async => "`async`",
             Self::Await => "`await`",
             Self::Go => "`go`",
@@ -432,7 +440,101 @@ impl TokenKind {
             Self::Tilde => "`~`",
             Self::Dollar => "`$`",
             Self::Underscore => "`_`",
+            Self::Use => "`use`",
+            Self::Throw => "`throw`",
+            Self::Self_ => "`Self`",
+            Self::Caret => "`^`",
         }
+    }
+
+    /// Get operator precedence for Pratt parsing (higher = binds tighter).
+    ///
+    /// Returns 0 for non-operator tokens (literals, keywords, delimiters).
+    ///
+    /// Precedence table (lowest to highest):
+    /// ```text
+    ///  1: || (logical or)
+    ///  2: && (logical and)
+    ///  3: == != (equality)
+    ///  4: < > <= >= (comparison)
+    ///  5: ?? (null coalesce)
+    ///  6: | (bitwise or)
+    ///  7: ^ (bitwise xor)
+    ///  8: & (bitwise and)
+    ///  9: << >> (shift)
+    /// 10: .. ..= (range)
+    /// 11: + - (additive)
+    /// 12: * / % (multiplicative)
+    /// ```
+    pub fn precedence(&self) -> u8 {
+        match self {
+            // Assignment operators — lowest precedence (handled separately by parser)
+            // Return 0 here; the parser handles assignment as a special case
+            // because it's right-associative and produces statements, not expressions.
+            Self::Eq
+            | Self::PlusEq
+            | Self::MinusEq
+            | Self::StarEq
+            | Self::SlashEq
+            | Self::PercentEq => 0,
+
+            // Logical OR
+            Self::OrOr => 1,
+
+            // Logical AND
+            Self::AndAnd => 2,
+
+            // Equality
+            Self::EqEq | Self::NotEq => 3,
+
+            // Comparison
+            Self::Lt | Self::Gt | Self::LtEq | Self::GtEq => 4,
+
+            // Null coalescing
+            Self::QuestionQuestion => 5,
+
+            // Bitwise OR
+            Self::Or => 6,
+
+            // Bitwise XOR
+            Self::Caret => 7,
+
+            // Bitwise AND
+            Self::And => 8,
+
+            // Range
+            Self::DotDot | Self::DotDotEq => 10,
+
+            // Additive
+            Self::Plus | Self::Minus => 11,
+
+            // Multiplicative
+            Self::Star | Self::Slash | Self::Percent => 12,
+
+            // Everything else: not a binary operator
+            _ => 0,
+        }
+    }
+
+    /// Check if this operator is right-associative.
+    ///
+    /// Right-associative operators bind from right to left:
+    /// `a = b = c` parses as `a = (b = c)`
+    /// `a ?? b ?? c` parses as `a ?? (b ?? c)`
+    ///
+    /// Used by the Pratt parser to decide whether to use `min_prec`
+    /// or `min_prec - 1` for the right-hand side recursion.
+    pub fn is_right_associative(&self) -> bool {
+        matches!(
+            self,
+            Self::Eq
+                | Self::PlusEq
+                | Self::MinusEq
+                | Self::StarEq
+                | Self::SlashEq
+                | Self::PercentEq
+                | Self::QuestionQuestion
+        )
     }
 }
 

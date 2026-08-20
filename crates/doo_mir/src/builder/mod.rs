@@ -2,15 +2,16 @@
 //!
 //! Converts HIR to MIR with lowering of high-level constructs.
 
+pub mod async_lowering;
 pub mod capture;
+pub mod closure_lowering;
 pub mod expr;
+pub mod go_lowering;
 pub mod pattern;
-pub mod query_builder;
 pub mod stmt;
 
 use doo_analysis::{Decision, OwnershipResults};
-use doo_core::constants::ffi_names::derive_ffi_symbol;
-use doo_core::doo_debug;
+
 use doo_core::errors::codes::CompilerError;
 use doo_core::types::{builtin, TypeId as CoreTypeId, TypeKind, TypeRegistry};
 use doo_core::Span as CoreSpan;
@@ -35,30 +36,7 @@ pub(crate) fn is_copy_type(type_id: CoreTypeId) -> bool {
 }
 
 // ============================================================================
-// Struct Metadata — for Query Builder Field Validation
-// ============================================================================
-
-/// Lightweight metadata about a struct field, used by the query builder.
-#[derive(Debug, Clone)]
-pub struct FieldMeta {
-    /// Field name as written in the struct definition.
-    pub name: String,
-    /// True if the field has an `@auto` decorator (skip in INSERT).
-    pub is_auto: bool,
-    /// True if the field has a `@primary` decorator.
-    pub is_primary: bool,
-}
-
-/// Metadata about a struct collected during the MIR first pass.
-#[derive(Debug, Clone)]
-pub struct StructMeta {
-    /// All fields of the struct.
-    pub fields: Vec<FieldMeta>,
-    /// Optional table name override from `@table("name")` decorator.
-    pub table_name: Option<String>,
-}
-
-/// FFI function information extracted from @extern decorator.
+// FFI function information extracted from @extern decorator.
 ///
 /// SINGLE SOURCE OF TRUTH for FFI linkage.
 #[derive(Debug, Clone)]
@@ -102,8 +80,9 @@ pub struct MirBuilder<'a> {
     pub(crate) function_result_types: FxHashMap<String, (CoreTypeId, CoreTypeId)>,
 
     /// Function parameter types for type propagation during Call argument building.
-    /// Key: function name, Value: list of parameter types
-    pub(crate) function_param_types: FxHashMap<String, Vec<CoreTypeId>>,
+    /// Key: (function name, total param count), Value: list of parameter types.
+    /// Param count includes `self` for methods (e.g., `_method_Server_crud` with 4 params).
+    pub(crate) function_param_types: FxHashMap<(String, usize), Vec<CoreTypeId>>,
 
     /// Counter for generating unique closure function names.
     pub(crate) closure_counter: usize,
@@ -122,9 +101,12 @@ pub struct MirBuilder<'a> {
     /// Key: closure function name, Value: return type
     pub(crate) closure_return_types: FxHashMap<String, CoreTypeId>,
 
-    /// FFI function registry: maps function name to FFI info (library, symbol).
+    /// FFI function registry: maps (function name, param count) to FFI info (library, symbol).
+    /// Param count is the total number of parameters including `self` for methods.
     /// Used to emit FfiCall instead of Call for FFI functions.
-    pub(crate) ffi_functions: FxHashMap<String, FfiFunctionInfo>,
+    /// Keyed by (name, param_count) to support overloaded extern functions with
+    /// the same Doo name but different arities (e.g., `Server.crud` with and without webhooks).
+    pub(crate) ffi_functions: FxHashMap<(String, usize), FfiFunctionInfo>,
 
     /// Function name aliases: maps simple import names to mangled names.
     /// e.g., "Postgres" -> "_method_Database_Postgres"
@@ -139,15 +121,6 @@ pub struct MirBuilder<'a> {
     /// Used to recognize module names (e.g., "Http", "Database") without
     /// hardcoding them in the compiler. Core modules are always recognized.
     pub(crate) imported_modules: FxHashSet<String>,
-
-    /// Struct metadata for query builder field validation.
-    /// Populated during the first pass of `build()`.
-    /// Key: struct name (e.g., "Task"), Value: field/table metadata.
-    pub struct_metas: FxHashMap<String, StructMeta>,
-
-    /// Query builder errors collected during MIR lowering.
-    /// Surfaced to the driver after `build()` completes.
-    pub query_errors: Vec<CompilerError>,
 
     /// Static global names (declared with `static Name: Type`).
     /// Used in build_expr to emit MirOperand::Global instead of Local.
@@ -189,8 +162,6 @@ impl<'a> MirBuilder<'a> {
             function_aliases: FxHashMap::default(),
             scope_stack: Vec::new(),
             imported_modules: FxHashSet::default(),
-            struct_metas: FxHashMap::default(),
-            query_errors: Vec::new(),
             static_names: FxHashSet::default(),
             static_types: FxHashMap::default(),
         }
@@ -222,8 +193,6 @@ impl<'a> MirBuilder<'a> {
             function_aliases: FxHashMap::default(),
             scope_stack: Vec::new(),
             imported_modules: FxHashSet::default(),
-            struct_metas: FxHashMap::default(),
-            query_errors: Vec::new(),
             static_names: FxHashSet::default(),
             static_types: FxHashMap::default(),
         }
@@ -243,7 +212,7 @@ impl<'a> MirBuilder<'a> {
     /// This is discovery-based: package modules are recognized from the program's imports,
     /// NOT from a hardcoded list in the compiler.
     pub(crate) fn is_module_name(&self, name: &str) -> bool {
-        doo_core::constants::ffi_names::is_core_module(name) || self.imported_modules.contains(name)
+        false || self.imported_modules.contains(name)
     }
 
     /// Build MIR from HIR program.
@@ -260,38 +229,7 @@ impl<'a> MirBuilder<'a> {
             }
         }
 
-        // First pass: collect all function return types, parameter types, FFI info,
-        // and struct metadata for the query builder.
-        for item in &hir.items {
-            // Collect struct metadata for query builder field validation
-            if let HirItem::Struct(s) = item {
-                let table_name = s.decorators.iter().find_map(|d| {
-                    if d.name == "table" {
-                        d.args.first().and_then(|a| {
-                            if let HirExprKind::Const(ConstValue::Str(t)) = &a.kind {
-                                Some(t.clone())
-                            } else {
-                                None
-                            }
-                        })
-                    } else {
-                        None
-                    }
-                });
-                let fields = s
-                    .fields
-                    .iter()
-                    .map(|f| FieldMeta {
-                        name: f.name.clone(),
-                        is_auto: f.decorators.iter().any(|d| d.name == "auto"),
-                        is_primary: f.decorators.iter().any(|d| d.name == "primary"),
-                    })
-                    .collect();
-                self.struct_metas
-                    .insert(s.name.clone(), StructMeta { fields, table_name });
-            }
-        }
-
+        // First pass: collect all function return types, parameter types, and FFI info.
         for item in &hir.items {
             if let HirItem::Function(f) = item {
                 // Skip generic function templates — their types contain TypeParam placeholders
@@ -324,14 +262,16 @@ impl<'a> MirBuilder<'a> {
                 // Collect parameter types for type-aware argument building
                 let param_types: Vec<CoreTypeId> =
                     f.params.iter().filter_map(|p| p.type_id).collect();
+                let total_params = f.params.len();
                 if !param_types.is_empty() {
                     self.function_param_types
-                        .insert(f.name.clone(), param_types);
+                        .insert((f.name.clone(), total_params), param_types);
                 }
 
                 // Extract FFI info from @extern decorator (SINGLE SOURCE OF TRUTH)
                 if let Some(ffi_info) = self.extract_ffi_info(&f.decorators, &f.name) {
-                    self.ffi_functions.insert(f.name.clone(), ffi_info);
+                    self.ffi_functions
+                        .insert((f.name.clone(), total_params), ffi_info);
                 }
 
                 // Create alias from simple name to mangled name for imported associated functions
@@ -492,17 +432,6 @@ impl<'a> MirBuilder<'a> {
                             .collect(),
                     };
                     program.interfaces.insert(sym(&i.name), mir_interface);
-                }
-                HirItem::Policy(p) => {
-                    // Serialise policy rules to a JSON string for the FFI runtime.
-                    // Format: {"create":"authenticated","read":"public",...}
-                    let mut map = serde_json::Map::new();
-                    for (action, rule) in &p.rules {
-                        map.insert(action.clone(), serde_json::Value::String(rule.clone()));
-                    }
-                    let json = serde_json::to_string(&serde_json::Value::Object(map))
-                        .unwrap_or_else(|_| "{}".to_string());
-                    program.policies.insert(sym(&p.for_struct), json);
                 }
                 HirItem::Function(_) | HirItem::Import(_) => {
                     // Functions built in second pass; imports are handled elsewhere
@@ -720,7 +649,10 @@ impl<'a> MirBuilder<'a> {
         func.is_async = hir.is_async;
 
         // Set FFI linkage info if this is an FFI function
-        if let Some(ffi_info) = self.ffi_functions.get(&hir.name) {
+        if let Some(ffi_info) = self
+            .ffi_functions
+            .get(&(hir.name.clone(), hir.params.len()))
+        {
             let param_types: Vec<doo_core::types::TypeId> = hir
                 .params
                 .iter()
@@ -906,6 +838,18 @@ impl<'a> MirBuilder<'a> {
         name
     }
 
+    /// Generate a new temporary ID for THIR-based MIR building.
+    pub(crate) fn next_temp_id(&mut self) -> u32 {
+        let id = self.temp_counter as u32;
+        self.temp_counter += 1;
+        id
+    }
+
+    /// Build MIR instructions from a THIR expression.
+    pub fn build_thir_expr(&mut self, expr: &doo_thir::ThirExpr) -> crate::types::MirValue {
+        crate::builder::expr::build_thir_expr(self, expr)
+    }
+
     /// Add a temporary variable to func.locals so codegen can access its type.
     /// This is needed for temps that hold intermediate values (like if-expr results)
     /// which need proper LLVM types during alloca creation.
@@ -964,6 +908,7 @@ impl<'a> MirBuilder<'a> {
             HirBinOp::In => BinaryOp::Eq,
             HirBinOp::And => BinaryOp::And,
             HirBinOp::Or => BinaryOp::Or,
+            HirBinOp::BitXor => BinaryOp::BitXor,
             // BitAnd/BitOr map to logical And/Or which is correct for booleans
             // (LLVM build_and/build_or are bitwise ops; for i1 values, bitwise == logical).
             // TODO: Add dedicated MIR BitAnd/BitOr variants when integer bitwise ops are needed.
@@ -1044,10 +989,11 @@ impl<'a> MirBuilder<'a> {
         self.type_registry
             .get(struct_type)
             .and_then(|info| match &info.kind {
-                TypeKind::Struct { fields, .. } => fields
+                TypeKind::Struct { def, .. } => def
+                    .fields
                     .iter()
-                    .find(|(name, _, _)| name == field_name)
-                    .map(|(_, t, _)| *t),
+                    .find(|f| f.name.resolve() == field_name)
+                    .map(|f| f.type_id),
                 _ => None,
             })
     }
@@ -1064,10 +1010,10 @@ impl<'a> MirBuilder<'a> {
         let type_info = self.type_registry.get(type_id)?;
 
         // Extract the variant's payload type from the enum definition
-        if let TypeKind::Enum { variants, .. } = &type_info.kind {
-            for (vname, payload_type) in variants {
-                if vname == variant_name {
-                    return *payload_type;
+        if let TypeKind::Enum { def, .. } = &type_info.kind {
+            for variant_def in &def.variants {
+                if variant_def.name.resolve() == variant_name {
+                    return variant_def.payload;
                 }
             }
         }
@@ -1142,8 +1088,7 @@ impl<'a> MirBuilder<'a> {
     /// Resolves aliases before lookup.
     pub(crate) fn is_function_name(&self, name: &str) -> bool {
         let resolved = self.resolve_function_name(name);
-        self.function_return_types.contains_key(&resolved)
-            || self.ffi_functions.contains_key(&resolved)
+        self.function_return_types.contains_key(&resolved) || self.is_ffi_name(&resolved)
     }
 
     /// Check if a name refers to a registered type (struct or enum).
@@ -1169,136 +1114,134 @@ impl<'a> MirBuilder<'a> {
     }
 
     /// Get the return type for a builtin method call, with optional closure argument type.
-    /// This handles generic return types like [U] (from map) where U is closure's return.
-    /// SINGLE SOURCE OF TRUTH using doo_core::methods.
+    /// Handles generic return types like [U] (from map) where U is closure's return.
     pub(crate) fn get_builtin_method_return_type_with_closure(
         &self,
         receiver_type: CoreTypeId,
         method: &str,
         closure_type: Option<CoreTypeId>,
     ) -> Option<CoreTypeId> {
-        use doo_core::methods::get_method;
+        let info = self.type_registry.get(receiver_type)?;
 
-        // Get the type name for lookup
-        let type_name: &str = match self.type_registry.get(receiver_type).map(|info| &info.kind) {
-            Some(TypeKind::Str) => "Str",
-            Some(TypeKind::Int) => "Int",
-            Some(TypeKind::Float) => "Float",
-            Some(TypeKind::Bool) => "Bool",
-            Some(TypeKind::Array { .. }) => "[T]",
-            Some(TypeKind::Map { .. }) => "{K:V}",
-            _ => return None,
-        };
-
-        // Look up the method definition
-        let method_def = get_method(type_name, method)?;
-
-        // Convert return type string to TypeId
-        match method_def.return_type {
-            "Int" => Some(builtin::INT),
-            "Bool" => Some(builtin::BOOL),
-            "Str" => Some(builtin::STR),
-            "Float" => Some(builtin::FLOAT),
-            "Void" => Some(builtin::VOID),
-            // For generic types like T, [T], [U], U, etc.
-            "T" => {
-                // Element type of array or value type of map
-                if let Some(info) = self.type_registry.get(receiver_type) {
-                    match &info.kind {
-                        TypeKind::Array { element } => Some(*element),
-                        TypeKind::Map { value, .. } => Some(*value),
-                        _ => Some(builtin::ANY),
+        match &info.kind {
+            TypeKind::Array { element } => match method {
+                "len" | "indexOf" => Some(builtin::INT),
+                "isEmpty" | "contains" => Some(builtin::BOOL),
+                "join" => Some(builtin::STR),
+                "first" | "last" | "pop" => Some(*element),
+                // slice and filter return the same array type as receiver
+                "slice" | "filter" => Some(receiver_type),
+                "push" | "clear" | "sort" | "reverse" => Some(builtin::VOID),
+                // map returns [U]. MIR doesn't mutate the registry, so we return ANY.
+                // The exact type will have been set on the HirExpr by doo_analysis.
+                "map" => Some(builtin::ANY),
+                // reduce returns U (closure's return type)
+                "reduce" => {
+                    if let Some(closure_tid) = closure_type {
+                        if let Some(c_info) = self.type_registry.get(closure_tid) {
+                            if let TypeKind::Function { sig, .. } = &c_info.kind {
+                                return Some(sig.return_type);
+                            }
+                        }
                     }
-                } else {
                     Some(builtin::ANY)
                 }
-            }
-            "[T]" => {
-                // Same array type as receiver
-                if let Some(info) = self.type_registry.get(receiver_type) {
-                    if let TypeKind::Array { element: _ } = &info.kind {
-                        return Some(receiver_type); // Same type for slice
-                    }
-                }
-                Some(builtin::ANY)
-            }
-            // [U] - Array of closure return type (e.g., map returns [U])
-            "[U]" => {
-                // Get U from closure's function return type
-                if let Some(closure_tid) = closure_type {
-                    if let Some(info) = self.type_registry.get(closure_tid) {
-                        if let TypeKind::Function { returns, .. } = &info.kind {
-                            // Look up the array type [U] by name
-                            // Array type names are formatted as "[ElementName]"
-                            if let Some(elem_info) = self.type_registry.get(*returns) {
-                                let array_name = format!("[{}]", elem_info.name);
-                                if let Some(array_tid) = self.type_registry.lookup(&array_name) {
-                                    return Some(array_tid);
-                                }
-                            }
-                            // If U is same as receiver element type, return receiver type
-                            if let Some(recv_info) = self.type_registry.get(receiver_type) {
-                                if let TypeKind::Array { element } = &recv_info.kind {
-                                    if *element == *returns {
-                                        return Some(receiver_type);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                // Fallback: same array type as receiver (e.g., identity map)
-                if let Some(info) = self.type_registry.get(receiver_type) {
-                    if let TypeKind::Array { .. } = &info.kind {
-                        return Some(receiver_type);
-                    }
-                }
-                Some(builtin::ANY)
-            }
-            // U - Closure return type (e.g., reduce returns U)
-            "U" => {
-                // Get U from closure's function return type
-                if let Some(closure_tid) = closure_type {
-                    if let Some(info) = self.type_registry.get(closure_tid) {
-                        if let TypeKind::Function { returns, .. } = &info.kind {
-                            return Some(*returns);
-                        }
-                    }
-                }
-                Some(builtin::ANY)
-            }
-            "[K]" => {
-                // Array of keys from a map
-                if let Some(info) = self.type_registry.get(receiver_type) {
-                    if let TypeKind::Map { key, .. } = &info.kind {
-                        return Some(*key);
-                    }
-                }
-                Some(builtin::ANY)
-            }
-            "[V]" => {
-                // Array of values from a map
-                if let Some(info) = self.type_registry.get(receiver_type) {
-                    if let TypeKind::Map { value, .. } = &info.kind {
-                        return Some(*value);
-                    }
-                }
-                Some(builtin::ANY)
-            }
-            _ => Some(builtin::ANY),
+                _ => None,
+            },
+            TypeKind::Map { key, value, .. } => match method {
+                // keys and values return arrays, but we can't register them here.
+                "keys" | "values" => Some(builtin::ANY),
+                "has" => Some(builtin::BOOL),
+                "len" => Some(builtin::INT),
+                "isEmpty" => Some(builtin::BOOL),
+                "clear" | "remove" => Some(builtin::VOID),
+                "get" => Some(*value),
+                _ => None,
+            },
+            TypeKind::Str => match method {
+                "len" | "indexOf" | "charCode" => Some(builtin::INT),
+                "isEmpty" | "contains" | "startsWith" | "endsWith" => Some(builtin::BOOL),
+                // split returns [Str], but we return ANY to avoid mutating registry
+                "split" => Some(builtin::ANY),
+                "charAt" | "substring" | "concat" | "toUpper" | "toLower" | "replace" | "trim"
+                | "reverse" | "repeat" => Some(builtin::STR),
+                _ => None,
+            },
+            TypeKind::Int
+            | TypeKind::Int8
+            | TypeKind::Int16
+            | TypeKind::Int32
+            | TypeKind::Int64
+            | TypeKind::UInt
+            | TypeKind::UInt8
+            | TypeKind::UInt16
+            | TypeKind::UInt32
+            | TypeKind::UInt64 => match method {
+                "toStr" | "toChar" => Some(builtin::STR),
+                _ => None,
+            },
+            TypeKind::Float32 | TypeKind::Float64 => match method {
+                "toStr" => Some(builtin::STR),
+                _ => None,
+            },
+            TypeKind::Bool => match method {
+                "toStr" => Some(builtin::STR),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
     /// Get the parameter types of a function by name.
     /// Resolves aliases before lookup.
-    pub(crate) fn get_function_param_types(&self, name: &str) -> Option<&Vec<CoreTypeId>> {
-        // First try direct lookup
-        if let Some(types) = self.function_param_types.get(name) {
+    pub(crate) fn get_function_param_types(
+        &self,
+        name: &str,
+        param_count: usize,
+    ) -> Option<&Vec<CoreTypeId>> {
+        // First try direct lookup by (name, param_count) - exact match
+        if let Some(types) = self
+            .function_param_types
+            .get(&(name.to_string(), param_count))
+        {
             return Some(types);
         }
-        // Then try through alias
+        // Then try through alias - exact match
         if let Some(resolved) = self.function_aliases.get(name) {
-            return self.function_param_types.get(resolved);
+            if let Some(types) = self
+                .function_param_types
+                .get(&(resolved.clone(), param_count))
+            {
+                return Some(types);
+            }
+        }
+        // Overloaded: find lowest count >= param_count (supports optional trailing params)
+        let search = name.to_string();
+        let mut best: Option<(usize, &Vec<CoreTypeId>)> = None;
+        for ((n, count), types) in self.function_param_types.iter() {
+            if *n == search && *count >= param_count {
+                if best.map_or(true, |(c, _)| *count < c) {
+                    best = Some((*count, types));
+                }
+            }
+        }
+        if let Some((_, types)) = best {
+            return Some(types);
+        }
+        // Alias higher counts
+        if let Some(resolved) = self.function_aliases.get(name) {
+            let search = resolved.clone();
+            let mut best: Option<(usize, &Vec<CoreTypeId>)> = None;
+            for ((n, count), types) in self.function_param_types.iter() {
+                if *n == search && *count >= param_count {
+                    if best.map_or(true, |(c, _)| *count < c) {
+                        best = Some((*count, types));
+                    }
+                }
+            }
+            if let Some((_, types)) = best {
+                return Some(types);
+            }
         }
         None
     }
@@ -1406,7 +1349,7 @@ impl<'a> MirBuilder<'a> {
                         // @extern("library") - auto-derive symbol from function name
                         // Mangle: Server.get -> doo_http_server_get (using library prefix)
                         let lib = &args[0];
-                        let symbol = derive_ffi_symbol(lib, func_name);
+                        let symbol = { let p: Vec<&str> = func_name.split(".").collect(); if p.len() == 2 { format!("{}_{}_{}", lib, p[0].to_lowercase(), p[1].to_lowercase()) } else { format!("{}_{}", lib, func_name.to_lowercase()) } };
                         return Some(FfiFunctionInfo {
                             library: lib.clone(),
                             symbol,
@@ -1430,16 +1373,73 @@ impl<'a> MirBuilder<'a> {
     }
 
     /// Check if a function is an FFI function and get its info.
-    /// Resolves aliases before lookup.
-    pub(crate) fn get_ffi_info(&self, func_name: &str) -> Option<&FfiFunctionInfo> {
-        // First try direct lookup
-        if let Some(info) = self.ffi_functions.get(func_name) {
+    /// Resolves aliases before lookup. Matches by (name, param_count) to
+    /// support overloaded extern functions with different arities.
+    pub(crate) fn get_ffi_info(
+        &self,
+        func_name: &str,
+        param_count: usize,
+    ) -> Option<&FfiFunctionInfo> {
+        // First try exact match
+        if let Some(info) = self
+            .ffi_functions
+            .get(&(func_name.to_string(), param_count))
+        {
             return Some(info);
         }
-        // Then try through alias
+        // Then try through alias with exact match
         if let Some(resolved) = self.function_aliases.get(func_name) {
-            return self.ffi_functions.get(resolved);
+            if let Some(info) = self.ffi_functions.get(&(resolved.clone(), param_count)) {
+                return Some(info);
+            }
+        }
+        // Overloaded functions: try to find one with >= param_count (lowest first).
+        // This supports optional trailing parameters (e.g., webhooksJson in Server.crud).
+        let search = func_name.to_string();
+        let mut best: Option<(usize, &FfiFunctionInfo)> = None;
+        for ((name, count), info) in self.ffi_functions.iter() {
+            if *name == search && *count >= param_count {
+                if best.map_or(true, |(c, _)| *count < c) {
+                    best = Some((*count, info));
+                }
+            }
+        }
+        if let Some((_, info)) = best {
+            return Some(info);
+        }
+        // Also try alias for higher counts
+        if let Some(resolved) = self.function_aliases.get(func_name) {
+            let search = resolved.clone();
+            let mut best: Option<(usize, &FfiFunctionInfo)> = None;
+            for ((name, count), info) in self.ffi_functions.iter() {
+                if *name == search && *count >= param_count {
+                    if best.map_or(true, |(c, _)| *count < c) {
+                        best = Some((*count, info));
+                    }
+                }
+            }
+            if let Some((_, info)) = best {
+                return Some(info);
+            }
         }
         None
+    }
+
+    /// Check if a function name has ANY FFI entry (any arity).
+    /// Used for existence checks that don't need parameter matching.
+    pub(crate) fn is_ffi_name(&self, func_name: &str) -> bool {
+        for ((name, _), _) in self.ffi_functions.iter() {
+            if name == func_name {
+                return true;
+            }
+        }
+        if let Some(resolved) = self.function_aliases.get(func_name) {
+            for ((name, _), _) in self.ffi_functions.iter() {
+                if name == resolved {
+                    return true;
+                }
+            }
+        }
+        false
     }
 }

@@ -5,8 +5,7 @@
 use crate::context::CodegenContext;
 use crate::instructions::InstructionDispatcher;
 use crate::utils::operand_to_value;
-use doo_core::constants::ffi_names::{self, derive_ffi_symbol};
-use doo_core::doo_debug;
+use doo_core::constants::ffi_names::{self};
 use doo_core::types::{builtin, TypeKind, TypeRegistry};
 use doo_mir::sym::resolve;
 use doo_mir::{MirConst, MirFunction, MirGlobal, MirOperand, MirProgram, MirTerminator};
@@ -172,7 +171,7 @@ fn convert_return_value<'ctx>(
                         return loaded;
                     }
                 }
-                TypeKind::Float => {
+                TypeKind::Float32 | TypeKind::Float64 => {
                     // Load f64 from pointer
                     if let Ok(loaded) =
                         ctx.builder
@@ -281,7 +280,7 @@ fn convert_i64_to_type<'ctx>(
                 .map(|v| v.into())
                 .unwrap_or(val)
         }
-        TypeKind::Float => {
+        TypeKind::Float32 | TypeKind::Float64 => {
             // Reinterpret i64 bits as f64
             ctx.builder
                 .build_bit_cast(i64_val, ctx.context.f64_type(), "i64_to_f64")
@@ -404,8 +403,6 @@ impl<'ctx> CodegenBuilder<'ctx> {
         let dispatcher = InstructionDispatcher::new();
 
         // Pre-pass: declare all struct types from the type registry
-        // This ensures struct types are available for FieldGet/FieldSet in methods
-        // that receive structs as parameters (like 'self')
         self.declare_struct_types(&mut ctx);
 
         // Populate struct field decorators from MIR structs
@@ -430,12 +427,6 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 .collect();
             ctx.struct_field_decorators
                 .insert(resolve(*struct_name), field_decorators);
-        }
-
-        // Populate RBAC policies from MIR
-        for (struct_name, policy_json) in &mir.policies {
-            ctx.rbac_policies
-                .insert(resolve(*struct_name), policy_json.clone());
         }
 
         // Populate enum variant inheritance from MIR enums
@@ -473,7 +464,14 @@ impl<'ctx> CodegenBuilder<'ctx> {
             self.generate_function(&mut ctx, func, &dispatcher);
         }
 
-        ctx.module
+        // Builder must not be dropped — its Drop calls LLVMDisposeBuilder which
+        // can crash on Windows due to CRT/allocator mismatch between the Rust
+        // binary and LLVM-C.dll (LLVM 22+). The Module is safely returned.
+        let CodegenContext {
+            module, builder, ..
+        } = ctx;
+        std::mem::forget(builder);
+        module
     }
 
     /// Emit a single LLVM global from a `MirGlobal`.
@@ -488,43 +486,42 @@ impl<'ctx> CodegenBuilder<'ctx> {
 
         match global.kind {
             GlobalKind::Const => {
-                let value = match &global.value {
-                    Some(v) => v,
-                    None => return,
-                };
-                match value {
-                    MirConst::Int(v) => {
-                        let ty = ctx.context.i64_type();
-                        let g = ctx.module.add_global(ty, None, &name);
-                        g.set_initializer(&ty.const_int(*v as u64, true));
-                        g.set_constant(true);
-                        g.set_linkage(Linkage::Internal);
-                        ctx.set_temp(&name, ty.const_int(*v as u64, true).into());
-                    }
-                    MirConst::Float(v) => {
-                        let ty = ctx.context.f64_type();
-                        let g = ctx.module.add_global(ty, None, &name);
-                        g.set_initializer(&ty.const_float(*v));
-                        g.set_constant(true);
-                        g.set_linkage(Linkage::Internal);
-                        ctx.set_temp(&name, ty.const_float(*v).into());
-                    }
-                    MirConst::Bool(v) => {
-                        let ty = ctx.context.i8_type();
-                        let g = ctx.module.add_global(ty, None, &name);
-                        g.set_initializer(&ty.const_int(*v as u64, false));
-                        g.set_constant(true);
-                        g.set_linkage(Linkage::Internal);
-                        ctx.set_temp(&name, ty.const_int(*v as u64, false).into());
-                    }
-                    MirConst::Str(s) => {
-                        if let Ok(g) = ctx.builder.build_global_string_ptr(s, &name) {
-                            ctx.set_temp(&name, g.as_pointer_value().into());
+                if let Some(value) = &global.value {
+                    match value {
+                        MirConst::Int(v) => {
+                            let ty = ctx.context.i64_type();
+                            let g = ctx.module.add_global(ty, None, &name);
+                            g.set_initializer(&ty.const_int(*v as u64, true));
+                            g.set_constant(true);
+                            g.set_linkage(Linkage::Internal);
+                            ctx.set_temp(&name, ty.const_int(*v as u64, true).into());
                         }
+                        MirConst::Float(v) => {
+                            let ty = ctx.context.f64_type();
+                            let g = ctx.module.add_global(ty, None, &name);
+                            g.set_initializer(&ty.const_float(*v));
+                            g.set_constant(true);
+                            g.set_linkage(Linkage::Internal);
+                            ctx.set_temp(&name, ty.const_float(*v).into());
+                        }
+                        MirConst::Bool(v) => {
+                            let ty = ctx.context.i8_type();
+                            let g = ctx.module.add_global(ty, None, &name);
+                            g.set_initializer(&ty.const_int(*v as u64, false));
+                            g.set_constant(true);
+                            g.set_linkage(Linkage::Internal);
+                            ctx.set_temp(&name, ty.const_int(*v as u64, false).into());
+                        }
+                        MirConst::Str(s) => {
+                            if let Ok(g) = ctx.builder.build_global_string_ptr(s.as_str(), &name) {
+                                ctx.set_temp(&name, g.as_pointer_value().into());
+                            }
+                        }
+                        MirConst::Nil => {}
                     }
-                    MirConst::Nil => {}
                 }
             }
+
             GlobalKind::Static => {
                 // Register as a static global for set/get codegen
                 ctx.static_globals.insert(name.clone(), global.type_id);
@@ -561,8 +558,14 @@ impl<'ctx> CodegenBuilder<'ctx> {
             .filter_map(|type_id| {
                 if let Some(type_info) = ctx.type_registry.get(type_id) {
                     match &type_info.kind {
-                        doo_core::types::TypeKind::Struct { name, fields, .. } => {
-                            return Some((name.clone(), fields.clone()));
+                        doo_core::types::TypeKind::Struct { def } => {
+                            let struct_name = def.name.resolve().to_string();
+                            let struct_fields: Vec<(String, doo_core::types::TypeId, bool)> = def
+                                .fields
+                                .iter()
+                                .map(|f| (f.name.resolve().to_string(), f.type_id, f.is_public))
+                                .collect();
+                            return Some((struct_name, struct_fields));
                         }
                         // Handle TypeRef to import struct types from other modules
                         // The TypeRef references struct types from imported modules
@@ -572,13 +575,28 @@ impl<'ctx> CodegenBuilder<'ctx> {
                             // The struct might be registered under a different type_id
                             for other_tid in ctx.type_registry.all_type_ids().collect::<Vec<_>>() {
                                 if let Some(other_info) = ctx.type_registry.get(other_tid) {
-                                    if let doo_core::types::TypeKind::Struct {
-                                        name, fields, ..
-                                    } = &other_info.kind
+                                    if let doo_core::types::TypeKind::Struct { def } =
+                                        &other_info.kind
                                     {
-                                        if name == ref_name {
+                                        if def.name == *ref_name {
                                             if debug {}
-                                            return Some((name.clone(), fields.clone()));
+                                            let struct_name = def.name.resolve().to_string();
+                                            let struct_fields: Vec<(
+                                                String,
+                                                doo_core::types::TypeId,
+                                                bool,
+                                            )> = def
+                                                .fields
+                                                .iter()
+                                                .map(|f| {
+                                                    (
+                                                        f.name.resolve().to_string(),
+                                                        f.type_id,
+                                                        f.is_public,
+                                                    )
+                                                })
+                                                .collect();
+                                            return Some((struct_name, struct_fields));
                                         }
                                     }
                                 }
@@ -737,10 +755,19 @@ impl<'ctx> CodegenBuilder<'ctx> {
 
             // Use explicit symbol if provided, otherwise derive from library + function name
             let ffi_lib = resolve(ffi.library);
-            let symbol = ffi
-                .symbol
-                .map(|s| resolve(s))
-                .unwrap_or_else(|| derive_ffi_symbol(&ffi_lib, &func_name));
+            let symbol = ffi.symbol.map(|s| resolve(s)).unwrap_or_else(|| {
+                let p: Vec<&str> = func_name.split(".").collect();
+                if p.len() == 2 {
+                    format!(
+                        "{}_{}_{}",
+                        ffi_lib,
+                        p[0].to_lowercase(),
+                        p[1].to_lowercase()
+                    )
+                } else {
+                    format!("{}_{}", ffi_lib, func_name.to_lowercase())
+                }
+            });
 
             // Declare FFI function with its EXTERNAL SYMBOL NAME (not the Doo function name)
             // This is critical: linker will look for this exact symbol name
@@ -908,31 +935,31 @@ impl<'ctx> CodegenBuilder<'ctx> {
             // is passed to another function or when its fields are accessed
             if let Some(kind) = ctx.get_type_kind(param.type_id) {
                 match kind {
-                    TypeKind::Struct { name, .. } => {
-                        ctx.set_temp_struct_type(&param_name, &name);
+                    TypeKind::Struct { def } => {
+                        ctx.set_temp_struct_type(&param_name, def.name.resolve());
                     }
                     // CRITICAL: Handle TypeRef for imported/cross-module types
                     // The TypeRef name IS the struct name, use it directly
                     TypeKind::TypeRef { name: ref_name } => {
                         // First try to resolve through lookup
-                        let struct_name =
-                            if let Some(resolved_tid) = ctx.type_registry.lookup(&ref_name) {
-                                if let Some(TypeKind::Struct { name, .. }) =
-                                    ctx.get_type_kind(resolved_tid)
-                                {
-                                    Some(name)
-                                } else {
-                                    // If resolution doesn't give a struct, use the TypeRef name directly
-                                    Some(ref_name.clone())
-                                }
+                        let struct_name: Option<String> = if let Some(resolved_tid) =
+                            ctx.type_registry.lookup(ref_name.resolve())
+                        {
+                            if let Some(TypeKind::Struct { def }) = ctx.get_type_kind(resolved_tid)
+                            {
+                                Some(def.name.resolve().to_string())
                             } else {
-                                // If lookup fails (common for imported types), use the TypeRef name directly
-                                // This is the struct name used for LLVM type lookup
-                                Some(ref_name.clone())
-                            };
+                                // If resolution doesn't give a struct, use the TypeRef name directly
+                                Some(ref_name.resolve().to_string())
+                            }
+                        } else {
+                            // If lookup fails (common for imported types), use the TypeRef name directly
+                            // This is the struct name used for LLVM type lookup
+                            Some(ref_name.resolve().to_string())
+                        };
 
-                        if let Some(name) = struct_name {
-                            ctx.set_temp_struct_type(&param_name, &name);
+                        if let Some(sname) = struct_name {
+                            ctx.set_temp_struct_type(&param_name, &sname);
                         }
                     }
                     other => if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {},
@@ -955,28 +982,29 @@ impl<'ctx> CodegenBuilder<'ctx> {
                 // This is needed for FieldGet/FieldSet to work correctly
                 if let Some(kind) = ctx.get_type_kind(local.type_id) {
                     match kind {
-                        TypeKind::Struct { name, .. } => {
-                            ctx.set_temp_struct_type(&local_name, &name);
+                        TypeKind::Struct { def } => {
+                            ctx.set_temp_struct_type(&local_name, def.name.resolve());
                         }
                         // CRITICAL: Handle TypeRef for imported/cross-module types
                         // The TypeRef name IS the struct name, use it directly
                         TypeKind::TypeRef { name: ref_name } => {
                             // First try to resolve through lookup
-                            let struct_name =
-                                if let Some(resolved_tid) = ctx.type_registry.lookup(&ref_name) {
-                                    if let Some(TypeKind::Struct { name, .. }) =
-                                        ctx.get_type_kind(resolved_tid)
-                                    {
-                                        Some(name)
-                                    } else {
-                                        Some(ref_name.clone())
-                                    }
+                            let struct_name: Option<String> = if let Some(resolved_tid) =
+                                ctx.type_registry.lookup(ref_name.resolve())
+                            {
+                                if let Some(TypeKind::Struct { def }) =
+                                    ctx.get_type_kind(resolved_tid)
+                                {
+                                    Some(def.name.resolve().to_string())
                                 } else {
-                                    Some(ref_name.clone())
-                                };
+                                    Some(ref_name.resolve().to_string())
+                                }
+                            } else {
+                                Some(ref_name.resolve().to_string())
+                            };
 
-                            if let Some(name) = struct_name {
-                                ctx.set_temp_struct_type(&local_name, &name);
+                            if let Some(sname) = struct_name {
+                                ctx.set_temp_struct_type(&local_name, &sname);
                             }
                         }
                         _ => {}
@@ -1570,5 +1598,63 @@ impl<'ctx> CodegenBuilder<'ctx> {
             let fn_ty = i32_ty.fn_type(&[i32_ty.into()], false);
             ctx.module.add_function(ffi_names::PUTCHAR, fn_ty, None);
         }
+    }
+
+    /// Compile MIR to LLVM, then link into a native executable.
+    ///
+    /// Combines `build()` + `BinaryLinker::link()` so callers
+    /// (like doo_driver) don't need to depend on inkwell.
+    pub fn compile_and_link(
+        &self,
+        mir: &MirProgram,
+        module_name: &str,
+        type_registry: Arc<TypeRegistry>,
+        output_name: &str,
+        extern_libs: Vec<String>,
+    ) -> Result<std::path::PathBuf, doo_core::errors::codes::CompilerError> {
+        let module = self.build(mir, module_name, type_registry);
+        let linker = crate::linker::BinaryLinker::new(output_name, extern_libs);
+        linker.link(&module)
+    }
+}
+
+/// Wrapper that owns the LLVM Context, for callers that don't
+/// want to depend on inkwell directly (e.g. doo_driver).
+///
+/// Delegates to `CodegenBuilder` internally.
+pub struct OwnedCodegenBuilder {
+    context: Context,
+}
+
+impl OwnedCodegenBuilder {
+    pub fn new() -> Self {
+        Self {
+            context: Context::create(),
+        }
+    }
+
+    pub fn with_opt_level(self, _level: crate::optimize::OptLevel) -> Self {
+        // Opt level is passed to optimize_module separately after build().
+        // Stored here for future use when we wire it through.
+        self
+    }
+
+    /// Compile MIR to LLVM, optimize, and link into an executable.
+    pub fn compile_and_link(
+        &self,
+        mir: &MirProgram,
+        module_name: &str,
+        type_registry: Arc<TypeRegistry>,
+        output_name: &str,
+        extern_libs: Vec<String>,
+    ) -> Result<std::path::PathBuf, doo_core::errors::codes::CompilerError> {
+        let builder = CodegenBuilder::new(&self.context);
+        builder.compile_and_link(mir, module_name, type_registry, output_name, extern_libs)
+    }
+}
+
+impl Default for OwnedCodegenBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }

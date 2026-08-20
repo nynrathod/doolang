@@ -1,0 +1,17 @@
+[package]
+name = "doo_ctfe"
+version.workspace = true
+edition.workspace = true
+description = "Compile-time function evaluation for the Doo compiler"
+license = "MIT"
+
+[dependencies]
+doo_core = { path = "../doo_core" }
+doo_thir = { path = "../doo_thir" }
+rustc-hash = "1.1"
+
+[dev-dependencies]
+pretty_assertions = "1.4"
+
+[features]
+default = []

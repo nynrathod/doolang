@@ -9,4 +9,4 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 libc = "0.2"
-doo_ffi_core = { path = "../doo_ffi_core" }
+doo_ffi_core = { path = "../../library/ffi/doo_ffi_core" }

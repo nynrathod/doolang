@@ -19,6 +19,8 @@
 //! - At scope end: release all borrows from that scope
 
 use doo_core::Span;
+pub mod cfg;
+pub use cfg::{BasicBlock, BlockId, CfgBuilder, Terminator, CFG};
 use doo_hir::{HirExpr, HirExprKind, HirFunction, HirItem, HirProgram, HirStmt, HirStmtKind};
 use rustc_hash::FxHashMap;
 
@@ -407,12 +409,6 @@ impl BorrowChecker {
                 self.check_expr(inner, false);
             }
 
-            HirExprKind::RouteBlock { routes } => {
-                for route in routes {
-                    self.check_expr(route, false);
-                }
-            }
-
             HirExprKind::Cast { value, .. } => {
                 self.check_expr(value, false);
             }
@@ -438,10 +434,16 @@ impl BorrowChecker {
             }
             doo_hir::HirMatchPattern::Wildcard
             | doo_hir::HirMatchPattern::EnumVariant { .. }
-            | doo_hir::HirMatchPattern::EnumVariantPayload { .. } => {}
-            doo_hir::HirMatchPattern::Tuple(parts) => {
+            | doo_hir::HirMatchPattern::EnumVariantPayload { .. }
+            | doo_hir::HirMatchPattern::Rest(_) => {}
+            doo_hir::HirMatchPattern::Tuple(parts) | doo_hir::HirMatchPattern::Array(parts) => {
                 for x in parts {
                     self.check_match_pattern(x);
+                }
+            }
+            doo_hir::HirMatchPattern::Struct { fields, .. } => {
+                for (_, p) in fields {
+                    self.check_match_pattern(p);
                 }
             }
         }

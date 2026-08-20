@@ -38,7 +38,12 @@ impl AuthStrategy for JwtStrategy {
         data_json: Option<&str>,
         expires_seconds: i64,
     ) -> Result<String, String> {
-        session::sign_token(sub, data_json, expires_seconds)
+        session::sign_token(
+            sub,
+            crate::user_bridge::resolve_user_id(0, sub),
+            data_json,
+            expires_seconds,
+        )
     }
 
     fn verify(&self, token: &str) -> Result<String, String> {

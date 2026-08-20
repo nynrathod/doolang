@@ -3,16 +3,16 @@
 //! Compiler driver - Phase 10: Clean compilation orchestration.
 //! Single source of truth for all compilation commands.
 
-pub mod analytics;
 pub mod cli;
 pub mod commands;
 pub mod compile;
 pub mod incremental;
 pub mod loader;
-pub mod templates;
+pub mod macro_expand;
+pub mod manifest;
+pub mod lockfile;
+pub mod resolver;
 
-use console::Term;
-use dialoguer::{theme::ColorfulTheme, Select};
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -21,7 +21,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 pub use cli::{Cli, Commands};
-pub use commands::{run_deploy, run_init, run_upgrade};
+pub use commands::{build, check, clean, explain, run};
 pub use compile::{compile_project, discover_main_doo_candidates, CompileOptions, CompileResult};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -60,55 +60,31 @@ pub fn run_command_with_compiler(
         if candidates.len() == 1 {
             path = candidates[0].clone();
         } else if candidates.len() > 1 {
-            let is_interactive = Term::stdout().is_term();
-            if is_interactive {
-                let display_items: Vec<String> = candidates
-                    .iter()
-                    .map(|p: &PathBuf| p.display().to_string())
-                    .collect();
-
-                let idx = match Select::with_theme(&ColorfulTheme::default())
-                    .with_prompt("Multiple projects found. Select one to run")
-                    .items(&display_items)
-                    .default(0)
-                    .interact()
-                {
-                    Ok(i) => i,
-                    Err(_) => {
-                        eprintln!("{} Failed to select project", ERROR);
-                        return 1;
-                    }
-                };
-
-                if let Some(selected) = candidates.get(idx) {
-                    path = selected.clone();
-                }
-            } else {
-                // Non-interactive: pick deterministic default
-                let search_root = path.clone();
-                let mut best: Option<(usize, String, PathBuf)> = None;
-                for c in &candidates {
-                    let rel_depth = c
-                        .strip_prefix(&search_root)
-                        .ok()
-                        .map(|p: &Path| p.components().count())
-                        .unwrap_or_else(|| c.components().count());
-                    let key_str = c.display().to_string();
-                    match &best {
-                        None => best = Some((rel_depth, key_str, c.clone())),
-                        Some((best_depth, best_str, _)) => {
-                            if rel_depth < *best_depth
-                                || (rel_depth == *best_depth && key_str < *best_str)
-                            {
-                                best = Some((rel_depth, key_str, c.clone()));
-                            }
+            // Non-interactive: pick deterministic default
+            // (shallowest path, alphabetical tiebreaker)
+            let search_root = path.clone();
+            let mut best: Option<(usize, String, PathBuf)> = None;
+            for c in &candidates {
+                let rel_depth = c
+                    .strip_prefix(&search_root)
+                    .ok()
+                    .map(|p: &Path| p.components().count())
+                    .unwrap_or_else(|| c.components().count());
+                let key_str = c.display().to_string();
+                match &best {
+                    None => best = Some((rel_depth, key_str, c.clone())),
+                    Some((best_depth, best_str, _)) => {
+                        if rel_depth < *best_depth
+                            || (rel_depth == *best_depth && key_str < *best_str)
+                        {
+                            best = Some((rel_depth, key_str, c.clone()));
                         }
                     }
                 }
+            }
 
-                if let Some((_, _, chosen)) = best {
-                    path = chosen;
-                }
+            if let Some((_, _, chosen)) = best {
+                path = chosen;
             }
         }
     }
@@ -361,7 +337,6 @@ pub fn run_command_with_compiler(
                 let _ = std::io::stdout().flush();
 
                 // Cache the compiled executable for incremental reuse
-                let _ = fs::create_dir_all(&cache_dir);
                 let _ = fs::copy(&exe_full_path, &cached_exe_path);
                 let _ = cache.save();
             }
@@ -429,7 +404,6 @@ pub fn run_command_with_compiler(
 
     // Linux/macOS shared library path management
     // Same as Windows DLL path above — allows dlopen() from within loaded libraries
-    // (e.g., doo_ffi_auth using libloading to find doo_ffi_http symbols)
     #[cfg(not(windows))]
     {
         let mut lib_dirs: Vec<PathBuf> = Vec::new();
@@ -576,14 +550,6 @@ pub fn check_command(path: PathBuf) -> i32 {
             1
         }
     }
-}
-
-pub fn migrate_command(_path: PathBuf, dry_run: bool) -> i32 {
-    eprintln!("Migrate command not yet implemented");
-    if dry_run {
-        eprintln!("  Dry-run mode");
-    }
-    1
 }
 
 /// Clean all build caches and temporary files under the given path.

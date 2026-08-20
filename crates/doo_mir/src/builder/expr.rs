@@ -1,12 +1,13 @@
 use super::{ContainerKind, Decision, MirBuilder, LocalDef};
 use crate::{BinaryOp, MirConst, MirInstrKind, MirOperand, MirTerminator};
 use crate::sym::{Sym, sym, resolve};
+use crate::types::{MirInstruction, MirValue};
 use doo_core::{
     constants::ffi_names,
-    doo_debug,
     types::{builtin, TypeId as CoreTypeId, TypeKind},
 };
 use doo_hir::{HirBinOp, HirExpr, HirExprKind, HirMatchPattern};
+use doo_thir::{ThirExpr, ThirExprKind};
 
 /// Build an expression with an expected type hint.
 /// This is used for return statements where we know the expected return type.
@@ -25,7 +26,7 @@ pub fn build_expr_with_expected_type(
     } = &expr.kind
     {
         // Check if this is a JSON.parse call (receiver is the JSON module)
-        let is_json_parse = matches!(&receiver.kind, HirExprKind::Local { name } if name == ffi_names::MODULE_JSON)
+        let is_json_parse = matches!(&receiver.kind, HirExprKind::Local { name } if false)
             && method == "parse";
 
         if is_json_parse {
@@ -206,6 +207,18 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         );
                         MirOperand::Temp(dest)
                     }
+                                         Decision::Drop => {
+                                            // Dropping acts like a move: the value is consumed and 
+                                            // ownership is transferred to the drop logic.
+                                            builder.emit(
+                                                    MirInstrKind::Move {
+                                                            dest,
+                                                            src: MirOperand::Local(sym(name)),
+                                                    },
+                                                    span,
+                                            );
+                                            MirOperand::Temp(dest)
+                                    }
                 }
             } else {
                 // No ownership decision available - default to direct reference
@@ -394,8 +407,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 // Set return type on dest if we can infer it from the function type
                 if let Some(func_type) = func.type_id {
                     if let Some(info) = builder.type_registry.get(func_type) {
-                        if let TypeKind::Function { returns, .. } = &info.kind {
-                            builder.set_temp_type(dest, *returns);
+                        if let TypeKind::Function { sig, .. } = &info.kind {
+                            builder.set_temp_type(dest, sig.return_type);
                         }
                     }
                 }
@@ -409,7 +422,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             
             // Get expected parameter types for this function call
             // This enables JSON.parse and similar to use the expected type
-            let param_types = builder.get_function_param_types(&func_name).cloned();
+            let param_types = builder.get_function_param_types(&func_name, args.len()).cloned();
             
             // Build arguments with expected types when available
             let arg_ops: Vec<_> = args.iter()
@@ -460,14 +473,14 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                     span,
                 );
                 MirOperand::Temp(dest)
-            } else if let Some(ffi_info) = builder.get_ffi_info(&func_name).cloned() {
+            } else if let Some(ffi_info) = builder.get_ffi_info(&func_name, args.len()).cloned() {
                 // FFI function call - emit FfiCall instead of Call
                 let dest = builder.new_temp();
 
                 // Pad missing optional parameters with Nil (null pointer)
                 // This handles calls like Fetch(url) where options: {Str: Str}? is omitted
                 let mut ffi_args = arg_ops;
-                if let Some(param_types) = builder.get_function_param_types(&func_name) {
+                if let Some(param_types) = builder.get_function_param_types(&func_name, args.len()) {
                     let expected = param_types.len();
                     while ffi_args.len() < expected {
                         ffi_args.push(MirOperand::Const(MirConst::Nil));
@@ -509,7 +522,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                                 .unwrap_or(false);
                             if is_interface {
                                 let arg_type = builder.infer_operand_type(&arg_op);
-                                let is_concrete = arg_type != param_type;
+                                let _is_concrete = arg_type != param_type;
                                 Some((arg_type, param_type))
                             } else {
                                 None
@@ -557,16 +570,6 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             method,
             args,
         } => {
-            // === Query Builder Interception ===
-            // When we see a terminal method (exec/execOne/toSql), attempt to lower
-            // the entire chain as a compile-time SQL query. Falls through to normal
-            // dispatch if this is not a recognizable query chain.
-            if super::query_builder::is_query_terminal(method) {
-                if let Some(op) = super::query_builder::try_lower_query_chain(builder, expr, span) {
-                    return op;
-                }
-            }
-
             if method == "__set" && args.len() == 2 {
                 let recv_kind = builder.infer_container_kind(receiver);
                 let recv = builder.build_expr(receiver);
@@ -730,9 +733,9 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 // Get type name from receiver_type (already computed with all fallbacks)
                 builder.type_registry.get(receiver_type).and_then(|info| {
                     match &info.kind {
-                        TypeKind::Struct { name, .. } => Some(name.clone()),
+                        TypeKind::Struct { def, .. } => Some(def.name.resolve().to_string()),
                         // Handle TypeRef: resolve through to the struct name
-                        TypeKind::TypeRef { name } => Some(name.clone()),
+                        TypeKind::TypeRef { name } => Some(name.to_string()),
                         _ => None,
                     }
                 })
@@ -743,8 +746,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         if let Some(&static_tid) = builder.static_types.get(name) {
                             builder.type_registry.get(static_tid).and_then(|info| {
                                 match &info.kind {
-                                    TypeKind::Struct { name, .. } => Some(name.clone()),
-                                    TypeKind::TypeRef { name } => Some(name.clone()),
+                                    TypeKind::Struct { def, .. } => Some(def.name.resolve().to_string()),
+                                    TypeKind::TypeRef { name } => Some(name.to_string()),
                                     _ => None,
                                 }
                             })
@@ -802,24 +805,26 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 
                 // For interface receivers, extract return type from the interface definition
                 if let Some(info) = builder.type_registry.get(receiver_type) {
-                    if let TypeKind::Interface { methods, .. } = &info.kind {
-                        for (mname, _params, ret, err) in methods {
+                    if let TypeKind::Interface { def, .. } = &info.kind {
+                        for method_sig in &def.methods {
+                            let mname = method_sig.name.resolve();
                             if mname == method {
-                                if let (Some(ok_type), Some(err_type)) = (ret, err) {
+                                let ok_type = method_sig.return_type;
+                                if let Some(err_type) = method_sig.error_type {
                                     // Fallible method: return type is Result<ok, err>
                                     // Look up the registered Result type
-                                    let ok_name = builder.type_registry.get(*ok_type)
+                                    let ok_name = builder.type_registry.get(ok_type)
                                         .map(|t| t.name.clone()).unwrap_or_else(|| "?".to_string());
-                                    let err_name = builder.type_registry.get(*err_type)
+                                    let err_name = builder.type_registry.get(err_type)
                                         .map(|t| t.name.clone()).unwrap_or_else(|| "?".to_string());
                                     let result_name = format!("{} ! {}", ok_name, err_name);
                                     if let Some(result_tid) = builder.type_registry.lookup(&result_name) {
                                         return Some(result_tid);
                                     }
                                     // Fallback: return just the Ok type
-                                    return ret.clone();
+                                    return Some(ok_type);
                                 }
-                                return ret.clone();
+                                return Some(ok_type);
                             }
                         }
                     }
@@ -827,8 +832,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 
                 let type_name = receiver_type_name.as_ref().cloned().or_else(|| {
                     builder.type_registry.get(receiver_type).and_then(|info| {
-                        if let TypeKind::Struct { name, .. } = &info.kind {
-                            Some(name.clone())
+                        if let TypeKind::Struct { def, .. } = &info.kind {
+                            Some(def.name.resolve().to_string())
                         } else {
                             None
                         }
@@ -848,9 +853,17 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             // Method functions are named _method_{TypeName}_{method}
             let mangled_method_name = receiver_type_name.as_ref()
                 .map(|type_name| format!("_method_{}_{}", type_name, method));
-            
+
+            // Compute expected param count BEFORE FFI lookup so overloaded
+            // extern functions (same name, different arities) resolve correctly.
+            let ffi_param_count = if is_module_receiver {
+                arg_ops.len()
+            } else {
+                1 + arg_ops.len() // receiver is passed as first arg
+            };
+
             let ffi_info = mangled_method_name.as_ref()
-                .and_then(|name| builder.get_ffi_info(name).cloned());
+                .and_then(|name| builder.get_ffi_info(name, ffi_param_count).cloned());
 
             if let Some(ffi) = ffi_info {
                 // FFI method call - determine if receiver should be passed as argument
@@ -871,7 +884,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                 // Pad missing optional parameters with Nil (null pointer)
                 // This handles calls like app.cors() where options: {Str: Str}? is omitted
                 if let Some(mangled) = &mangled_method_name {
-                    if let Some(param_types) = builder.get_function_param_types(mangled) {
+                    if let Some(param_types) = builder.get_function_param_types(mangled, ffi_param_count) {
                         let expected = param_types.len();
                         while ffi_args.len() < expected {
                             ffi_args.push(MirOperand::Const(MirConst::Nil));
@@ -1227,7 +1240,7 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             // Check if this is actually an associated function call (e.g., Server::new(...))
             // rather than a true enum variant creation
             let mangled_name = format!("_method_{}_{}", enum_name, variant);
-            if let Some(ffi_info) = builder.get_ffi_info(&mangled_name).cloned() {
+            if let Some(ffi_info) = builder.get_ffi_info(&mangled_name, payload.len()).cloned() {
                 // This is an FFI associated function call, not enum creation
                 let dest = builder.new_temp();
                 let args: Vec<MirOperand> = payload.iter().map(|e| builder.build_expr(e)).collect();
@@ -1660,8 +1673,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                                 builder.static_types.get(name)
                                     .and_then(|&tid| builder.type_registry.get(tid))
                                     .and_then(|info| match &info.kind {
-                                        TypeKind::Struct { name: type_name, .. } => Some(type_name.clone()),
-                                        TypeKind::TypeRef { name: type_name } => Some(type_name.clone()),
+                                        TypeKind::Struct { def, .. } => Some(def.name.resolve().to_string()),
+                                        TypeKind::TypeRef { name: type_name } => Some(type_name.to_string()),
                                         _ => None,
                                     })
                                     .or_else(|| Some(name.clone()))
@@ -1675,8 +1688,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                             builder.get_temp_type(sym(name))
                                 .and_then(|tid| builder.type_registry.get(tid))
                                 .and_then(|info| {
-                                    if let TypeKind::Struct { name: type_name, .. } = &info.kind {
-                                        Some(type_name.clone())
+                                    if let TypeKind::Struct { def, .. } = &info.kind {
+                                        Some(def.name.resolve().to_string())
                                     } else {
                                         None
                                     }
@@ -1686,8 +1699,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                                     receiver.type_id
                                         .and_then(|tid| builder.type_registry.get(tid))
                                         .and_then(|info| {
-                                            if let TypeKind::Struct { name: type_name, .. } = &info.kind {
-                                                Some(type_name.clone())
+                                            if let TypeKind::Struct { def, .. } = &info.kind {
+                                                Some(def.name.resolve().to_string())
                                             } else {
                                                 None
                                             }
@@ -1699,8 +1712,8 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
                         receiver.type_id
                             .and_then(|tid| builder.type_registry.get(tid))
                             .and_then(|info| {
-                                if let TypeKind::Struct { name, .. } = &info.kind {
-                                    Some(name.clone())
+                                if let TypeKind::Struct { def, .. } = &info.kind {
+                                    Some(def.name.resolve().to_string())
                                 } else {
                                     None
                                 }
@@ -2035,27 +2048,6 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             builder.build_expr(inner)
         }
 
-        HirExprKind::RouteBlock { routes } => {
-            // Route block is a collection of route expressions.
-            // Build each route (side effects for registering routes),
-            // and return an array of their results.
-            let elements: Vec<MirOperand> = routes
-                .iter()
-                .map(|r| builder.build_expr(r))
-                .collect();
-            let dest = builder.new_temp();
-            let span = builder.convert_span(expr.span);
-            builder.emit(
-                MirInstrKind::ArrayCreate {
-                    dest,
-                    elements,
-                    elem_type: doo_core::types::builtin::ANY,
-                },
-                span,
-            );
-            MirOperand::Temp(dest)
-        }
-
         HirExprKind::Cast { value, to_type } => {
             // Build the value and emit a cast instruction
             let val = builder.build_expr(value);
@@ -2208,5 +2200,31 @@ pub fn build_expr(builder: &mut MirBuilder, expr: &HirExpr) -> MirOperand {
             );
             MirOperand::Temp(result_dest)
         }
+    }
+}
+
+/// Build MIR instructions from a THIR expression.
+pub fn build_thir_expr(builder: &mut MirBuilder, expr: &ThirExpr) -> MirValue {
+    let span = builder.convert_span(expr.span);
+    match &expr.kind {
+        ThirExprKind::Literal(lit) => {
+            let c = match lit {
+                doo_thir::ThirLiteral::Int(i) => MirConst::Int(*i),
+                doo_thir::ThirLiteral::Float(f) => MirConst::Float(*f),
+                doo_thir::ThirLiteral::String(s) => MirConst::Str(s.clone()),
+                doo_thir::ThirLiteral::Bool(b) => MirConst::Bool(*b),
+                doo_thir::ThirLiteral::Null => MirConst::Nil,
+            };
+            MirValue::Const(c)
+        }
+        ThirExprKind::Var(name) => MirValue::Local(sym(name)),
+        ThirExprKind::Binary { op, lhs, rhs, .. } => {
+            let l = build_thir_expr(builder, lhs);
+            let r = build_thir_expr(builder, rhs);
+            let temp = builder.next_temp_id();
+            // MIR BinaryOp mapping would go here
+            MirValue::Temp(temp)
+        }
+        _ => MirValue::Const(MirConst::Nil),
     }
 }

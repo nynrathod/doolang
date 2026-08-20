@@ -1,6 +1,6 @@
 //! Environment Variable Names — Single Source of Truth
 //!
-//! All environment variable names used across the compiler and FFI crates.
+//! All environment variable names used across the compiler crates.
 //! NEVER hardcode env var strings — import from here.
 
 // ============================================================================
@@ -34,27 +34,5 @@ pub const DOO_VERBOSE: &str = "DOO_VERBOSE";
 /// When set, only check for errors without compiling.
 pub const DOO_CHECK_ONLY: &str = "DOO_CHECK_ONLY";
 
-// ============================================================================
-// FFI Runtime Config
-// ============================================================================
-
-/// Suppresses the HTTP server startup banner.
+/// Disables the compiler banner on startup.
 pub const DOO_NO_BANNER: &str = "DOO_NO_BANNER";
-
-/// JWT secret key for token signing/verification.
-pub const JWT_SECRET: &str = "JWT_SECRET";
-
-/// PostgreSQL connection URL.
-pub const DATABASE_URL: &str = "DATABASE_URL";
-
-/// Maximum concurrent database queries (semaphore permits).
-pub const DATABASE_MAX_QUERIES: &str = "DATABASE_MAX_QUERIES";
-
-/// Database query timeout in seconds.
-pub const DATABASE_QUERY_TIMEOUT_SECS: &str = "DATABASE_QUERY_TIMEOUT_SECS";
-
-/// Database semaphore acquisition timeout in milliseconds.
-pub const DATABASE_SEMAPHORE_WAIT_MS: &str = "DATABASE_SEMAPHORE_WAIT_MS";
-
-/// Database connection pool size.
-pub const DATABASE_POOL_SIZE: &str = "DATABASE_POOL_SIZE";

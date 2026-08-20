@@ -22,6 +22,14 @@ use doo_core::Span;
 use doo_hir::{HirExpr, HirExprKind, HirFunction, HirItem, HirProgram, HirStmt, HirStmtKind};
 use rustc_hash::{FxHashMap, FxHashSet};
 
+// ============================================================================
+// THIR-Based Drop Insertion (MMM Part IV)
+// ============================================================================
+
+use crate::ownership::{is_copy, needs_drop, ThirOwnershipResults};
+use doo_core::types::{TypeKind, TypeRegistry};
+use doo_thir::{ThirExpr, ThirExprKind, ThirFunction, ThirStmt, ThirStmtKind};
+
 /// Drop insertion pass.
 pub struct DropInserter<'a> {
     /// Last use index for each variable.
@@ -290,11 +298,6 @@ impl<'a> DropInserter<'a> {
             HirExprKind::Spread(inner) => {
                 self.scan_expr_for_uses(inner);
             }
-            HirExprKind::RouteBlock { routes } => {
-                for route in routes {
-                    self.scan_expr_for_uses(route);
-                }
-            }
             HirExprKind::Cast { value, .. } => {
                 self.scan_expr_for_uses(value);
             }
@@ -434,11 +437,6 @@ impl<'a> DropInserter<'a> {
             }
             HirExprKind::Cast { value, .. } => {
                 self.scan_spawn_body_for_outer_uses(value);
-            }
-            HirExprKind::RouteBlock { routes } => {
-                for r in routes {
-                    self.scan_spawn_body_for_outer_uses(r);
-                }
             }
             HirExprKind::ScopeBlock { stmts } => {
                 for s in stmts {
@@ -630,11 +628,6 @@ impl<'a> DropInserter<'a> {
             HirExprKind::Cast { value, .. } => {
                 self.scan_closure_body_for_outer_uses(value, closure_params);
             }
-            HirExprKind::RouteBlock { routes } => {
-                for r in routes {
-                    self.scan_closure_body_for_outer_uses(r, closure_params);
-                }
-            }
             HirExprKind::ScopeBlock { stmts } => {
                 for s in stmts {
                     self.scan_closure_stmt_for_outer_uses(s, closure_params);
@@ -713,10 +706,16 @@ impl<'a> DropInserter<'a> {
             }
             doo_hir::HirMatchPattern::Wildcard
             | doo_hir::HirMatchPattern::EnumVariant { .. }
-            | doo_hir::HirMatchPattern::EnumVariantPayload { .. } => {}
-            doo_hir::HirMatchPattern::Tuple(parts) => {
+            | doo_hir::HirMatchPattern::EnumVariantPayload { .. }
+            | doo_hir::HirMatchPattern::Rest(_) => {}
+            doo_hir::HirMatchPattern::Tuple(parts) | doo_hir::HirMatchPattern::Array(parts) => {
                 for x in parts {
                     self.scan_match_pattern_for_uses(x);
+                }
+            }
+            doo_hir::HirMatchPattern::Struct { fields, .. } => {
+                for (_, p) in fields {
+                    self.scan_match_pattern_for_uses(p);
                 }
             }
         }
@@ -974,6 +973,583 @@ impl<'a> Default for DropInserter<'a> {
     }
 }
 
+/// Drop insertion for THIR functions.
+///
+/// Inserts explicit `Drop { name, ty }` statements at ownership end points.
+///
+/// 1. Find last use of each variable (liveness analysis)
+/// 2. Check if last use was a Move (ownership transferred)
+/// 3. If NOT moved AND type needs Drop → insert Drop after last use
+/// 4. For control flow, drop at earliest exit point on each path
+/// 5. At scope end, drop all remaining owned variables in reverse declaration order
+pub struct ThirDropInserter<'a> {
+    registry: &'a TypeRegistry,
+    /// Last use index for each variable.
+    last_use: rustc_hash::FxHashMap<String, usize>,
+    /// Declaration order (for reverse-order drops).
+    declaration_order: Vec<(String, doo_core::types::TypeId)>,
+    /// Variables that need Drop (non-Copy types).
+    needs_drop_set: rustc_hash::FxHashSet<String>,
+    /// Current statement index.
+    current_idx: usize,
+    /// Ownership results to check for Move decisions.
+    ownership_results: &'a ThirOwnershipResults,
+    /// Whether a type has a custom drop() implementation.
+    custom_drop_types: rustc_hash::FxHashSet<String>,
+}
+
+impl<'a> ThirDropInserter<'a> {
+    /// Create a new THIR drop inserter.
+    pub fn new(registry: &'a TypeRegistry, ownership_results: &'a ThirOwnershipResults) -> Self {
+        Self {
+            registry,
+            last_use: rustc_hash::FxHashMap::default(),
+            declaration_order: Vec::new(),
+            needs_drop_set: rustc_hash::FxHashSet::default(),
+            current_idx: 0,
+            ownership_results,
+            custom_drop_types: rustc_hash::FxHashSet::default(),
+        }
+    }
+
+    /// Insert drops into a THIR function.
+    pub fn insert_drops(&mut self, func: &mut ThirFunction) {
+        self.last_use.clear();
+        self.declaration_order.clear();
+        self.needs_drop_set.clear();
+        self.current_idx = 0;
+
+        // Pass 1: Find last uses and declaration order
+        for stmt in &func.body {
+            self.scan_stmt(stmt);
+            self.current_idx += 1;
+        }
+
+        // Pass 2: Compute which variables need drops
+        let drops = self.compute_drops();
+
+        // Pass 3: Insert drops
+        self.apply_drops(&mut func.body, drops);
+
+        // Pass 4: Insert scope-end drops in reverse declaration order
+        self.insert_scope_end_drops(&mut func.body);
+
+        // Pass 5: Insert drops before early returns in nested blocks
+        let dropped: rustc_hash::FxHashSet<String> = self.needs_drop_set.clone();
+        self.insert_early_return_drops_thir(&mut func.body, &dropped);
+    }
+
+    fn scan_stmt(&mut self, stmt: &ThirStmt) {
+        match &stmt.kind {
+            ThirStmtKind::Let {
+                name, ty, value, ..
+            } => {
+                if needs_drop(*ty, self.registry) {
+                    self.needs_drop_set.insert(name.clone());
+                }
+                self.declaration_order.push((name.clone(), *ty));
+                self.scan_expr(value);
+            }
+            ThirStmtKind::Const { name, ty, value } => {
+                self.declaration_order.push((name.clone(), *ty));
+                self.scan_expr(value);
+            }
+            ThirStmtKind::Expr(expr) => self.scan_expr(expr),
+            ThirStmtKind::Assign { target, value } => {
+                self.scan_expr(target);
+                self.scan_expr(value);
+            }
+            ThirStmtKind::Return(opt_expr) => {
+                if let Some(e) = opt_expr {
+                    self.scan_expr(e);
+                }
+            }
+            ThirStmtKind::While {
+                cond,
+                body,
+                increment,
+            } => {
+                self.scan_expr(cond);
+                for s in body {
+                    self.scan_stmt(s);
+                }
+                for s in increment {
+                    self.scan_stmt(s);
+                }
+            }
+            ThirStmtKind::Loop { body } => {
+                for s in body {
+                    self.scan_stmt(s);
+                }
+            }
+            ThirStmtKind::Go { expr } => self.scan_expr(expr),
+            ThirStmtKind::Scope { stmts } => {
+                for s in stmts {
+                    self.scan_stmt(s);
+                }
+            }
+            ThirStmtKind::TupleLet {
+                names,
+                type_ids,
+                value,
+                ..
+            } => {
+                for (n, t) in names.iter().zip(type_ids.iter()) {
+                    if needs_drop(*t, self.registry) {
+                        self.needs_drop_set.insert(n.clone());
+                    }
+                    self.declaration_order.push((n.clone(), *t));
+                }
+                self.scan_expr(value);
+            }
+            ThirStmtKind::ManualErrorExtract { expr, .. } => {
+                self.scan_expr(expr);
+            }
+            ThirStmtKind::Break(opt_expr) => {
+                if let Some(e) = opt_expr {
+                    self.scan_expr(e);
+                }
+            }
+            ThirStmtKind::Continue | ThirStmtKind::Drop { .. } => {}
+        }
+    }
+
+    fn scan_expr(&mut self, expr: &ThirExpr) {
+        match &expr.kind {
+            ThirExprKind::Var(name) => {
+                self.last_use.insert(name.clone(), self.current_idx);
+            }
+            ThirExprKind::Binary { lhs, rhs, .. } => {
+                self.scan_expr(lhs);
+                self.scan_expr(rhs);
+            }
+            ThirExprKind::Unary { expr, .. } => self.scan_expr(expr),
+            ThirExprKind::Call { func, args } => {
+                self.scan_expr(func);
+                for a in args {
+                    self.scan_expr(a);
+                }
+            }
+            ThirExprKind::MethodCall { receiver, args, .. } => {
+                self.scan_expr(receiver);
+                for a in args {
+                    self.scan_expr(a);
+                }
+            }
+            ThirExprKind::FieldAccess { object, .. } => self.scan_expr(object),
+            ThirExprKind::Index { object, index } => {
+                self.scan_expr(object);
+                self.scan_expr(index);
+            }
+            ThirExprKind::ArrayLiteral(elements) => {
+                for e in elements {
+                    self.scan_expr(e);
+                }
+            }
+            ThirExprKind::MapLiteral(entries) => {
+                for (k, v) in entries {
+                    self.scan_expr(k);
+                    self.scan_expr(v);
+                }
+            }
+            ThirExprKind::StructLiteral { fields, .. } => {
+                for (_, v) in fields {
+                    self.scan_expr(v);
+                }
+            }
+            ThirExprKind::EnumVariant { payload, .. } => {
+                for p in payload {
+                    self.scan_expr(p);
+                }
+            }
+            ThirExprKind::Tuple(elements) => {
+                for e in elements {
+                    self.scan_expr(e);
+                }
+            }
+            ThirExprKind::Spread(inner) => self.scan_expr(inner),
+            ThirExprKind::If { cond, then, else_ } => {
+                self.scan_expr(cond);
+                self.scan_expr(then);
+                if let Some(e) = else_ {
+                    self.scan_expr(e);
+                }
+            }
+            ThirExprKind::Match { expr, arms } => {
+                self.scan_expr(expr);
+                for arm in arms {
+                    if let Some(g) = &arm.guard {
+                        self.scan_expr(g);
+                    }
+                    self.scan_expr(&arm.body);
+                }
+            }
+            ThirExprKind::Block(stmts, tail) => {
+                for s in stmts {
+                    self.scan_stmt(s);
+                }
+                if let Some(e) = tail {
+                    self.scan_expr(e);
+                }
+            }
+            ThirExprKind::Range { start, end, .. } => {
+                if let Some(s) = start {
+                    self.scan_expr(s);
+                }
+                if let Some(e) = end {
+                    self.scan_expr(e);
+                }
+            }
+            ThirExprKind::Ok(inner)
+            | ThirExprKind::Err(inner)
+            | ThirExprKind::Try(inner)
+            | ThirExprKind::Move(inner)
+            | ThirExprKind::Clone(inner)
+            | ThirExprKind::Async(inner)
+            | ThirExprKind::Await(inner)
+            | ThirExprKind::Spawn(inner) => {
+                self.scan_expr(inner);
+            }
+            ThirExprKind::Borrow { expr, .. } => self.scan_expr(expr),
+            ThirExprKind::Closure { body, .. } => self.scan_expr(body),
+            ThirExprKind::Cast { value, .. } => self.scan_expr(value),
+            ThirExprKind::UnwrapOrPanic { expr, message } => {
+                self.scan_expr(expr);
+                self.scan_expr(message);
+            }
+            ThirExprKind::ScopeBlock { stmts } => {
+                for s in stmts {
+                    self.scan_stmt(s);
+                }
+            }
+            ThirExprKind::Literal(_) => {}
+        }
+    }
+
+    /// Compute which drops to insert and where.
+    ///
+    /// Rules:
+    /// - Skip variables whose last use was a Move (ownership transferred)
+    /// - Skip Copy types (no Drop needed)
+    /// - Insert Drop after last use for non-Copy, non-moved variables
+    fn compute_drops(&self) -> Vec<(usize, String, doo_core::types::TypeId)> {
+        let mut drops = Vec::new();
+
+        for (name, ty) in &self.declaration_order {
+            if !self.needs_drop_set.contains(name) {
+                continue;
+            }
+
+            // Skip moved values — old owner doesn't drop (MMM Part IV §4)
+            if self.ownership_results.is_moved(name) {
+                continue;
+            }
+
+            if let Some(&last_idx) = self.last_use.get(name) {
+                drops.push((last_idx + 1, name.clone(), *ty));
+            }
+        }
+
+        // Sort by position (descending) for safe insertion
+        drops.sort_by(|a, b| b.0.cmp(&a.0));
+        drops
+    }
+
+    fn apply_drops(
+        &self,
+        stmts: &mut Vec<ThirStmt>,
+        drops: Vec<(usize, String, doo_core::types::TypeId)>,
+    ) {
+        for (idx, name, ty) in drops {
+            if idx <= stmts.len() {
+                let drop_stmt = ThirStmt {
+                    kind: ThirStmtKind::Drop { name, ty },
+                    span: Span::dummy(),
+                };
+                stmts.insert(idx, drop_stmt);
+            }
+        }
+    }
+
+    /// Insert drops for all remaining owned variables at scope end,
+    /// in REVERSE declaration order (MMM Part IV §3).
+    fn insert_scope_end_drops(&self, stmts: &mut Vec<ThirStmt>) {
+        let mut end_drops: Vec<(String, doo_core::types::TypeId)> = self
+            .declaration_order
+            .iter()
+            .filter(|(name, ty)| {
+                self.needs_drop_set.contains(name)
+                    && !self.ownership_results.is_moved(name)
+                    && !self.last_use.contains_key(name)
+            })
+            .map(|(n, t)| (n.clone(), *t))
+            .collect();
+
+        // Reverse declaration order: drop b, then a (MMM Part IV §3)
+        end_drops.reverse();
+
+        for (name, ty) in end_drops {
+            let drop_stmt = ThirStmt {
+                kind: ThirStmtKind::Drop { name, ty },
+                span: Span::dummy(),
+            };
+            stmts.push(drop_stmt);
+        }
+    }
+
+    /// Insert cleanup drops before Return statements in nested blocks.
+    ///
+    /// When a function has an early return inside a nested block (if/while),
+    /// all owned locals must be dropped before the return executes.
+    fn insert_early_return_drops_thir(
+        &self,
+        stmts: &mut Vec<ThirStmt>,
+        live_vars: &rustc_hash::FxHashSet<String>,
+    ) {
+        let mut i = 0;
+        while i < stmts.len() {
+            match &stmts[i].kind {
+                ThirStmtKind::Return(values) => {
+                    // Collect variable names used in the return expression
+                    let mut returned = rustc_hash::FxHashSet::default();
+                    for v in values {
+                        Self::collect_var_names_thir(v, &mut returned);
+                    }
+
+                    // Insert drops for all live variables not in the return
+                    let mut drop_count = 0;
+                    for (name, ty) in self.declaration_order.iter().rev() {
+                        if live_vars.contains(name)
+                            && !returned.contains(name)
+                            && self.needs_drop_set.contains(name)
+                            && !self.ownership_results.is_moved(name)
+                        {
+                            let drop_stmt = ThirStmt {
+                                kind: ThirStmtKind::Drop {
+                                    name: name.clone(),
+                                    ty: *ty,
+                                },
+                                span: Span::dummy(),
+                            };
+                            stmts.insert(i + drop_count, drop_stmt);
+                            drop_count += 1;
+                        }
+                    }
+                    i += drop_count + 1;
+                }
+                ThirStmtKind::While { .. } => {
+                    if let ThirStmtKind::While { body, .. } = &mut stmts[i].kind {
+                        self.insert_early_return_drops_thir(body, live_vars);
+                    }
+                    i += 1;
+                }
+                ThirStmtKind::Scope { .. } => {
+                    if let ThirStmtKind::Scope { stmts: inner } = &mut stmts[i].kind {
+                        self.insert_early_return_drops_thir(inner, live_vars);
+                    }
+                    i += 1;
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    /// Collect all variable names referenced in a THIR expression.
+    fn collect_var_names_thir(expr: &ThirExpr, names: &mut rustc_hash::FxHashSet<String>) {
+        match &expr.kind {
+            ThirExprKind::Var(name) => {
+                names.insert(name.clone());
+            }
+            ThirExprKind::Binary { lhs, rhs, .. } => {
+                Self::collect_var_names_thir(lhs, names);
+                Self::collect_var_names_thir(rhs, names);
+            }
+            ThirExprKind::Unary { expr, .. } => {
+                Self::collect_var_names_thir(expr, names);
+            }
+            ThirExprKind::Call { func, args } => {
+                Self::collect_var_names_thir(func, names);
+                for a in args {
+                    Self::collect_var_names_thir(a, names);
+                }
+            }
+            ThirExprKind::MethodCall { receiver, args, .. } => {
+                Self::collect_var_names_thir(receiver, names);
+                for a in args {
+                    Self::collect_var_names_thir(a, names);
+                }
+            }
+            ThirExprKind::FieldAccess { object, .. } => {
+                Self::collect_var_names_thir(object, names);
+            }
+            ThirExprKind::Index { object, index } => {
+                Self::collect_var_names_thir(object, names);
+                Self::collect_var_names_thir(index, names);
+            }
+            ThirExprKind::If { cond, then, else_ } => {
+                Self::collect_var_names_thir(cond, names);
+                Self::collect_var_names_thir(then, names);
+                if let Some(e) = else_ {
+                    Self::collect_var_names_thir(e, names);
+                }
+            }
+            ThirExprKind::Match { expr, arms } => {
+                Self::collect_var_names_thir(expr, names);
+                for arm in arms {
+                    if let Some(g) = &arm.guard {
+                        Self::collect_var_names_thir(g, names);
+                    }
+                    Self::collect_var_names_thir(&arm.body, names);
+                }
+            }
+            ThirExprKind::Block(stmts, tail) => {
+                for _s in stmts {
+                    // Blocks can contain Let statements that introduce new vars
+                }
+                if let Some(e) = tail {
+                    Self::collect_var_names_thir(e, names);
+                }
+            }
+            ThirExprKind::Ok(inner)
+            | ThirExprKind::Err(inner)
+            | ThirExprKind::Try(inner)
+            | ThirExprKind::Move(inner)
+            | ThirExprKind::Clone(inner)
+            | ThirExprKind::Async(inner)
+            | ThirExprKind::Await(inner)
+            | ThirExprKind::Spawn(inner)
+            | ThirExprKind::Spread(inner) => {
+                Self::collect_var_names_thir(inner, names);
+            }
+            ThirExprKind::Borrow { expr, .. } => {
+                Self::collect_var_names_thir(expr, names);
+            }
+            ThirExprKind::Cast { value, .. } => {
+                Self::collect_var_names_thir(value, names);
+            }
+            ThirExprKind::ArrayLiteral(elements) => {
+                for e in elements {
+                    Self::collect_var_names_thir(e, names);
+                }
+            }
+            ThirExprKind::StructLiteral { fields, .. } => {
+                for (_, v) in fields {
+                    Self::collect_var_names_thir(v, names);
+                }
+            }
+            ThirExprKind::Tuple(elements) => {
+                for e in elements {
+                    Self::collect_var_names_thir(e, names);
+                }
+            }
+            ThirExprKind::UnwrapOrPanic { expr, message } => {
+                Self::collect_var_names_thir(expr, names);
+                Self::collect_var_names_thir(message, names);
+            }
+            _ => {}
+        }
+    }
+
+    /// Register a type as having a custom drop() implementation.
+    ///
+    /// Custom drop is called automatically, exactly once, and cannot be
+    /// called manually (MMM Part IV §11).
+    pub fn register_custom_drop(&mut self, type_name: &str) {
+        self.custom_drop_types.insert(type_name.to_string());
+    }
+
+    /// Verify that no explicit drop calls exist in the code.
+    ///
+    /// Custom drop() is called automatically by the compiler — manual
+    /// calls are an error (MMM Part IV §11).
+    pub fn verify_no_explicit_drops(&self, stmts: &[ThirStmt]) -> Vec<String> {
+        let mut errors = Vec::new();
+        for stmt in stmts {
+            self.check_explicit_drop_stmt(stmt, &mut errors);
+        }
+        errors
+    }
+
+    fn check_explicit_drop_stmt(&self, stmt: &ThirStmt, errors: &mut Vec<String>) {
+        match &stmt.kind {
+            ThirStmtKind::Expr(expr) => {
+                self.check_explicit_drop_expr(expr, errors);
+            }
+            ThirStmtKind::While { body, .. } => {
+                for s in body {
+                    self.check_explicit_drop_stmt(s, errors);
+                }
+            }
+            ThirStmtKind::Scope { stmts } => {
+                for s in stmts {
+                    self.check_explicit_drop_stmt(s, errors);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn check_explicit_drop_expr(&self, expr: &ThirExpr, errors: &mut Vec<String>) {
+        match &expr.kind {
+            ThirExprKind::Call { func, .. } => {
+                if let ThirExprKind::Var(name) = &func.kind {
+                    if name == "drop" || name == "free" {
+                        errors.push(format!(
+                            "explicit drop call is not allowed — drop is automatic"
+                        ));
+                    }
+                }
+            }
+            ThirExprKind::MethodCall { method, .. } => {
+                if method == "drop" || method == "free" {
+                    errors.push(format!(
+                        "explicit drop call is not allowed — drop is automatic"
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Check if dropping an owner should recursively drop everything it owns.
+    ///
+    /// Heap objects: dropping owner drops everything it owns (recursive).
+    /// - struct User { name: Str } → dropping User drops name
+    /// - Collections: drop all elements
+    /// - Box: drop inner value, then free heap memory
+    pub fn needs_recursive_drop(&self, ty: doo_core::types::TypeId) -> bool {
+        if let Some(info) = self.registry.get(ty) {
+            match &info.kind {
+                TypeKind::Struct { def } => {
+                    // Struct: check if any field needs Drop
+                    def.fields
+                        .iter()
+                        .any(|f| needs_drop(f.type_id, self.registry))
+                }
+                TypeKind::Enum { def } => {
+                    // Enum: check if any variant payload needs Drop
+                    def.variants
+                        .iter()
+                        .any(|v| v.payload.map_or(false, |p| needs_drop(p, self.registry)))
+                }
+                TypeKind::Array { .. } | TypeKind::Map { .. } | TypeKind::Set { .. } => {
+                    // Collections: elements may need Drop
+                    true
+                }
+                TypeKind::Box { .. } => {
+                    // Box: inner value needs Drop, then free heap
+                    true
+                }
+                _ => false,
+            }
+        } else {
+            false
+        }
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -1005,5 +1581,56 @@ mod tests {
         assert_eq!(drops.len(), 3);
         assert!(drops[0].0 > drops[1].0);
         assert!(drops[1].0 > drops[2].0);
+    }
+}
+
+#[cfg(test)]
+mod thir_drop_tests {
+    use super::*;
+
+    #[test]
+    fn test_thir_drop_inserter_creation() {
+        let registry = TypeRegistry::new();
+        let results = ThirOwnershipResults::new();
+        let inserter = ThirDropInserter::new(&registry, &results);
+        assert!(inserter.last_use.is_empty());
+        assert!(inserter.needs_drop_set.is_empty());
+    }
+
+    #[test]
+    fn test_needs_recursive_drop_for_struct() {
+        let mut registry = TypeRegistry::new();
+        let str_id = registry.lookup("Str").unwrap();
+        let _int_id = registry.lookup("Int").unwrap();
+
+        // A struct with a Str field should need recursive drop
+        let def = doo_core::types::composite::StructDef {
+            name: doo_core::symbol::Symbol::intern("User"),
+            fields: vec![doo_core::types::composite::FieldDef {
+                name: doo_core::symbol::Symbol::intern("name"),
+                type_id: str_id,
+                is_public: true,
+                is_optional: false,
+                default_value: None,
+                decorators: vec![],
+            }],
+            is_public: true,
+            decorators: vec![],
+        };
+        let struct_id = registry.define_struct(def);
+
+        let results = ThirOwnershipResults::new();
+        let inserter = ThirDropInserter::new(&registry, &results);
+        assert!(inserter.needs_recursive_drop(struct_id));
+    }
+
+    #[test]
+    fn test_no_recursive_drop_for_primitive() {
+        let registry = TypeRegistry::new();
+        let int_id = registry.lookup("Int").unwrap();
+
+        let results = ThirOwnershipResults::new();
+        let inserter = ThirDropInserter::new(&registry, &results);
+        assert!(!inserter.needs_recursive_drop(int_id));
     }
 }

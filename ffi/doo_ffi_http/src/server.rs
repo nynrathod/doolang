@@ -276,7 +276,7 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
 
     // Start timing for metrics/logger (only if either enabled — branch-predicted fast path)
     let request_start =
-        if crate::metrics::is_metrics_enabled() || crate::middleware::is_logger_enabled() {
+        if crate::framework::metrics::is_metrics_enabled() || crate::framework::middleware::is_logger_enabled() {
             Some(Instant::now())
         } else {
             None
@@ -325,9 +325,9 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                 );
                 return Ok(build_response(200, &body));
             }
-            "/metrics" if crate::metrics::is_metrics_enabled() => {
+            "/metrics" if crate::framework::metrics::is_metrics_enabled() => {
                 // Prometheus-compatible metrics endpoint (enabled via app.metrics())
-                let body = crate::metrics::render_metrics();
+                let body = crate::framework::metrics::render_metrics();
                 let mut response = build_response(200, &body);
                 // Set Content-Type to text/plain for Prometheus scraper
                 *response.headers_mut() = {
@@ -340,6 +340,39 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                 };
                 return Ok(response);
             }
+            "/webhooks/recent" => {
+                // Built-in webhook audit log endpoint — always available.
+                // Returns JSON array of recent webhook dispatch records.
+                // Query: ?limit=N (default 50, 0 = all)
+                let limit: usize = query_owned
+                    .as_deref()
+                    .and_then(|q| {
+                        crate::helpers::parse_query(q)
+                            .get("limit")
+                            .and_then(|v| v.parse().ok())
+                    })
+                    .unwrap_or(50);
+                let body = crate::framework::webhook_log::get_recent_records(limit);
+                return Ok(build_response(200, &body));
+            }
+            "/webhooks/deliveries" => {
+                // Persistent, filterable webhook delivery log (DB-backed).
+                // Query params: resource, event, webhook_id, status, limit, offset
+                let q = query_owned
+                    .as_deref()
+                    .map(|s| crate::helpers::parse_query(s))
+                    .unwrap_or_default();
+                let resource = q.get("resource").map(|s| s.as_str()).unwrap_or("");
+                let event = q.get("event").map(|s| s.as_str()).unwrap_or("");
+                let webhook_id = q.get("webhook_id").map(|s| s.as_str()).unwrap_or("");
+                let status = q.get("status").map(|s| s.as_str()).unwrap_or("");
+                let limit: usize = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(0);
+                let offset: usize = q.get("offset").and_then(|v| v.parse().ok()).unwrap_or(0);
+                let body = crate::framework::webhook_log::query_deliveries(
+                    resource, event, webhook_id, status, limit, offset,
+                );
+                return Ok(build_response(200, &body));
+            }
             _ => {}
         }
     }
@@ -347,7 +380,7 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     // Handle CORS preflight (OPTIONS) requests before route matching
     // Uses frozen CORS — zero lock contention
     if method == "OPTIONS" {
-        if crate::middleware::has_frozen_cors() {
+        if crate::framework::middleware::has_frozen_cors() {
             let mut response = build_response(204, "");
             apply_cors_headers(&mut response, &request_origin);
             return Ok(response);
@@ -734,6 +767,25 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
             }
         };
 
+        // ========================================================================
+        // WEBHOOK FIRING — generic route webhooks for custom handlers.
+        // Fires "on_success" for 2xx, "on_error" for 4xx/5xx.
+        // Zero-cost when no webhooks are registered (fast-path check first).
+        // ========================================================================
+        let route_webhook_key = format!("route:{}:{}", method, path);
+        if crate::framework::webhook_engine::has_webhooks(&route_webhook_key) {
+            let status = handler_response.status().as_u16();
+            let event = if status < 400 { "on_success" } else { "on_error" };
+
+            // Build a lightweight payload with request + response info
+            let payload = serde_json::json!({
+                "method": &*method,
+                "path": &path,
+                "status": status,
+            });
+            crate::framework::webhook_engine::fire(&route_webhook_key, event, &payload);
+        }
+
         // Cleanup DooRequest FIELDS — the struct itself is stack-allocated.
         // At high RPS, leaked field memory causes OOM within minutes.
         unsafe {
@@ -788,11 +840,11 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
     if let Some(start) = request_start {
         let duration_us = start.elapsed().as_micros() as u64;
         let status = response.status().as_u16();
-        if crate::metrics::is_metrics_enabled() {
-            crate::metrics::record_request(&method, &path, status, duration_us);
+        if crate::framework::metrics::is_metrics_enabled() {
+            crate::framework::metrics::record_request(&method, &path, status, duration_us);
         }
-        if crate::middleware::is_logger_enabled() {
-            crate::middleware::log_request(&method, &path, status, duration_us);
+        if crate::framework::middleware::is_logger_enabled() {
+            crate::framework::middleware::log_request(&method, &path, status, duration_us);
         }
     }
 
@@ -853,7 +905,7 @@ unsafe fn free_doo_request_fields(req: *mut DooRequest) {
 /// Takes the request's Origin header as a borrowed &str (proper ownership, no RefCell).
 /// Called at a single post-processing point in handle_request().
 fn apply_cors_headers(response: &mut Response<Full<Bytes>>, request_origin: &str) {
-    if let Some(cors) = crate::middleware::get_frozen_cors() {
+    if let Some(cors) = crate::framework::middleware::get_frozen_cors() {
         if let Some(origin_val) = cors.get_origin_for_request(request_origin) {
             let headers = response.headers_mut();
             headers.insert("Access-Control-Allow-Origin", origin_val);
@@ -963,8 +1015,11 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
     // After this point, all request-time access is zero-cost (no locks).
     // ========================================================================
     freeze_routes();
-    crate::middleware::freeze_cors();
-    crate::middleware::freeze_logger();
+    crate::framework::middleware::freeze_cors();
+    crate::framework::middleware::freeze_logger();
+
+    // Ensure webhook delivery persistence table exists (idempotent, DB-backed)
+    crate::framework::webhook_log::ensure_deliveries_table();
 
     // Use the global Tokio runtime from doo_ffi_runtime (single source of truth).
     let local_runtime;
@@ -1049,8 +1104,8 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
             if ws_routes > 0 {
                 println!("  WebSocket Routes:     {}", ws_routes);
             }
-            if crate::middleware::is_logger_enabled() {
-                if let Some(cfg) = crate::middleware::get_frozen_logger() {
+            if crate::framework::middleware::is_logger_enabled() {
+                if let Some(cfg) = crate::framework::middleware::get_frozen_logger() {
                     let mut levels = Vec::new();
                     if cfg.info { levels.push("Info"); }
                     if cfg.warn { levels.push("Warn"); }

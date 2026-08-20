@@ -9,16 +9,13 @@ members = [
 	"crates/doo_codegen",
 	"crates/doo_driver",
 	"crates/doo_diagnostics",
-	"crates/doo_lsp",
-	"ffi/doo_ffi_core",
-	"ffi/doo_ffi_json",
-	"ffi/doo_ffi_http",
-	"ffi/doo_ffi_db",
-	"ffi/doo_ffi_auth",
-	"ffi/doo_ffi_file",
-	"ffi/doo_ffi_runtime",
-	"ffi/doo_ffi_process",
-	"ffi/doo_ffi_git",
+	"crates/doo_session",
+	"crates/doo_thir",
+	"crates/doo_macro",
+
+	"library/ffi/doo_ffi_core",
+	"library/ffi/doo_ffi_runtime",
+	"library/ffi/doo_ffi_json",
 ]
 resolver = "2"
 
@@ -33,7 +30,7 @@ strip = true      # Strip symbols
 panic = "abort"   # Smaller panic handler
 
 [workspace.package]
-version = "0.4.2"
+version = "0.5.0"
 edition = "2021"
 authors = ["Nayan Rathod "]
 repository = "https://github.com/nynrathod/doolang"
@@ -48,13 +45,14 @@ default-run = "doo"
 [dependencies]
 # New compiler driver (Phase 10)
 doo_driver = { path = "crates/doo_driver" }
+# doo_migrate = { path = "tools/doo-migrate" }
 
 # Core types and debug infrastructure
 doo_core = { path = "crates/doo_core" }
 
 # Legacy dependencies (will be phased out)
-inkwell = { version = "0.8.0", features = ["llvm18-1"] }
-llvm-sys = "=181.2.0"
+inkwell = { version = "0.9.0", features = ["llvm22-1"] }
+llvm-sys = "221"
 clap = { version = "4.5.53", features = ["derive"] }
 regex = "1"
 bumpalo = "3.19.1"

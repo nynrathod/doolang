@@ -145,9 +145,9 @@ start_server() {
     # Start server in background AND LOG TO server.log
     # Use stdbuf -oL for line-buffered output so log is readable immediately
     if command -v stdbuf >/dev/null 2>&1; then
-        stdbuf -oL "$BIN" run "$doo_file" --debug>server.log 2>&1 &
+        stdbuf -oL "$BIN" run --migrate "$doo_file" --debug>server.log 2>&1 &
     else
-        "$BIN" run "$doo_file" >server.log 2>&1 &
+        "$BIN" run --migrate "$doo_file" >server.log 2>&1 &
     fi
     export SERVER_PID=$!
 

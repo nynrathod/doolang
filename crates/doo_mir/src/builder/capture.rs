@@ -165,11 +165,6 @@ fn walk_expr(expr: &HirExpr, referenced: &mut HashSet<String>, defined: &mut Has
             walk_expr(expr, referenced, defined);
             walk_expr(message, referenced, defined);
         }
-        HirExprKind::RouteBlock { routes } => {
-            for r in routes {
-                walk_expr(r, referenced, defined);
-            }
-        }
         HirExprKind::Move(inner) | HirExprKind::Clone(inner) => {
             walk_expr(inner, referenced, defined);
         }

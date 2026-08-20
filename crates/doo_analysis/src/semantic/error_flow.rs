@@ -1,31 +1,30 @@
 //! Error Flow Analysis
 //!
-//! Tracks Result type flows through expressions and ensures all errors are handled.
-//!
-//! ## Responsibilities
-//!
-//! - Track Result-returning function calls
-//! - Verify that Result values are properly handled:
-//!   - Auto-propagation with `?` operator
-//!   - Manual extraction with `let result, err = ...`
-//! - Report unhandled Result errors
-//!
-//! ## Rules
-//!
-//! 1. A function call returning `T ! E` (Result type) must be handled:
-//!    - Using `?` operator for auto-propagation
-//!    - Using `let ok, err = call()` for manual extraction
-//! 2. Unhandled Result values generate `UnhandledResult` errors
-
-use doo_core::{
-    types::{TypeId, TypeKind, TypeRegistry},
-    Span,
-};
+/// Validates that `Result` values are properly handled and that the `?`
+/// operator is used only in functions that return `Result`.
+///
+/// ## Desugaring
+///
+/// The `?` operator desugars to:
+/// ```text
+/// match expr {
+///     Ok(v) => v,
+///     Err(e) => return Err(e)
+/// }
+/// ```
+///
+/// ## Checks
+///
+/// - `?` used in a function that doesn't return `Result` → error
+/// - `Ok(v)` or `Err(e)` used in a non-Result function → error
+/// - `Result` value used as a statement without `?` or handling → warning
+/// - Error type mismatch: `E` must match the function's error return type
+use doo_core::types::{builtin, TypeId, TypeKind, TypeRegistry};
+use doo_core::Span;
 use doo_hir::{HirExpr, HirExprKind, HirFunction, HirItem, HirProgram, HirStmt, HirStmtKind};
-
-// ============================================================================
-// Error Types
-// ============================================================================
+use doo_thir::{
+    ThirExpr, ThirExprKind, ThirFunction, ThirItem, ThirProgram, ThirStmt, ThirStmtKind,
+};
 
 /// Error flow analysis error.
 #[derive(Debug, Clone)]
@@ -38,74 +37,87 @@ impl ErrorFlowError {
     pub fn new(kind: ErrorFlowErrorKind, span: Span) -> Self {
         Self { kind, span }
     }
+
+    pub fn message(&self) -> String {
+        self.kind.message()
+    }
 }
 
-/// Kinds of error flow errors.
+/// Categories of error flow errors.
 #[derive(Debug, Clone)]
 pub enum ErrorFlowErrorKind {
-    /// Result type not handled (no `?` or manual extraction).
-    UnhandledResult {
-        /// The Ok type of the Result.
-        ok_type: TypeId,
-        /// The Error type of the Result.
-        err_type: TypeId,
-    },
-    /// Using `?` in a function that doesn't return a Result.
-    TryInNonResultFunction {
-        /// Name of the function.
-        func_name: String,
-    },
-    /// Using `Err` in a function that doesn't have an error type.
-    ErrInNonResultFunction {
-        /// Name of the function.
-        func_name: String,
-    },
-    /// Using `Ok` in a function that doesn't have an error type.
-    OkInNonResultFunction {
-        /// Name of the function.
-        func_name: String,
-    },
-    /// Missing Ok on some paths when function returns Result.
-    MissingOkPath {
-        /// Name of the function.
-        func_name: String,
-    },
-    /// Using `??` (panic) without a message.
+    /// A `Result` value was produced but never handled.
+    UnhandledResult { ok_type: TypeId, err_type: TypeId },
+    /// `?` operator used in a function that doesn't return `Result`.
+    TryInNonResultFunction { func_name: String },
+    /// `Err(e)` used in a function without an error type.
+    ErrInNonResultFunction { func_name: String },
+    /// `Ok(v)` used in a function without an error type.
+    OkInNonResultFunction { func_name: String },
+    /// Function returning `Result` is missing an `Ok` return on some path.
+    MissingOkPath { func_name: String },
+    /// `??` (panic) used without a message.
     PanicWithoutMessage,
 }
 
-// ============================================================================
-// Error Flow Checker
-// ============================================================================
+impl ErrorFlowErrorKind {
+    pub fn message(&self) -> String {
+        match self {
+            Self::UnhandledResult { .. } => {
+                "Result value not handled — use `?` to propagate or `let val ?? err = ...` to handle".to_string()
+            }
+            Self::TryInNonResultFunction { func_name } => {
+                format!("`?` used in '{}' which doesn't return Result", func_name)
+            }
+            Self::ErrInNonResultFunction { func_name } => {
+                format!("`Err` used in '{}' without error type", func_name)
+            }
+            Self::OkInNonResultFunction { func_name } => {
+                format!("`Ok` used in '{}' without error type", func_name)
+            }
+            Self::MissingOkPath { func_name } => {
+                format!("'{}' missing Ok return on some paths", func_name)
+            }
+            Self::PanicWithoutMessage => {
+                "`??` (panic) used without message".to_string()
+            }
+        }
+    }
+}
 
-/// Checks that Result types are properly handled throughout the program.
+/// Error flow checker.
+///
+/// Walks both HIR and THIR to validate error handling consistency.
+/// THIR checking is preferred since types are fully resolved there.
 pub struct ErrorFlowChecker<'a> {
-    /// Type registry for looking up types.
     registry: &'a TypeRegistry,
     /// Collected errors.
     errors: Vec<ErrorFlowError>,
-    /// Current function's error type (if any).
-    current_func_error_type: Option<TypeId>,
-    /// Current function name (for error messages).
+    /// Current function name being analyzed.
     current_func_name: String,
+    /// Current function's error type (None if function doesn't return Result).
+    current_func_error_type: Option<TypeId>,
 }
 
 impl<'a> ErrorFlowChecker<'a> {
-    /// Create a new error flow checker.
     pub fn new(registry: &'a TypeRegistry) -> Self {
         Self {
             registry,
             errors: Vec::new(),
-            current_func_error_type: None,
             current_func_name: String::new(),
+            current_func_error_type: None,
         }
     }
 
-    /// Check an entire program for error flow issues.
-    pub fn check(&mut self, program: &HirProgram) -> Result<(), Vec<ErrorFlowError>> {
+    // ========================================================================
+    // THIR-based checking (preferred — types are fully resolved)
+    // ========================================================================
+
+    /// Check a THIR program for error flow issues.
+    pub fn check_thir(&mut self, program: &ThirProgram) -> Result<(), Vec<ErrorFlowError>> {
         for item in &program.items {
-            if let HirItem::Function(func) = item {
-                self.check_function(func);
+            if let ThirItem::Function(func) = item {
+                self.check_thir_function(func);
             }
         }
 
@@ -116,76 +128,332 @@ impl<'a> ErrorFlowChecker<'a> {
         }
     }
 
-    /// Check a single function for error flow issues.
-    pub fn check_function(&mut self, func: &HirFunction) {
-        // Store current function context
+    fn check_thir_function(&mut self, func: &ThirFunction) {
         self.current_func_name = func.name.clone();
         self.current_func_error_type = func.error_type;
 
-        // Check body statements
         for stmt in &func.body {
-            self.check_stmt(stmt);
+            self.check_thir_stmt(stmt);
         }
 
-        // Clear context
         self.current_func_error_type = None;
         self.current_func_name.clear();
     }
 
-    /// Check a statement for error flow issues.
-    fn check_stmt(&mut self, stmt: &HirStmt) {
+    fn check_thir_stmt(&mut self, stmt: &ThirStmt) {
         match &stmt.kind {
-            HirStmtKind::Let { value, .. } => {
-                // Check the value expression - Result handling is done at expression level
-                // The Let statement itself handles binding, not Result extraction
-                // ManualErrorExtract is used for `let ok, err = expr`
-                self.check_expr(value);
+            ThirStmtKind::Let { value, .. } | ThirStmtKind::Const { value, .. } => {
+                self.check_thir_expr(value);
             }
-            HirStmtKind::TupleLet { value, .. } => {
-                // Check the value expression for tuple unpacking
-                self.check_expr(value);
+            ThirStmtKind::Assign { value, .. } => {
+                self.check_thir_expr(value);
             }
-            HirStmtKind::ManualErrorExtract { expr, .. } => {
-                // This is valid manual error extraction - just check the inner expression
-                self.check_expr(expr);
+            ThirStmtKind::Expr(expr) => {
+                // Check if this is an unhandled Result expression
+                if let Some(type_info) = self.registry.get(expr.ty) {
+                    if let TypeKind::Result { ok, err } = &type_info.kind {
+                        if !self.is_thir_try_expr(expr) {
+                            self.errors.push(ErrorFlowError::new(
+                                ErrorFlowErrorKind::UnhandledResult {
+                                    ok_type: *ok,
+                                    err_type: *err,
+                                },
+                                stmt.span,
+                            ));
+                        }
+                    }
+                }
+                self.check_thir_expr(expr);
             }
-            HirStmtKind::Expr(expr) => {
-                // Check if this is an unhandled Result type
-                if let Some(type_id) = expr.type_id {
-                    if let Some(type_info) = self.registry.get(type_id) {
-                        if let TypeKind::Result { ok, err } = &type_info.kind {
-                            // Result used as expression statement without handling
-                            // Unless it's a Try expression (handled by ?)
-                            if !self.is_try_expr(expr) {
+            ThirStmtKind::Return(val) => {
+                if let Some(e) = val {
+                    self.check_thir_expr(e);
+                }
+            }
+            ThirStmtKind::While {
+                cond,
+                body,
+                increment,
+            } => {
+                self.check_thir_expr(cond);
+                for s in body {
+                    self.check_thir_stmt(s);
+                }
+                for s in increment {
+                    self.check_thir_stmt(s);
+                }
+            }
+            ThirStmtKind::Loop { body } => {
+                for s in body {
+                    self.check_thir_stmt(s);
+                }
+            }
+            ThirStmtKind::Go { expr } => {
+                self.check_thir_expr(expr);
+            }
+            ThirStmtKind::Scope { stmts } => {
+                for s in stmts {
+                    self.check_thir_stmt(s);
+                }
+            }
+            ThirStmtKind::TupleLet { value, .. } => {
+                self.check_thir_expr(value);
+            }
+            ThirStmtKind::ManualErrorExtract { expr, .. } => {
+                self.check_thir_expr(expr);
+            }
+            ThirStmtKind::Drop { .. } | ThirStmtKind::Break(_) | ThirStmtKind::Continue => {}
+        }
+    }
+
+    fn check_thir_expr(&mut self, expr: &ThirExpr) {
+        match &expr.kind {
+            ThirExprKind::Try(inner) => {
+                // ? operator must be in a function returning Result
+                if self.current_func_error_type.is_none() && self.current_func_name != "main" {
+                    self.errors.push(ErrorFlowError::new(
+                        ErrorFlowErrorKind::TryInNonResultFunction {
+                            func_name: self.current_func_name.clone(),
+                        },
+                        expr.span,
+                    ));
+                }
+
+                // Verify error type propagation — E must match function's error type
+                if let Some(func_err) = self.current_func_error_type {
+                    if let Some(inner_info) = self.registry.get(inner.ty) {
+                        if let TypeKind::Result { err: inner_err, .. } = &inner_info.kind {
+                            if *inner_err != func_err {
                                 self.errors.push(ErrorFlowError::new(
                                     ErrorFlowErrorKind::UnhandledResult {
-                                        ok_type: *ok,
-                                        err_type: *err,
+                                        ok_type: inner.ty,
+                                        err_type: *inner_err,
                                     },
-                                    stmt.span,
+                                    expr.span,
                                 ));
                             }
                         }
                     }
                 }
-                self.check_expr(expr);
+
+                self.check_thir_expr(inner);
             }
-            HirStmtKind::Return(exprs) => {
-                for expr in exprs {
-                    self.check_expr(expr);
+
+            ThirExprKind::Ok(inner) => {
+                if self.current_func_error_type.is_none() {
+                    self.errors.push(ErrorFlowError::new(
+                        ErrorFlowErrorKind::OkInNonResultFunction {
+                            func_name: self.current_func_name.clone(),
+                        },
+                        expr.span,
+                    ));
                 }
+                self.check_thir_expr(inner);
             }
-            HirStmtKind::While {
-                condition,
-                body,
-                increment,
+
+            ThirExprKind::Err(inner) => {
+                if self.current_func_error_type.is_none() {
+                    self.errors.push(ErrorFlowError::new(
+                        ErrorFlowErrorKind::ErrInNonResultFunction {
+                            func_name: self.current_func_name.clone(),
+                        },
+                        expr.span,
+                    ));
+                }
+                self.check_thir_expr(inner);
+            }
+
+            ThirExprKind::UnwrapOrPanic {
+                expr: inner,
+                message,
             } => {
-                self.check_expr(condition);
-                for stmt in body {
-                    self.check_stmt(stmt);
+                // Check for panic without meaningful message
+                if let ThirExprKind::Literal(doo_thir::ThirLiteral::String(s)) = &message.kind {
+                    if s.is_empty() {
+                        self.errors.push(ErrorFlowError::new(
+                            ErrorFlowErrorKind::PanicWithoutMessage,
+                            expr.span,
+                        ));
+                    }
                 }
-                for stmt in increment {
-                    self.check_stmt(stmt);
+                self.check_thir_expr(inner);
+                self.check_thir_expr(message);
+            }
+
+            ThirExprKind::Binary { lhs, rhs, .. } => {
+                self.check_thir_expr(lhs);
+                self.check_thir_expr(rhs);
+            }
+            ThirExprKind::Unary { expr: inner, .. } => {
+                self.check_thir_expr(inner);
+            }
+            ThirExprKind::Call { func, args } => {
+                self.check_thir_expr(func);
+                for a in args {
+                    self.check_thir_expr(a);
+                }
+            }
+            ThirExprKind::MethodCall { receiver, args, .. } => {
+                self.check_thir_expr(receiver);
+                for a in args {
+                    self.check_thir_expr(a);
+                }
+            }
+            ThirExprKind::FieldAccess { object, .. } => {
+                self.check_thir_expr(object);
+            }
+            ThirExprKind::Index { object, index } => {
+                self.check_thir_expr(object);
+                self.check_thir_expr(index);
+            }
+            ThirExprKind::If { cond, then, else_ } => {
+                self.check_thir_expr(cond);
+                self.check_thir_expr(then);
+                if let Some(e) = else_ {
+                    self.check_thir_expr(e);
+                }
+            }
+            ThirExprKind::Match {
+                expr: scrutinee,
+                arms,
+            } => {
+                self.check_thir_expr(scrutinee);
+                for arm in arms {
+                    if let Some(g) = &arm.guard {
+                        self.check_thir_expr(g);
+                    }
+                    self.check_thir_expr(&arm.body);
+                }
+            }
+            ThirExprKind::Block(stmts, tail) => {
+                for s in stmts {
+                    self.check_thir_stmt(s);
+                }
+                if let Some(e) = tail {
+                    self.check_thir_expr(e);
+                }
+            }
+            ThirExprKind::ArrayLiteral(elements) => {
+                for e in elements {
+                    self.check_thir_expr(e);
+                }
+            }
+            ThirExprKind::MapLiteral(entries) => {
+                for (k, v) in entries {
+                    self.check_thir_expr(k);
+                    self.check_thir_expr(v);
+                }
+            }
+            ThirExprKind::StructLiteral { fields, .. } => {
+                for (_, v) in fields {
+                    self.check_thir_expr(v);
+                }
+            }
+            ThirExprKind::EnumVariant { payload, .. } => {
+                for p in payload {
+                    self.check_thir_expr(p);
+                }
+            }
+            ThirExprKind::Tuple(elements) => {
+                for e in elements {
+                    self.check_thir_expr(e);
+                }
+            }
+            ThirExprKind::Spread(inner) => {
+                self.check_thir_expr(inner);
+            }
+            ThirExprKind::Range { start, end, .. } => {
+                if let Some(s) = start {
+                    self.check_thir_expr(s);
+                }
+                if let Some(e) = end {
+                    self.check_thir_expr(e);
+                }
+            }
+            ThirExprKind::Move(inner)
+            | ThirExprKind::Clone(inner)
+            | ThirExprKind::Async(inner)
+            | ThirExprKind::Await(inner)
+            | ThirExprKind::Spawn(inner) => {
+                self.check_thir_expr(inner);
+            }
+            ThirExprKind::Borrow { expr: inner, .. } => {
+                self.check_thir_expr(inner);
+            }
+            ThirExprKind::Closure { body, .. } => {
+                self.check_thir_expr(body);
+            }
+            ThirExprKind::Cast { value, .. } => {
+                self.check_thir_expr(value);
+            }
+            ThirExprKind::ScopeBlock { stmts } => {
+                for s in stmts {
+                    self.check_thir_stmt(s);
+                }
+            }
+            ThirExprKind::Literal(_) | ThirExprKind::Var(_) => {}
+        }
+    }
+
+    /// Check if an expression is a `?` (Try) operation.
+    fn is_thir_try_expr(&self, expr: &ThirExpr) -> bool {
+        matches!(expr.kind, ThirExprKind::Try(_))
+    }
+
+    // ========================================================================
+    // HIR-based checking (fallback — used when THIR is not yet built)
+    // ========================================================================
+
+    /// Check an HIR program for error flow issues.
+    pub fn check_hir(&mut self, program: &HirProgram) -> Result<(), Vec<ErrorFlowError>> {
+        for item in &program.items {
+            if let HirItem::Function(func) = item {
+                self.check_hir_function(func);
+            }
+        }
+
+        if self.errors.is_empty() {
+            Ok(())
+        } else {
+            Err(self.errors.clone())
+        }
+    }
+
+    fn check_hir_function(&mut self, func: &HirFunction) {
+        self.current_func_name = func.name.clone();
+        // Determine error type from return type
+        self.current_func_error_type = func.return_type.and_then(|ret_ty| {
+            self.registry.get(ret_ty).and_then(|info| {
+                if let TypeKind::Result { err, .. } = &info.kind {
+                    Some(*err)
+                } else {
+                    None
+                }
+            })
+        });
+
+        for stmt in &func.body {
+            self.check_hir_stmt(stmt);
+        }
+
+        self.current_func_error_type = None;
+        self.current_func_name.clear();
+    }
+
+    fn check_hir_stmt(&mut self, stmt: &HirStmt) {
+        match &stmt.kind {
+            HirStmtKind::Let { value, .. } => {
+                self.check_hir_expr(value);
+            }
+            HirStmtKind::Assign { value, .. } => {
+                self.check_hir_expr(value);
+            }
+            HirStmtKind::Expr(expr) => {
+                self.check_hir_expr(expr);
+            }
+            HirStmtKind::Return(values) => {
+                for v in values {
+                    self.check_hir_expr(v);
                 }
             }
             HirStmtKind::If {
@@ -193,28 +461,35 @@ impl<'a> ErrorFlowChecker<'a> {
                 then_block,
                 else_block,
             } => {
-                self.check_expr(condition);
-                for stmt in then_block {
-                    self.check_stmt(stmt);
+                self.check_hir_expr(condition);
+                for s in then_block {
+                    self.check_hir_stmt(s);
                 }
                 if let Some(else_stmts) = else_block {
-                    for stmt in else_stmts {
-                        self.check_stmt(stmt);
+                    for s in else_stmts {
+                        self.check_hir_stmt(s);
                     }
                 }
             }
-            HirStmtKind::Assign { value, .. } => {
-                self.check_expr(value);
+            HirStmtKind::While {
+                condition,
+                body,
+                increment,
+            } => {
+                self.check_hir_expr(condition);
+                for s in body {
+                    self.check_hir_stmt(s);
+                }
+                for s in increment {
+                    self.check_hir_stmt(s);
+                }
             }
-            HirStmtKind::Break | HirStmtKind::Continue | HirStmtKind::Drop { .. } => {}
+            _ => {}
         }
     }
 
-    /// Check an expression for error flow issues.
-    fn check_expr(&mut self, expr: &HirExpr) {
+    fn check_hir_expr(&mut self, expr: &HirExpr) {
         match &expr.kind {
-            // Try operator (`?`) - check that we're in a function that returns Result
-            // Special case: `main()` is allowed to use `?` — MIR generates Panic on error
             HirExprKind::Try(inner) => {
                 if self.current_func_error_type.is_none() && self.current_func_name != "main" {
                     self.errors.push(ErrorFlowError::new(
@@ -224,32 +499,8 @@ impl<'a> ErrorFlowChecker<'a> {
                         expr.span,
                     ));
                 }
-                self.check_expr(inner);
+                self.check_hir_expr(inner);
             }
-
-            // Err expression - check that we're in a function with error type
-            HirExprKind::Err(inner) => {
-                if self.current_func_error_type.is_none() {
-                    self.errors.push(ErrorFlowError::new(
-                        ErrorFlowErrorKind::ErrInNonResultFunction {
-                            func_name: self.current_func_name.clone(),
-                        },
-                        expr.span,
-                    ));
-                }
-                self.check_expr(inner);
-            }
-
-            // UnwrapOrPanic (`??`) - just recurse, but could check for message
-            HirExprKind::UnwrapOrPanic {
-                expr: inner,
-                message,
-            } => {
-                self.check_expr(inner);
-                self.check_expr(message);
-            }
-
-            // Ok expression - check that we're in a function with error type
             HirExprKind::Ok(inner) => {
                 if self.current_func_error_type.is_none() {
                     self.errors.push(ErrorFlowError::new(
@@ -259,192 +510,90 @@ impl<'a> ErrorFlowChecker<'a> {
                         expr.span,
                     ));
                 }
-                self.check_expr(inner);
+                self.check_hir_expr(inner);
             }
-
-            // Call - check if result is being ignored
-            HirExprKind::Call { args, .. } => {
-                // Check if this call returns a Result and it's being used
-                // as an expression statement (result ignored)
-                if let Some(type_id) = expr.type_id {
-                    if let Some(type_info) = self.registry.get(type_id) {
-                        if let TypeKind::Result { ok, err } = &type_info.kind {
-                            // Result type - this will be caught at Let statement level
-                            // or if used as standalone expression
-                            // For now, just note that call returns Result
-                            let _ = (*ok, *err);
-                        }
-                    }
+            HirExprKind::Err(inner) => {
+                if self.current_func_error_type.is_none() {
+                    self.errors.push(ErrorFlowError::new(
+                        ErrorFlowErrorKind::ErrInNonResultFunction {
+                            func_name: self.current_func_name.clone(),
+                        },
+                        expr.span,
+                    ));
                 }
-
-                // Recurse into arguments
-                for arg in args {
-                    self.check_expr(arg);
-                }
+                self.check_hir_expr(inner);
             }
-
-            // Method call - same as regular call
-            HirExprKind::MethodCall { receiver, args, .. } => {
-                self.check_expr(receiver);
-                for arg in args {
-                    self.check_expr(arg);
-                }
+            HirExprKind::UnwrapOrPanic {
+                expr: inner,
+                message,
+            } => {
+                self.check_hir_expr(inner);
+                self.check_hir_expr(message);
             }
-
-            // Binary/Unary ops
             HirExprKind::BinOp { lhs, rhs, .. } => {
-                self.check_expr(lhs);
-                self.check_expr(rhs);
+                self.check_hir_expr(lhs);
+                self.check_hir_expr(rhs);
             }
             HirExprKind::UnaryOp { operand, .. } => {
-                self.check_expr(operand);
+                self.check_hir_expr(operand);
             }
-
-            // Control flow
+            HirExprKind::Call { func, args } => {
+                self.check_hir_expr(func);
+                for a in args {
+                    self.check_hir_expr(a);
+                }
+            }
+            HirExprKind::MethodCall { receiver, args, .. } => {
+                self.check_hir_expr(receiver);
+                for a in args {
+                    self.check_hir_expr(a);
+                }
+            }
+            HirExprKind::Field { object, .. } => {
+                self.check_hir_expr(object);
+            }
+            HirExprKind::Index { object, index } => {
+                self.check_hir_expr(object);
+                self.check_hir_expr(index);
+            }
             HirExprKind::If {
                 condition,
                 then_expr,
                 else_expr,
             } => {
-                self.check_expr(condition);
-                self.check_expr(then_expr);
-                if let Some(else_e) = else_expr {
-                    self.check_expr(else_e);
+                self.check_hir_expr(condition);
+                self.check_hir_expr(then_expr);
+                if let Some(e) = else_expr {
+                    self.check_hir_expr(e);
                 }
             }
-
             HirExprKind::Match { values, arms } => {
-                for value in values {
-                    self.check_expr(value);
+                for v in values {
+                    self.check_hir_expr(v);
                 }
                 for arm in arms {
-                    self.check_expr(&arm.body);
+                    if let Some(g) = &arm.guard {
+                        self.check_hir_expr(g);
+                    }
+                    self.check_hir_expr(&arm.body);
                 }
             }
-
-            HirExprKind::Block {
-                stmts,
-                expr: tail_expr,
-            } => {
-                for stmt in stmts {
-                    self.check_stmt(stmt);
-                }
-                if let Some(tail) = tail_expr {
-                    self.check_expr(tail);
-                }
-            }
-
-            // Compound expressions
-            HirExprKind::Array(elements) => {
-                for elem in elements {
-                    self.check_expr(elem);
-                }
-            }
-            HirExprKind::Tuple(elements) => {
-                for elem in elements {
-                    self.check_expr(elem);
-                }
-            }
-            HirExprKind::Map(entries) => {
-                for (key, value) in entries {
-                    self.check_expr(key);
-                    self.check_expr(value);
-                }
-            }
-            HirExprKind::Struct { fields, .. } => {
-                for (_, value) in fields {
-                    self.check_expr(value);
-                }
-            }
-            HirExprKind::Index { object, index } => {
-                self.check_expr(object);
-                self.check_expr(index);
-            }
-            HirExprKind::Field { object, .. } => {
-                self.check_expr(object);
-            }
-            HirExprKind::Range { start, end, .. } => {
-                self.check_expr(start);
-                self.check_expr(end);
-            }
-            HirExprKind::Closure { body, .. } => {
-                self.check_expr(body);
-            }
-            HirExprKind::Cast { value, .. } => {
-                self.check_expr(value);
-            }
-            HirExprKind::Move(inner) | HirExprKind::Clone(inner) | HirExprKind::Spread(inner) => {
-                self.check_expr(inner);
-            }
-            HirExprKind::RouteBlock { routes } => {
-                for route in routes {
-                    self.check_expr(route);
-                }
-            }
-            HirExprKind::Borrow { expr: inner, .. } => {
-                self.check_expr(inner);
-            }
-            HirExprKind::EnumVariant { payload, .. } => {
-                for p in payload {
-                    self.check_expr(p);
-                }
-            }
-
-            // Async & concurrency
-            HirExprKind::Await(inner) | HirExprKind::Spawn { body: inner } => {
-                self.check_expr(inner);
-            }
-            HirExprKind::ScopeBlock { stmts } => {
+            HirExprKind::Block { stmts, expr } => {
                 for s in stmts {
-                    self.check_stmt(s);
+                    self.check_hir_stmt(s);
+                }
+                if let Some(e) = expr {
+                    self.check_hir_expr(e);
                 }
             }
-
-            // Terminal expressions - no recursion needed
-            HirExprKind::Const(_) | HirExprKind::Local { .. } | HirExprKind::Global { .. } => {}
+            _ => {}
         }
     }
 
-    /// Count the number of ok values in a type (handles tuples).
-    fn count_ok_values(&self, type_id: TypeId) -> usize {
-        if let Some(type_info) = self.registry.get(type_id) {
-            match &type_info.kind {
-                TypeKind::Tuple { elements } => elements.len(),
-                TypeKind::Void => 0,
-                _ => 1,
-            }
-        } else {
-            1 // Default to 1 if type not found
-        }
+    /// Get collected errors.
+    pub fn errors(&self) -> &[ErrorFlowError] {
+        &self.errors
     }
-
-    /// Check if an expression is a Try expression (using `?`).
-    fn is_try_expr(&self, expr: &HirExpr) -> bool {
-        matches!(&expr.kind, HirExprKind::Try(_))
-    }
-}
-
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
-/// Check if a type is a Result type.
-pub fn is_result_type(registry: &TypeRegistry, type_id: TypeId) -> bool {
-    if let Some(type_info) = registry.get(type_id) {
-        matches!(type_info.kind, TypeKind::Result { .. })
-    } else {
-        false
-    }
-}
-
-/// Extract the ok and error types from a Result type.
-pub fn extract_result_types(registry: &TypeRegistry, type_id: TypeId) -> Option<(TypeId, TypeId)> {
-    if let Some(type_info) = registry.get(type_id) {
-        if let TypeKind::Result { ok, err } = type_info.kind {
-            return Some((ok, err));
-        }
-    }
-    None
 }
 
 // ============================================================================
@@ -456,57 +605,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_error_flow_error_creation() {
-        use doo_core::types::builtin;
+    fn test_error_flow_checker_creation() {
+        let registry = TypeRegistry::new();
+        let checker = ErrorFlowChecker::new(&registry);
+        assert!(checker.errors.is_empty());
+    }
 
-        let error = ErrorFlowError::new(
+    #[test]
+    fn test_unhandled_result_message() {
+        let err = ErrorFlowError::new(
             ErrorFlowErrorKind::UnhandledResult {
                 ok_type: builtin::INT,
                 err_type: builtin::STR,
             },
-            Span::default(),
+            Span::dummy(),
         );
-
-        match error.kind {
-            ErrorFlowErrorKind::UnhandledResult { ok_type, err_type } => {
-                assert_eq!(ok_type, builtin::INT);
-                assert_eq!(err_type, builtin::STR);
-            }
-            _ => panic!("Expected UnhandledResult error"),
-        }
+        assert!(err.message().contains("Result"));
     }
 
     #[test]
-    fn test_try_in_non_result_function_error() {
-        let error = ErrorFlowError::new(
+    fn test_try_in_non_result_message() {
+        let err = ErrorFlowError::new(
             ErrorFlowErrorKind::TryInNonResultFunction {
-                func_name: "test_func".to_string(),
+                func_name: "foo".into(),
             },
-            Span::default(),
+            Span::dummy(),
         );
-
-        match error.kind {
-            ErrorFlowErrorKind::TryInNonResultFunction { func_name } => {
-                assert_eq!(func_name, "test_func");
-            }
-            _ => panic!("Expected TryInNonResultFunction error"),
-        }
-    }
-
-    #[test]
-    fn test_err_in_non_result_function_error() {
-        let error = ErrorFlowError::new(
-            ErrorFlowErrorKind::ErrInNonResultFunction {
-                func_name: "another_func".to_string(),
-            },
-            Span::default(),
-        );
-
-        match error.kind {
-            ErrorFlowErrorKind::ErrInNonResultFunction { func_name } => {
-                assert_eq!(func_name, "another_func");
-            }
-            _ => panic!("Expected ErrInNonResultFunction error"),
-        }
+        assert!(err.message().contains("foo"));
     }
 }

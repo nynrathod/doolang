@@ -11,12 +11,10 @@ use crate::context::CodegenContext;
 use crate::layout::{alloc_with_header, get_array_length_from_data, int_to_i64};
 use crate::utils::{emit_eq, operand_to_value};
 use doo_core::constants::ffi_names;
-use doo_core::doo_debug;
 use doo_mir::sym::resolve;
 use doo_mir::{MirInstr, MirInstrKind, MirOperand};
 use inkwell::types::BasicType;
 use inkwell::values::{BasicValueEnum, IntValue, PointerValue};
-use inkwell::AddressSpace;
 use inkwell::IntPredicate;
 
 /// Array instruction handler.
@@ -177,8 +175,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 elements,
                 elem_type,
             } => {
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                }
+                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
                 let elem_llvm_ty = ctx.get_llvm_type(*elem_type);
                 let len_i32 = ctx.i32_type().const_int(elements.len() as u64, false);
                 let data_ptr = alloc_with_header(ctx, len_i32, elem_llvm_ty, "arr");
@@ -189,7 +186,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 }
                 let data_ptr = data_ptr?;
 
-                let elem_ptr_ty = elem_llvm_ty.ptr_type(AddressSpace::default());
+                let elem_ptr_ty = ctx.ptr_type();
                 let base = ctx
                     .builder
                     .build_pointer_cast(data_ptr, elem_ptr_ty, "arr_data_cast")
@@ -267,7 +264,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
 
                 let idx_i64 = int_to_i64(ctx, idx_int)?;
                 let elem_llvm_ty = ctx.get_llvm_type(*elem_type);
-                let elem_ptr_ty = elem_llvm_ty.ptr_type(AddressSpace::default());
+                let elem_ptr_ty = ctx.ptr_type();
                 let base = ctx
                     .builder
                     .build_pointer_cast(arr_ptr, elem_ptr_ty, "arr_data_cast")
@@ -288,18 +285,18 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 // an independent copy to avoid double-free when the array is dropped.
                 // This aligns with Doo's ownership model: auto-clone when variable reused.
                 let val = match ctx.get_type_kind(*elem_type) {
-                    Some(doo_core::types::TypeKind::Struct {
-                        ref name,
-                        ref fields, ..
-                    }) => {
+                    Some(doo_core::types::TypeKind::Struct { def }) => {
                         if val.is_pointer_value() {
-                            let field_pairs: Vec<_> =
-                                fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
-                            let struct_name = name.clone();
+                            let field_pairs: Vec<_> = def
+                                .fields
+                                .iter()
+                                .map(|f| (f.name.resolve().to_string(), f.type_id))
+                                .collect();
+                            let struct_name = def.name.resolve();
                             super::memory::clone_struct(
                                 ctx,
                                 val.into_pointer_value(),
-                                &struct_name,
+                                struct_name,
                                 &field_pairs,
                             )
                             .map(|p| p.into())
@@ -354,7 +351,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
 
                 let idx_i64 = int_to_i64(ctx, idx_int)?;
                 let elem_llvm_ty = ctx.get_llvm_type(*elem_type);
-                let elem_ptr_ty = elem_llvm_ty.ptr_type(AddressSpace::default());
+                let elem_ptr_ty = ctx.ptr_type();
                 let base = ctx
                     .builder
                     .build_pointer_cast(arr_ptr, elem_ptr_ty, "arr_data_cast")
@@ -395,7 +392,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
 
                 let arr_ptr = arr.into_pointer_value();
                 let elem_llvm_ty = ctx.get_llvm_type(*elem_type);
-                let elem_ptr_ty = elem_llvm_ty.ptr_type(AddressSpace::default());
+                let elem_ptr_ty = ctx.ptr_type();
                 let base = ctx
                     .builder
                     .build_pointer_cast(arr_ptr, elem_ptr_ty, "arr_data_cast")
@@ -533,7 +530,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 }
 
                 // Append value
-                let elem_ptr_ty = elem_llvm_ty.ptr_type(AddressSpace::default());
+                let elem_ptr_ty = ctx.ptr_type();
                 let base = ctx
                     .builder
                     .build_pointer_cast(new_data, elem_ptr_ty, "arr_new_cast")
@@ -587,7 +584,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
 
                 // Copy/Memcpy second array data to new space
                 // Dest: new_data + len1 * stride
-                let elem_ptr_ty = elem_llvm_ty.ptr_type(AddressSpace::default());
+                let elem_ptr_ty = ctx.ptr_type();
                 let base = ctx
                     .builder
                     .build_pointer_cast(new_data, elem_ptr_ty, "arr_base")
@@ -646,7 +643,7 @@ impl<'ctx> InstructionHandler<'ctx> for ArrayHandler {
                 let new_data = alloc_with_header(ctx, len_i32, elem_llvm_ty, "slice")?;
 
                 // Source pointer: arr + start
-                let elem_ptr_ty = elem_llvm_ty.ptr_type(AddressSpace::default());
+                let elem_ptr_ty = ctx.ptr_type();
                 let src_base = ctx
                     .builder
                     .build_pointer_cast(arr, elem_ptr_ty, "src_base")

@@ -1,0 +1,32 @@
+@extern("c", "printf")
+fn printf(format: Str) -> Int
+
+@extern("c", "fflush")
+fn fflush(stream: Int) -> Int
+
+@extern("c", "exit")
+fn exit(code: Int) -> Void
+
+fn print(val: Str) -> Void {
+    printf(val)
+}
+
+fn println(val: Str) -> Void {
+    printf(val + "\n")
+}
+
+fn printInt(val: Int) -> Void {
+    printf("%lld", val)
+}
+
+fn printFloat(val: Float) -> Void {
+    printf("%f", val)
+}
+
+fn printBool(val: Bool) -> Void {
+    if val {
+        printf("true")
+    } else {
+        printf("false")
+    }
+}

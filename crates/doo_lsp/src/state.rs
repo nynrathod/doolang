@@ -153,7 +153,7 @@ fn parse_and_extract(
     Vec<ParseError>,
     Vec<SymbolDef>,
 ) {
-    use doo_core::LineIndex;
+    use doo_core::span::LineIndex;
 
     let line_index = LineIndex::new(text);
     let mut parser = doo_frontend::Parser::new(text, 0);
@@ -186,16 +186,18 @@ fn parse_and_extract(
 
             (Some(program.items), parse_errors, symbols)
         }
-        Err(e) => {
-            let (line, col) = line_index.line_col(e.span.start);
-            let (end_line, end_col) = line_index.line_col(e.span.end.max(e.span.start + 1));
-            parse_errors.push(ParseError {
-                message: format!("{}", e),
-                line: line.saturating_sub(1),
-                column: col.saturating_sub(1),
-                end_line: end_line.saturating_sub(1),
-                end_column: end_col.saturating_sub(1),
-            });
+        Err(errors) => {
+            for e in errors {
+                let (line, col) = line_index.line_col(e.span.start);
+                let (end_line, end_col) = line_index.line_col(e.span.end.max(e.span.start + 1));
+                parse_errors.push(ParseError {
+                    message: e.message.clone(),
+                    line: line.saturating_sub(1),
+                    column: col.saturating_sub(1),
+                    end_line: end_line.saturating_sub(1),
+                    end_column: end_col.saturating_sub(1),
+                });
+            }
 
             // Also grab any accumulated errors
             for err in parser.errors() {
@@ -219,7 +221,7 @@ fn parse_and_extract(
 /// Collects type errors, scope errors, and direct compiler errors as diagnostics.
 fn run_type_check(
     program: &doo_frontend::ast::Program,
-    line_index: &doo_core::LineIndex,
+    line_index: &doo_core::span::LineIndex,
     errors: &mut Vec<ParseError>,
 ) {
     use doo_frontend::ast::{FunctionDecl, Item};
@@ -252,33 +254,20 @@ fn run_type_check(
         let hir = lowerer.lower_program_typed(&check_program, &mut registry);
 
         let registry = Arc::new(registry);
-        let mut checker = doo_analysis::TypeChecker::new(registry.clone());
+        let mut thir_lowerer = doo_thir::ThirLoweringContext::new(registry.as_ref());
+        let thir = thir_lowerer.lower_program(&hir);
+
+        let mut checker = doo_analysis::TypeChecker::new(registry.as_ref());
 
         // Collect all error categories
         let mut collected: Vec<(String, doo_core::Span)> = Vec::new();
 
         // Type errors
-        if let Err(type_errors) = checker.check(&hir) {
+        if let Err(type_errors) = checker.check_program(&thir) {
             for e in type_errors {
-                let msg = format_type_error_msg(&e.kind, &registry);
+                let msg = format_type_error_msg(&e.kind);
                 collected.push((msg, e.span));
             }
-        }
-
-        // Scope errors (undeclared variables, redeclarations)
-        for e in checker.take_scope_errors() {
-            let (msg, span) = match &e {
-                doo_analysis::ScopeError::Redeclaration { redeclared, .. } => {
-                    (e.message(), *redeclared)
-                }
-                doo_analysis::ScopeError::Undeclared { span, .. } => (e.message(), *span),
-            };
-            collected.push((msg, span));
-        }
-
-        // Direct compiler errors (missing return, unreachable code, assign-to-immutable)
-        for e in checker.take_direct_errors() {
-            collected.push((e.message.clone(), e.span));
         }
 
         collected
@@ -299,21 +288,14 @@ fn run_type_check(
     }
 }
 
-/// Format a type error kind into a human-readable message using the registry
-/// for proper type names instead of raw TypeId numbers.
-fn format_type_error_msg(
-    kind: &doo_analysis::TypeErrorKind,
-    registry: &doo_core::types::TypeRegistry,
-) -> String {
+/// Format a type error kind into a human-readable message.
+/// Type names are already resolved to Strings in the TypeErrorKind.
+fn format_type_error_msg(kind: &doo_analysis::TypeErrorKind) -> String {
     use doo_analysis::TypeErrorKind;
 
     match kind {
         TypeErrorKind::Mismatch { expected, found } => {
-            format!(
-                "type mismatch: expected `{}`, found `{}`",
-                registry.display_name(*expected),
-                registry.display_name(*found)
-            )
+            format!("type mismatch: expected `{}`, found `{}`", expected, found)
         }
         TypeErrorKind::Undefined(name, suggestion) => match suggestion {
             Some(s) => format!("'{}' is not defined — did you mean '{}'?", name, s),
@@ -345,9 +327,7 @@ fn format_type_error_msg(
         } => {
             format!(
                 "return type mismatch in '{}': expected `{}`, found `{}`",
-                function,
-                registry.display_name(*expected),
-                registry.display_name(*found)
+                function, expected, found
             )
         }
         TypeErrorKind::Incompatible {
@@ -357,30 +337,17 @@ fn format_type_error_msg(
         } => {
             format!(
                 "incompatible types `{}` and `{}` for '{}'",
-                registry.display_name(*left),
-                registry.display_name(*right),
-                operation
+                left, right, operation
             )
         }
         TypeErrorKind::InvalidCondition { found } => {
-            format!(
-                "condition must be Bool, found `{}`",
-                registry.display_name(*found)
-            )
+            format!("condition must be Bool, found `{}`", found)
         }
         TypeErrorKind::InvalidCast { from, to } => {
-            format!(
-                "cannot cast `{}` to `{}`",
-                registry.display_name(*from),
-                registry.display_name(*to)
-            )
+            format!("cannot cast `{}` to `{}`", from, to)
         }
         TypeErrorKind::CannotConvert { from, to } => {
-            format!(
-                "cannot convert `{}` to `{}`",
-                registry.display_name(*from),
-                registry.display_name(*to)
-            )
+            format!("cannot convert `{}` to `{}`", from, to)
         }
         // Fallback: use Debug formatting for less common variants
         _ => format!("{:?}", kind),
@@ -390,7 +357,7 @@ fn format_type_error_msg(
 /// Extract symbol definitions from an AST item.
 fn extract_symbols_from_item(
     item: &doo_frontend::ast::Item,
-    line_index: &doo_core::LineIndex,
+    line_index: &doo_core::span::LineIndex,
     symbols: &mut Vec<SymbolDef>,
 ) {
     use doo_frontend::ast::Item;
@@ -516,9 +483,6 @@ fn extract_symbols_from_item(
         }
         Item::Statement(_) => {
             // Top-level let bindings could be extracted later
-        }
-        Item::Policy(_) => {
-            // Policy blocks are not exposed as LSP symbols
         }
         Item::Interface(_) => {
             // Interface definitions are not exposed as LSP symbols

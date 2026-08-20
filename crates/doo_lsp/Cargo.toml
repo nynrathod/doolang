@@ -15,6 +15,7 @@ doo_core = { path = "../doo_core" }
 doo_frontend = { path = "../doo_frontend" }
 doo_hir = { path = "../doo_hir" }
 doo_analysis = { path = "../doo_analysis" }
+doo_thir = { path = "../doo_thir" }
 
 # LSP protocol implementation (same crate rust-analyzer uses)
 lsp-server = "0.7"

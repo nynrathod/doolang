@@ -39,6 +39,7 @@ mod error;
 pub mod session;
 pub mod strategies;
 pub mod strategy;
+mod user_bridge;
 
 use std::os::raw::c_char;
 
@@ -671,7 +672,15 @@ pub extern "C" fn doo_auth_oauth_setup(
             .cloned()
             .or_else(|| std::env::var("OAUTH_CALLBACK_URL").ok());
 
-        match strategies::oauth::http_handlers::setup_from_map(&providers, &base_path, callback_url.as_deref()) {
+        // Read optional "WebhooksJson" key — JSON array of WebhookConfig objects.
+        // Passed to the generic webhook engine via cross-DLL bridge (same pattern as cookies).
+        let webhooks_json = map
+            .get("WebhooksJson")
+            .or_else(|| map.get("webhooksJson"))
+            .or_else(|| map.get("webhooks_json"))
+            .cloned();
+
+        match strategies::oauth::http_handlers::setup_from_map(&providers, &base_path, callback_url.as_deref(), webhooks_json.as_deref()) {
             Ok(()) => make_ok_string("ok"),
             Err(e) => make_err(AuthErrorCode::InvalidRequest, &e),
         }
@@ -704,7 +713,11 @@ pub extern "C" fn doo_auth_sign_refresh(
             Err(e) => return make_err(AuthErrorCode::InvalidRequest, &e),
         };
 
-        match session::sign_refresh_token(&sub_str, expires_seconds) {
+        match session::sign_refresh_token(
+            &sub_str,
+            crate::user_bridge::resolve_user_id(0, &sub_str),
+            expires_seconds,
+        ) {
             Ok(token) => make_ok_string(&token),
             Err(e) => make_err(AuthErrorCode::InternalError, &e),
         }
@@ -740,21 +753,35 @@ pub extern "C" fn doo_auth_refresh(
         };
 
         // Verify the refresh token
-        let sub = match session::verify_refresh_token(&token_str) {
-            Ok(s) => s,
+        let refresh_claims = match session::verify_refresh_token(&token_str) {
+            Ok(c) => c,
             Err(e) => return make_err(AuthErrorCode::JwtInvalid, &e),
         };
 
+        let user_id = crate::user_bridge::resolve_user_id(
+            refresh_claims.user_id,
+            &refresh_claims.sub,
+        );
+
         // Issue new access token
         let access_expiry = session::get_access_expiry();
-        let new_access = match session::sign_token(&sub, data.as_deref(), access_expiry) {
+        let new_access = match session::sign_token(
+            &refresh_claims.sub,
+            user_id,
+            data.as_deref(),
+            access_expiry,
+        ) {
             Ok(t) => t,
             Err(e) => return make_err(AuthErrorCode::InternalError, &e),
         };
 
         // Refresh token rotation: issue new refresh token (extends session)
         let refresh_expiry = session::get_refresh_expiry();
-        let new_refresh = match session::sign_refresh_token(&sub, refresh_expiry) {
+        let new_refresh = match session::sign_refresh_token(
+            &refresh_claims.sub,
+            user_id,
+            refresh_expiry,
+        ) {
             Ok(t) => t,
             Err(e) => return make_err(AuthErrorCode::InternalError, &e),
         };

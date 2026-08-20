@@ -2,11 +2,27 @@
 
 use super::Lower;
 use crate::types::*;
-use doo_core::{
-    doo_debug,
-    types::{builtin, TypeId, TypeKind, TypeRegistry},
-};
+use doo_core::constants::ffi_names;
+use doo_core::types::{builtin, TypeId, TypeKind, TypeRegistry};
 use doo_frontend::ast::{self, ElseBranch, ExprKind, IncDecOp, PatternKind, Stmt, StmtKind};
+
+fn runtime_call(name: &str, args: Vec<HirExpr>, span: doo_core::Span) -> HirStmt {
+    HirStmt::new(
+        HirStmtKind::Expr(HirExpr::new(
+            HirExprKind::Call {
+                func: Box::new(HirExpr::new(
+                    HirExprKind::Global {
+                        name: name.to_string(),
+                    },
+                    span,
+                )),
+                args,
+            },
+            span,
+        )),
+        span,
+    )
+}
 
 impl Lower {
     pub(crate) fn lower_stmt(&mut self, stmt: &Stmt) -> HirStmt {
@@ -162,35 +178,50 @@ impl Lower {
             }
 
             StmtKind::Print(exprs) => {
-                // Flatten StringInterpolation parts as separate print args
-                // so composite types (Array, Map, Struct) get proper formatting
-                // via the Print handler instead of broken string concat.
-                let mut args = Vec::new();
-                let mut has_interpolation = false;
+                // `print` is surface syntax (like Rust's `println!`).
+                // Desugar to Tier A runtime calls from ffi_names — not a codegen builtin.
+                let mut calls = Vec::new();
+
                 for e in exprs {
                     if let ExprKind::StringInterpolation(parts) = &e.kind {
-                        has_interpolation = true;
                         for part in parts {
-                            args.push(self.lower_string_part(part));
+                            let lowered = self.lower_string_part(part);
+                            let casted = HirExpr::new(
+                                HirExprKind::Cast {
+                                    value: Box::new(lowered),
+                                    to_type: builtin::STR,
+                                },
+                                stmt.span,
+                            );
+                            calls.push(runtime_call(
+                                ffi_names::DOO_PRINT_STR,
+                                vec![casted],
+                                stmt.span,
+                            ));
                         }
                     } else {
-                        args.push(self.lower_expr(e));
-                    }
-                }
-                let func_name = if has_interpolation {
-                    "__print_interp"
-                } else {
-                    "print"
-                };
-                HirStmtKind::Expr(HirExpr::new(
-                    HirExprKind::Call {
-                        func: Box::new(HirExpr::new(
-                            HirExprKind::Global {
-                                name: func_name.to_string(),
+                        let lowered = self.lower_expr(e);
+                        let casted = HirExpr::new(
+                            HirExprKind::Cast {
+                                value: Box::new(lowered),
+                                to_type: builtin::STR,
                             },
                             stmt.span,
-                        )),
-                        args,
+                        );
+                        calls.push(runtime_call(
+                            ffi_names::DOO_PRINT_STR,
+                            vec![casted],
+                            stmt.span,
+                        ));
+                    }
+                }
+
+                calls.push(runtime_call(ffi_names::DOO_PRINTLN, vec![], stmt.span));
+
+                HirStmtKind::Expr(HirExpr::new(
+                    HirExprKind::Block {
+                        stmts: calls,
+                        expr: None,
                     },
                     stmt.span,
                 ))
@@ -454,47 +485,72 @@ impl Lower {
             }
 
             StmtKind::Print(exprs) => {
-                // Flatten StringInterpolation parts as separate print args.
-                // Don't cast to STR — keep original types so the Print handler
-                // uses type-specific formatters (Array, Map, Struct, etc.)
-                let mut args = Vec::new();
-                let mut has_interpolation = false;
+                doo_core::doo_debug!(
+                    "hir-lower",
+                    "desugaring print ({} value(s)) to {} / {}",
+                    exprs.len(),
+                    ffi_names::DOO_PRINT_STR,
+                    ffi_names::DOO_PRINTLN
+                );
+
+                let mut calls = Vec::new();
                 for e in exprs {
                     if let ExprKind::StringInterpolation(parts) = &e.kind {
-                        has_interpolation = true;
                         for part in parts {
-                            match part {
-                                ast::StringPart::Literal(s) => {
-                                    args.push(HirExpr::with_type(
-                                        HirExprKind::Const(ConstValue::Str(s.clone())),
-                                        builtin::STR,
-                                        stmt.span,
-                                    ));
-                                }
+                            let arg = match part {
+                                ast::StringPart::Literal(s) => HirExpr::with_type(
+                                    HirExprKind::Const(ConstValue::Str(s.clone())),
+                                    builtin::STR,
+                                    stmt.span,
+                                ),
                                 ast::StringPart::Expr(expr) => {
-                                    // Lower WITHOUT Cast to STR — preserve original type
-                                    args.push(self.lower_expr_typed(expr, registry));
+                                    self.lower_expr_typed(expr, registry)
                                 }
-                            }
+                            };
+                            let print_arg = if arg.type_id == Some(builtin::STR) {
+                                arg
+                            } else {
+                                HirExpr::with_type(
+                                    HirExprKind::Cast {
+                                        value: Box::new(arg),
+                                        to_type: builtin::STR,
+                                    },
+                                    builtin::STR,
+                                    stmt.span,
+                                )
+                            };
+                            calls.push(runtime_call(
+                                ffi_names::DOO_PRINT_STR,
+                                vec![print_arg],
+                                stmt.span,
+                            ));
                         }
                     } else {
-                        args.push(self.lower_expr_typed(e, registry));
+                        let lowered = self.lower_expr_typed(e, registry);
+                        let print_arg = if lowered.type_id == Some(builtin::STR) {
+                            lowered
+                        } else {
+                            HirExpr::with_type(
+                                HirExprKind::Cast {
+                                    value: Box::new(lowered),
+                                    to_type: builtin::STR,
+                                },
+                                builtin::STR,
+                                stmt.span,
+                            )
+                        };
+                        calls.push(runtime_call(
+                            ffi_names::DOO_PRINT_STR,
+                            vec![print_arg],
+                            stmt.span,
+                        ));
                     }
                 }
-                let func_name = if has_interpolation {
-                    "__print_interp"
-                } else {
-                    "print"
-                };
+                calls.push(runtime_call(ffi_names::DOO_PRINTLN, vec![], stmt.span));
                 HirStmtKind::Expr(HirExpr::new(
-                    HirExprKind::Call {
-                        func: Box::new(HirExpr::new(
-                            HirExprKind::Global {
-                                name: func_name.to_string(),
-                            },
-                            stmt.span,
-                        )),
-                        args,
+                    HirExprKind::Block {
+                        stmts: calls,
+                        expr: None,
                     },
                     stmt.span,
                 ))

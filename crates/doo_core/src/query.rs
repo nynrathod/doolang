@@ -1,236 +1,314 @@
-//! Query-Based Architecture — on-demand, memoized computation for compiler data.
+//! Type Context (TyCtxt) — The central compilation context.
 //!
-//! ## Overview
+//! Instead of a complex query database, Doo uses a `TyCtxt` struct that holds
+//! references to the global, immutable compilation state (Arena, Interner,
+//! TypeRegistry). This is passed by reference to every compiler pass.
 //!
-//! Instead of a linear pipeline (parse → HIR → analysis → MIR → codegen),
-//! a query-based architecture computes results on demand:
+//! ## Design (Architecture Part VI)
 //!
-//! ```text
-//! query!(type_of(var))
-//!   → triggers → query!(hir_of(func))
-//!     → triggers → query!(parse(file))
-//! ```
-//!
-//! Each query result is memoized in the `QueryDatabase`. Only re-computed
-//! when its inputs change. This is the foundation for:
-//! - **Incremental compilation**: Only recompute what changed
-//! - **LSP integration**: Re-check on every keystroke (fast)
-//! - **Parallel compilation**: Independent queries can run concurrently
-//!
-//! ## Design
-//!
-//! Based on the Salsa/rustc query model:
-//! - `QueryKey`: Describes what to compute (e.g., "parse file X")
-//! - `QueryValue`: The cached result
-//! - `QueryDatabase`: Central store for all cached results
-//! - `Revision`: Monotonic counter for cache invalidation
+//! - **Zero-Cost**: Passing `&TyCtxt` is a single pointer copy.
+//! - **Immutable**: The context is read-only, preventing passes from mutating global state.
+//! - **Future-Proof**: When incremental compilation (Phase 45) is added, this struct
+//!   can be wrapped in a query engine (like Salsa) without rewriting the pass logic.
+
+use crate::arena::CompilerArena;
+use crate::intern::Interner;
+use crate::types::registry::TypeRegistry;
+use std::hash::{Hash, Hasher};
+
+/// The central compilation context.
+///
+/// Contains references to all global, immutable state required during compilation.
+/// Every compiler pass (Parser, HIR, THIR, MIR) receives a `&TyCtxt` to access
+/// shared resources.
+pub struct TyCtxt<'tcx> {
+    /// The arena allocator for AST/HIR/MIR nodes.
+    pub arena: &'tcx CompilerArena,
+
+    /// The global string interner.
+    pub interner: &'tcx Interner,
+
+    /// The central type registry (Single Source of Truth for types).
+    pub type_registry: &'tcx TypeRegistry,
+}
+
+impl<'tcx> TyCtxt<'tcx> {
+    /// Create a new type context.
+    #[inline]
+    pub fn new(
+        arena: &'tcx CompilerArena,
+        interner: &'tcx Interner,
+        type_registry: &'tcx TypeRegistry,
+    ) -> Self {
+        Self {
+            arena,
+            interner,
+            type_registry,
+        }
+    }
+
+    /// Intern a string into the global interner.
+    #[inline]
+    pub fn intern(&self, s: &str) -> crate::symbol::Symbol {
+        self.interner.intern(s)
+    }
+
+    /// Resolve a symbol back to its string.
+    #[inline]
+    pub fn resolve(&self, sym: crate::symbol::Symbol) -> &'static str {
+        crate::intern::resolve(sym)
+    }
+}
+
+// ======================================================================
+// Incremental Compilation Support
+// ======================================================================
 
 use rustc_hash::FxHashMap;
-use std::any::Any;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-/// A monotonically increasing revision counter.
-/// Used for cache invalidation — when a source file changes,
-/// its revision is bumped, invalidating all dependent queries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Revision(pub u64);
-
-impl Revision {
-    pub const ZERO: Revision = Revision(0);
-}
-
-/// Global revision counter.
-static GLOBAL_REVISION: AtomicU64 = AtomicU64::new(1);
-
-/// Get the current global revision.
-pub fn current_revision() -> Revision {
-    Revision(GLOBAL_REVISION.load(Ordering::Acquire))
-}
-
-/// Bump the global revision (call when source files change).
-pub fn bump_revision() -> Revision {
-    Revision(GLOBAL_REVISION.fetch_add(1, Ordering::AcqRel) + 1)
-}
-
-/// A query key describing what to compute.
+/// 128-bit fingerprint for deterministic query result caching.
 ///
-/// Each variant represents a different query type in the compiler.
+/// Used by the red-green incremental compilation algorithm to detect
+/// whether a query's output has changed between compilations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Fingerprint {
+    /// High 64 bits.
+    pub hi: u64,
+    /// Low 64 bits.
+    pub lo: u64,
+}
+
+impl Fingerprint {
+    /// Create a zero fingerprint (for uninitialized queries).
+    pub const ZERO: Self = Self { hi: 0, lo: 0 };
+
+    /// Check if this fingerprint is zero.
+    pub fn is_zero(&self) -> bool {
+        self.hi == 0 && self.lo == 0
+    }
+}
+
+/// Identifies a query in the incremental compilation system.
+///
+/// Format: `"<query_kind>:<input_key>"` (e.g. `"parse_file:main.doo"`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum QueryKey {
-    /// Parse a source file → AST
-    ParseFile(String),
-    /// Lower a file's AST → HIR
-    HirOfFile(String),
-    /// Analyze a file → diagnostics
-    AnalyzeFile(String),
-    /// Build MIR for a function
-    MirOfFunction(String),
-    /// Get the type of a variable in a scope
-    TypeOf {
-        file: String,
-        scope: String,
-        name: String,
-    },
-    /// Get struct definition metadata
-    StructDef(String),
-    /// Get function signature
-    FunctionSignature(String),
-    /// Custom query for extensibility
-    Custom(String, String),
+pub struct QueryId(pub String);
+
+impl QueryId {
+    /// Create a new query ID.
+    pub fn new(kind: &str, key: &str) -> Self {
+        Self(format!("{}:{}", kind, key))
+    }
+
+    /// Get the query kind (portion before ':').
+    pub fn kind(&self) -> &str {
+        self.0.split(':').next().unwrap_or("")
+    }
+
+    /// Get the query key (portion after ':').
+    pub fn key(&self) -> &str {
+        self.0.split(':').nth(1).unwrap_or("")
+    }
 }
 
-/// A cached query entry.
-struct QueryEntry {
-    /// The cached value (type-erased).
-    value: Box<dyn Any + Send + Sync>,
-    /// The revision when this entry was last computed.
-    computed_at: Revision,
-    /// The revision of the inputs when this entry was computed.
-    /// If any input has a newer revision, this entry is stale.
-    input_revision: Revision,
+impl std::fmt::Display for QueryId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
 }
 
-/// The central query database.
+/// Dependency graph tracking query input/output relationships.
 ///
-/// Stores memoized results for all compiler queries.
-/// Thread-safe for concurrent access (future: parallel compilation).
-pub struct QueryDatabase {
-    /// Cached query results.
-    cache: FxHashMap<QueryKey, QueryEntry>,
-    /// Input revisions: source file → last-modified revision.
-    input_revisions: FxHashMap<String, Revision>,
+/// When a query's input changes (RED), all queries that depend on it
+/// are marked for recomputation. If a recomputed query's output
+/// fingerprint is unchanged, its dependents remain valid (GREEN).
+pub struct DependencyGraph {
+    /// Maps a query to the queries it depends on (its inputs).
+    dependencies: FxHashMap<QueryId, Vec<QueryId>>,
+    /// Maps a query to the queries that depend on it (its dependents).
+    dependents: FxHashMap<QueryId, Vec<QueryId>>,
 }
 
-impl Default for QueryDatabase {
+impl DependencyGraph {
+    /// Create an empty dependency graph.
+    pub fn new() -> Self {
+        Self {
+            dependencies: FxHashMap::default(),
+            dependents: FxHashMap::default(),
+        }
+    }
+
+    /// Register a dependency: `query` depends on `dep`.
+    pub fn add_dependency(&mut self, query: QueryId, dep: QueryId) {
+        self.dependencies
+            .entry(query.clone())
+            .or_default()
+            .push(dep.clone());
+        self.dependents.entry(dep).or_default().push(query);
+    }
+
+    /// Get all queries that `query` depends on.
+    pub fn get_dependencies(&self, query: &QueryId) -> Option<&Vec<QueryId>> {
+        self.dependencies.get(query)
+    }
+
+    /// Get all queries that depend on `query`.
+    pub fn get_dependents(&self, query: &QueryId) -> Option<&Vec<QueryId>> {
+        self.dependents.get(query)
+    }
+
+    /// Collect all transitive dependents of `query` (for red-green invalidation).
+    pub fn transitive_dependents(&self, query: &QueryId) -> Vec<QueryId> {
+        let mut visited = FxHashMap::default();
+        let mut stack = vec![query.clone()];
+        let mut result = Vec::new();
+
+        while let Some(q) = stack.pop() {
+            if visited.contains_key(&q) {
+                continue;
+            }
+            visited.insert(q.clone(), true);
+
+            if let Some(deps) = self.dependents.get(&q) {
+                for dep in deps {
+                    if !visited.contains_key(dep) {
+                        result.push(dep.clone());
+                        stack.push(dep.clone());
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Remove all edges for a query (when it's recomputed with new dependencies).
+    pub fn clear_dependencies(&mut self, query: &QueryId) {
+        if let Some(old_deps) = self.dependencies.remove(query) {
+            for dep in &old_deps {
+                if let Some(dep_dependents) = self.dependents.get_mut(dep) {
+                    dep_dependents.retain(|d| d != query);
+                }
+            }
+        }
+    }
+}
+
+impl Default for DependencyGraph {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl QueryDatabase {
-    /// Create a new empty query database.
+/// Caches query fingerprints for red-green incremental compilation.
+///
+/// Stores the last-computed fingerprint for each query, along with
+/// the dependency graph that tracks which queries depend on which.
+pub struct QueryCache {
+    /// Last-computed fingerprint for each query.
+    fingerprints: FxHashMap<QueryId, Fingerprint>,
+    /// Dependency graph tracking query relationships.
+    graph: DependencyGraph,
+}
+
+impl QueryCache {
+    /// Create an empty query cache.
     pub fn new() -> Self {
         Self {
-            cache: FxHashMap::default(),
-            input_revisions: FxHashMap::default(),
+            fingerprints: FxHashMap::default(),
+            graph: DependencyGraph::new(),
         }
     }
 
-    /// Mark a source file as modified (bumps its revision).
+    /// Store a query result with its fingerprint and dependencies.
     ///
-    /// This invalidates all queries that depend on this file.
-    pub fn set_file_changed(&mut self, file: &str) {
-        let rev = bump_revision();
-        self.input_revisions.insert(file.to_string(), rev);
-    }
-
-    /// Get the revision of a source file.
-    pub fn file_revision(&self, file: &str) -> Revision {
-        self.input_revisions
-            .get(file)
-            .copied()
-            .unwrap_or(Revision::ZERO)
-    }
-
-    /// Store a computed query result.
-    pub fn store<T: Any + Send + Sync + Clone>(
-        &mut self,
-        key: QueryKey,
-        value: T,
-        input_rev: Revision,
-    ) {
-        let entry = QueryEntry {
-            value: Box::new(value),
-            computed_at: current_revision(),
-            input_revision: input_rev,
-        };
-        self.cache.insert(key, entry);
-    }
-
-    /// Try to get a cached query result.
-    ///
-    /// Returns `Some(value)` if the cache entry exists and is still valid
-    /// (its input revision matches the current input revision).
-    /// Returns `None` if the entry is missing or stale.
-    pub fn get<T: Any + Send + Sync + Clone>(
-        &self,
-        key: &QueryKey,
-        current_input_rev: Revision,
-    ) -> Option<T> {
-        let entry = self.cache.get(key)?;
-
-        // Check if the cached result is still valid
-        if entry.input_revision < current_input_rev {
-            return None; // Stale — input has been modified since computation
+    /// Replaces any previous dependencies for this query.
+    pub fn store(&mut self, id: QueryId, fingerprint: Fingerprint, deps: Vec<QueryId>) {
+        self.graph.clear_dependencies(&id);
+        for dep in &deps {
+            self.graph.add_dependency(id.clone(), dep.clone());
         }
-
-        entry.value.downcast_ref::<T>().cloned()
+        self.fingerprints.insert(id, fingerprint);
     }
 
-    /// Check if a query result is cached and still valid.
-    pub fn is_cached(&self, key: &QueryKey, current_input_rev: Revision) -> bool {
-        match self.cache.get(key) {
-            Some(entry) => entry.input_revision >= current_input_rev,
-            None => false,
-        }
+    /// Get the stored fingerprint for a query.
+    pub fn get_fingerprint(&self, id: &QueryId) -> Option<Fingerprint> {
+        self.fingerprints.get(id).copied()
     }
 
-    /// Clear all cached results. Used for full rebuild.
+    /// Check if a query's fingerprint matches the stored value.
+    pub fn fingerprint_matches(&self, id: &QueryId, new_fp: Fingerprint) -> bool {
+        self.fingerprints
+            .get(id)
+            .map_or(false, |&old| old == new_fp)
+    }
+
+    /// Get all transitive dependents of a query (for invalidation).
+    pub fn transitive_dependents(&self, id: &QueryId) -> Vec<QueryId> {
+        self.graph.transitive_dependents(id)
+    }
+
+    /// Get the dependencies of a query.
+    pub fn get_dependencies(&self, id: &QueryId) -> Option<&Vec<QueryId>> {
+        self.graph.get_dependencies(id)
+    }
+
+    /// Remove a query from the cache.
+    pub fn remove(&mut self, id: &QueryId) {
+        self.graph.clear_dependencies(id);
+        self.fingerprints.remove(id);
+    }
+
+    /// Clear the entire cache.
     pub fn clear(&mut self) {
-        self.cache.clear();
-    }
-
-    /// Get the number of cached entries.
-    pub fn cache_size(&self) -> usize {
-        self.cache.len()
+        self.fingerprints.clear();
+        self.graph = DependencyGraph::new();
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+impl Default for QueryCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-    #[test]
-    fn test_revision_ordering() {
-        let r1 = bump_revision();
-        let r2 = bump_revision();
-        assert!(r2 > r1);
+/// Wrapper to use blake3 with std::hash::Hasher interface.
+struct Blake3Hasher(blake3::Hasher);
+
+impl Hasher for Blake3Hasher {
+    fn write(&mut self, bytes: &[u8]) {
+        self.0.update(bytes);
     }
 
-    #[test]
-    fn test_store_and_get() {
-        let mut db = QueryDatabase::new();
-        let key = QueryKey::ParseFile("main.doo".to_string());
-        let rev = current_revision();
+    fn finish(&self) -> u64 {
+        let hash = self.0.finalize();
+        let bytes = hash.as_bytes();
+        u64::from_be_bytes(bytes[0..8].try_into().unwrap())
+    }
+}
 
-        db.store(key.clone(), 42i32, rev);
-
-        assert_eq!(db.get::<i32>(&key, rev), Some(42));
+impl Fingerprint {
+    /// Compute a deterministic 128-bit fingerprint using blake3.
+    ///
+    /// Stable across process invocations and Rust compiler versions,
+    /// suitable for persistent on-disk cache files.
+    pub fn of<T: Hash + ?Sized>(value: &T) -> Fingerprint {
+        let mut hasher = Blake3Hasher(blake3::Hasher::new());
+        value.hash(&mut hasher);
+        let hash = hasher.0.finalize();
+        let bytes = hash.as_bytes();
+        Fingerprint {
+            hi: u64::from_be_bytes(bytes[0..8].try_into().unwrap()),
+            lo: u64::from_be_bytes(bytes[8..16].try_into().unwrap()),
+        }
     }
 
-    #[test]
-    fn test_cache_invalidation() {
-        let mut db = QueryDatabase::new();
-        let key = QueryKey::ParseFile("main.doo".to_string());
-        let rev = current_revision();
-
-        db.store(key.clone(), 42i32, rev);
-
-        // Simulate file change
-        let new_rev = bump_revision();
-
-        // Old result should be stale
-        assert_eq!(db.get::<i32>(&key, new_rev), None);
-    }
-
-    #[test]
-    fn test_file_changed() {
-        let mut db = QueryDatabase::new();
-
-        assert_eq!(db.file_revision("main.doo"), Revision::ZERO);
-
-        db.set_file_changed("main.doo");
-        let rev = db.file_revision("main.doo");
-        assert!(rev > Revision::ZERO);
+    /// Compute a fingerprint for source text, including file path.
+    pub fn of_source(path: &str, source: &str) -> Fingerprint {
+        let mut combined = String::with_capacity(path.len() + source.len() + 1);
+        combined.push_str(path);
+        combined.push('\0');
+        combined.push_str(source);
+        Self::of(&combined)
     }
 }

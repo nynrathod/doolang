@@ -12,9 +12,9 @@
 
 pub mod borrow;
 pub mod conversions;
+pub mod loader;
 pub mod ownership;
 pub mod semantic;
-pub mod transform;
 pub mod types;
 
 pub use borrow::{BorrowChecker, BorrowError, BorrowErrorKind};
@@ -28,10 +28,6 @@ pub use semantic::{
     CircularImportError,
     // Cross-module resolution
     CrossModuleResolver,
-    // Decorator validation
-    DecoratorError,
-    DecoratorKind,
-    DecoratorValidator,
     // Error flow analysis
     ErrorFlowChecker,
     ErrorFlowError,
@@ -63,4 +59,7 @@ pub use semantic::{
     VisibilityChecker,
     VisibilityError,
 };
-pub use types::{ClosureContext, InferenceError, TypeCompat, TypeInference};
+// Just added infer_method_return_type to the end of this list:
+pub use types::{
+    infer_method_return_type, ClosureContext, InferenceError, TypeCompat, TypeInference,
+};

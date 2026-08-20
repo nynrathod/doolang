@@ -1,0 +1,13 @@
+[package]
+name = "doo_session"
+version.workspace = true
+edition.workspace = true
+description = "Compilation session — shared context for every compiler pass"
+license = "MIT"
+
+[dependencies]
+doo_core = { path = "../doo_core" }
+doo_diagnostics = { path = "../doo_diagnostics" }
+
+[features]
+default = []

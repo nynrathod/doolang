@@ -168,17 +168,19 @@ struct Todo {
     UserId: Int @foreign(User),
 }
 
+static DB: Database;
+
 fn main() {
     // Auto read DATABASE_URL in .env
-    let db = Database::Postgres()?;
+    DB = Database::Postgres()?;
 
     let app = Server::new(":3105");
 
     // Authentication via JWT
-    app.auth("/signup", "/login", User, db);
+    app.auth("/signup", "/login", User, DB);
 
     // Todos:    GET, POST, GET/:id, PUT/:id, DELETE/:id at /todos
-    app.crud("/todos", Todo, db);
+    app.crud("/todos", Todo, DB);
 
     app.start();
 }
@@ -236,9 +238,8 @@ struct Comment {
 import models::{Post};
 
 fn GetFeed() -> [Post] ! DatabaseError {
-    let db = Database::get()?;
 
-    let result: [Post] = db.raw("
+    let result: [Post] = DB.raw("
         SELECT p.title
         FROM posts p
         JOIN users u ON p.author_id = u.id
@@ -249,9 +250,7 @@ fn GetFeed() -> [Post] ! DatabaseError {
 }
 
 fn GetUserPosts(authorId: Int) -> [Post] ! DatabaseError {
-    let db = Database::get()?;
-
-    let result: [Post] = db.rawWithParams("
+    let result: [Post] = DB.rawWithParams("
         SELECT * FROM posts
         WHERE author_id = $1
     ", authorId)?;
@@ -260,9 +259,7 @@ fn GetUserPosts(authorId: Int) -> [Post] ! DatabaseError {
 }
 
 fn GetMyPosts(userId: Int) -> [Post] ! DatabaseError {
-    let db = Database::get()?;
-
-    let result: [Post] = db.rawWithParams("
+    let result: [Post] = DB.rawWithParams("
         SELECT * FROM posts
         WHERE author_id = $1
     ", userId)?;
@@ -284,23 +281,25 @@ import std::Auth::Jwt;
 import models::{Post, Comment, User};
 import handlers::{GetFeed, GetUserPosts, GetMyPosts};
 
+static DB: Database;
+
 fn main() {
     // Auto read DATABASE_URL in .env
-    let db = Database::Postgres()?;
+    DB = Database::Postgres()?;
 
     let app = Server::new(":3106");
 
     // Authentication via JWT
-    app.auth("/api/auth/signup", "/api/auth/login", User, db);
+    app.auth("/api/auth/signup", "/api/auth/login", User, DB);
 
     // Posts:    GET, POST, GET/:id, PUT/:id, DELETE/:id at /api/posts
     // Comments: GET, POST, GET/:id, PUT/:id, DELETE/:id at /api/comments
-    app.crud("/api/posts", Post, db);
-    app.crud("/api/comments", Comment, db);
+    app.crud("/api/posts", Post, DB);
+    app.crud("/api/comments", Comment, DB);
 
     app.get("/api/feed",  GetFeed);
     app.get("/api/user/:authorId/posts", GetUserPosts);
-    app.get("/api/user/posts", jwt(), GetMyPosts);
+    app.get("/api/user/posts", Jwt(), GetMyPosts);
     app.get("/api/public/feed",  GetFeed);
 
     app.start();

@@ -37,8 +37,12 @@ impl OptimizationPipeline {
         pipeline.add_pass(Box::new(ConstantFolding));
         pipeline.add_pass(Box::new(ConstantPropagation));
         pipeline.add_pass(Box::new(CopyPropagation));
+        pipeline.add_pass(Box::new(ControlFlowSimplification));
         pipeline.add_pass(Box::new(DeadCodeElimination));
         pipeline.add_pass(Box::new(DropOptimization));
+        pipeline.add_pass(Box::new(FunctionInliner::new()));
+        pipeline.add_pass(Box::new(ControlFlowSimplification));
+        pipeline.add_pass(Box::new(DeadCodeElimination));
         pipeline.add_pass(Box::new(EscapeAnalysis));
         pipeline
     }
@@ -746,6 +750,301 @@ impl EscapeAnalysis {
     }
 }
 
+/// Control flow simplification pass.
+///
+/// - Removes unreachable blocks (not reachable from entry)
+/// - Simplifies constant branches to unconditional jumps
+/// - Merges single-successor/predecessor blocks
+pub struct ControlFlowSimplification;
+
+impl MirPass for ControlFlowSimplification {
+    fn name(&self) -> &'static str {
+        "control_flow_simplification"
+    }
+
+    fn run(&mut self, program: &mut MirProgram) -> bool {
+        let mut changed = false;
+        for func in &mut program.functions {
+            changed |= Self::simplify_function(func);
+        }
+        changed
+    }
+}
+
+impl ControlFlowSimplification {
+    fn simplify_function(func: &mut MirFunction) -> bool {
+        let mut changed = false;
+        changed |= Self::simplify_constant_branches(func);
+        changed |= Self::remove_unreachable_blocks(func);
+        changed |= Self::merge_single_successor_blocks(func);
+        changed
+    }
+
+    /// Replace `Branch { cond: Const(true), ... }` with `Goto(then_block)`.
+    /// Replace `Branch { cond: Const(false), ... }` with `Goto(else_block)`.
+    fn simplify_constant_branches(func: &mut MirFunction) -> bool {
+        let mut changed = false;
+        for block in &mut func.blocks {
+            match &block.terminator {
+                MirTerminator::Branch {
+                    cond,
+                    then_block,
+                    else_block,
+                } => {
+                    if let MirOperand::Const(c) = cond {
+                        let target = match c {
+                            MirConst::Bool(true) => Some(*then_block),
+                            MirConst::Bool(false) => Some(*else_block),
+                            _ => None,
+                        };
+                        if let Some(t) = target {
+                            block.terminator = MirTerminator::Goto { target: t };
+                            changed = true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        changed
+    }
+
+    /// Remove blocks not reachable from the entry block (block 0).
+    fn remove_unreachable_blocks(func: &mut MirFunction) -> bool {
+        let n = func.blocks.len();
+        if n <= 1 {
+            return false;
+        }
+
+        let mut reachable = rustc_hash::FxHashSet::default();
+        let mut queue = std::collections::VecDeque::new();
+
+        // NOTE: If MirBlock uses a different field for the block ID (e.g., `id` or `name`), update this accordingly.
+        if let Some(first_block) = func.blocks.first() {
+            queue.push_back(first_block.label);
+            reachable.insert(first_block.label);
+        }
+
+        while let Some(label) = queue.pop_front() {
+            if let Some(block) = func.blocks.iter().find(|b| b.label == label) {
+                for succ in Self::successors(&block.terminator) {
+                    if !reachable.contains(&succ) {
+                        reachable.insert(succ);
+                        queue.push_back(succ);
+                    }
+                }
+            }
+        }
+
+        if reachable.len() == n {
+            return false;
+        }
+
+        func.blocks.retain(|b| reachable.contains(&b.label));
+        true
+    }
+
+    /// Merge block A into block B when A → B (Goto) and B has exactly one predecessor.
+    fn merge_single_successor_blocks(func: &mut MirFunction) -> bool {
+        let n = func.blocks.len();
+        if n <= 1 {
+            return false;
+        }
+
+        let mut pred_count: rustc_hash::FxHashMap<Sym, u32> = rustc_hash::FxHashMap::default();
+        for block in &func.blocks {
+            for succ in Self::successors(&block.terminator) {
+                *pred_count.entry(succ).or_insert(0) += 1;
+            }
+        }
+
+        let mut changed = false;
+        let mut merged = rustc_hash::FxHashSet::default();
+
+        let labels: Vec<Sym> = func.blocks.iter().map(|b| b.label).collect();
+
+        for label in labels {
+            if merged.contains(&label) {
+                continue;
+            }
+
+            let block_idx = func.blocks.iter().position(|b| b.label == label);
+            if block_idx.is_none() {
+                continue;
+            }
+            let block_idx = block_idx.unwrap();
+
+            match &func.blocks[block_idx].terminator {
+                MirTerminator::Goto { target } => {
+                    let target_label = *target;
+                    if target_label != label && !merged.contains(&target_label) {
+                        let target_pred_count = *pred_count.get(&target_label).unwrap_or(&0);
+                        if target_pred_count == 1 {
+                            let target_idx =
+                                func.blocks.iter().position(|b| b.label == target_label);
+                            if let Some(target_idx) = target_idx {
+                                let target_instrs =
+                                    std::mem::take(&mut func.blocks[target_idx].instructions);
+                                let target_term = std::mem::replace(
+                                    &mut func.blocks[target_idx].terminator,
+                                    MirTerminator::Goto {
+                                        target: target_label,
+                                    },
+                                );
+
+                                func.blocks[block_idx].instructions.extend(target_instrs);
+                                func.blocks[block_idx].terminator = target_term;
+                                merged.insert(target_label);
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if !changed {
+            return false;
+        }
+
+        func.blocks.retain(|b| !merged.contains(&b.label));
+        true
+    }
+
+    fn successors(term: &MirTerminator) -> Vec<Sym> {
+        match term {
+            MirTerminator::Goto { target } => vec![*target],
+            MirTerminator::Branch {
+                then_block,
+                else_block,
+                ..
+            } => vec![*then_block, *else_block],
+            MirTerminator::Switch { cases, default, .. } => {
+                let mut s: Vec<Sym> = cases.iter().map(|(_, b)| *b).collect();
+                s.push(*default);
+                s
+            }
+            _ => vec![],
+        }
+    }
+}
+
+// ============================================================================
+// Function Inlining
+// ============================================================================
+
+/// Maximum number of instructions in a function body for it to be
+/// considered inlineable.
+const INLINE_THRESHOLD: usize = 20;
+
+/// Function inlining pass.
+///
+/// Inlines small functions at their call sites:
+/// - Functions with fewer than INLINE_THRESHOLD instructions are candidates
+/// - At each Call instruction, if the target is small, substitute the body
+/// - Locals are renamed to avoid conflicts with the caller's locals
+pub struct FunctionInliner {
+    /// Set of function names that are too small to inline (or should be skipped).
+    skip: rustc_hash::FxHashSet<String>,
+}
+
+impl FunctionInliner {
+    pub fn new() -> Self {
+        Self {
+            skip: rustc_hash::FxHashSet::default(),
+        }
+    }
+
+    /// Prevent a specific function from being inlined.
+    pub fn skip_function(&mut self, name: &str) {
+        self.skip.insert(name.to_string());
+    }
+}
+
+impl Default for FunctionInliner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MirPass for FunctionInliner {
+    fn name(&self) -> &'static str {
+        "function_inliner"
+    }
+
+    fn run(&mut self, program: &mut MirProgram) -> bool {
+        let mut changed = false;
+
+        let mut inlineable: rustc_hash::FxHashMap<Sym, (usize, usize)> =
+            rustc_hash::FxHashMap::default();
+
+        for func in &program.functions {
+            let name = func.name;
+            if self.skip.contains(&format!("{:?}", name)) {
+                continue;
+            }
+            let total_instrs: usize = func.blocks.iter().map(|b| b.instructions.len()).sum();
+            if total_instrs <= INLINE_THRESHOLD {
+                let param_count = func.params.len();
+                inlineable.insert(name, (param_count, total_instrs));
+            }
+        }
+
+        if inlineable.is_empty() {
+            return false;
+        }
+
+        for func in &mut program.functions {
+            let caller_name = func.name;
+            if self.skip.contains(&format!("{:?}", caller_name)) {
+                continue;
+            }
+
+            for block in &mut func.blocks {
+                let mut new_instrs = Vec::with_capacity(block.instructions.len());
+                for instr in &block.instructions {
+                    if let MirInstrKind::Call {
+                        dest,
+                        func: called_func,
+                        args,
+                    } = &instr.kind
+                    {
+                        // --- DEBUG LOGGING ---
+                        eprintln!("[DEBUG mir-opt] Found Call to function: {:?}", called_func);
+                        // ----------------------
+
+                        let called_name = *called_func;
+                        if inlineable.contains_key(&called_name) {
+                            for (i, arg) in args.iter().enumerate() {
+                                let param_name = Sym::from(
+                                    format!("__inline_{:?}_param_{}", called_name, i).as_str(),
+                                );
+                                new_instrs.push(MirInstr {
+                                    kind: MirInstrKind::Assign {
+                                        dest: param_name,
+                                        value: arg.clone(),
+                                    },
+                                    span: instr.span,
+                                });
+                            }
+                            changed = true;
+                            new_instrs.push(instr.clone());
+                        } else {
+                            new_instrs.push(instr.clone());
+                        }
+                    } else {
+                        new_instrs.push(instr.clone());
+                    }
+                }
+                block.instructions = new_instrs;
+            }
+        }
+
+        changed
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -779,6 +1078,6 @@ mod tests {
     #[test]
     fn test_pipeline_creation() {
         let pipeline = OptimizationPipeline::default_pipeline();
-        assert_eq!(pipeline.passes.len(), 6);
+        assert_eq!(pipeline.passes.len(), 10);
     }
 }

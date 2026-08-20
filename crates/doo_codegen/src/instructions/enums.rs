@@ -18,7 +18,6 @@
 use super::InstructionHandler;
 use crate::context::CodegenContext;
 use doo_core::constants::ffi_names;
-use doo_core::doo_debug;
 use doo_core::types::TypeId;
 use doo_mir::sym::resolve;
 use doo_mir::{MirConst, MirInstr, MirInstrKind, MirOperand};
@@ -69,7 +68,13 @@ impl<'ctx> InstructionHandler<'ctx> for EnumHandler {
                 enum_name,
                 variant,
                 payload,
-            } => emit_enum_create(ctx, &resolve(*dest), &resolve(*enum_name), &resolve(*variant), payload.as_ref()),
+            } => emit_enum_create(
+                ctx,
+                &resolve(*dest),
+                &resolve(*enum_name),
+                &resolve(*variant),
+                payload.as_ref(),
+            ),
 
             // ==================================================================
             // EnumTag - Extract tag from enum (simple version)
@@ -96,7 +101,13 @@ impl<'ctx> InstructionHandler<'ctx> for EnumHandler {
                 tag,
                 variant_name,
                 enum_name,
-            } => emit_enum_tag_equals(ctx, &resolve(*dest), tag, &resolve(*variant_name), &resolve(*enum_name)),
+            } => emit_enum_tag_equals(
+                ctx,
+                &resolve(*dest),
+                tag,
+                &resolve(*variant_name),
+                &resolve(*enum_name),
+            ),
 
             // ==================================================================
             // EnumPayload - Extract payload (simple version, no type info)
@@ -122,7 +133,14 @@ impl<'ctx> InstructionHandler<'ctx> for EnumHandler {
             } => {
                 // Extract and dereference payload using type info
                 // Pass index for tuple payload element extraction
-                emit_enum_get_payload(ctx, &resolve(*dest), value, &resolve(*enum_name), &resolve(*variant_name), *index)
+                emit_enum_get_payload(
+                    ctx,
+                    &resolve(*dest),
+                    value,
+                    &resolve(*enum_name),
+                    &resolve(*variant_name),
+                    *index,
+                )
             }
 
             _ => None,
@@ -136,7 +154,7 @@ impl<'ctx> InstructionHandler<'ctx> for EnumHandler {
 
 /// Get the LLVM struct type for enums: { i32 tag, ptr payload }
 fn get_enum_type<'ctx>(ctx: &CodegenContext<'ctx>) -> inkwell::types::StructType<'ctx> {
-    let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+    let ptr_type = ctx.context.ptr_type(AddressSpace::default());
     ctx.context
         .struct_type(&[ctx.context.i32_type().into(), ptr_type.into()], false)
 }
@@ -157,11 +175,10 @@ fn emit_enum_create<'ctx>(
     payload: Option<&MirOperand>,
 ) -> Option<BasicValueEnum<'ctx>> {
     let enum_type = get_enum_type(ctx);
-    let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+    let ptr_type = ctx.context.ptr_type(AddressSpace::default());
 
     // Allocate enum struct
-    let enum_alloca = ctx
-        .alloca_in_entry_block(enum_type, &format!("{}_enum", dest))?;
+    let enum_alloca = ctx.alloca_in_entry_block(enum_type, &format!("{}_enum", dest))?;
 
     // Get variant index from type registry (single source of truth)
     // Falls back to 0 if not found (shouldn't happen in well-typed programs)
@@ -276,8 +293,7 @@ fn emit_enum_tag<'ctx>(
     let enum_val = operand_to_value(ctx, value)?;
     let enum_type = get_enum_type(ctx);
 
-    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-    }
+    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {}
 
     // If it's a struct value, extract directly
     if let BasicValueEnum::StructValue(struct_val) = enum_val {
@@ -413,7 +429,8 @@ fn emit_enum_payload<'ctx>(
                 }
                 // Value types - need to load from the heap-allocated payload
                 doo_core::types::TypeKind::Int
-                | doo_core::types::TypeKind::Float
+                | doo_core::types::TypeKind::Float32
+                | doo_core::types::TypeKind::Float64
                 | doo_core::types::TypeKind::Bool => {
                     // Fall through to load logic below
                 }
@@ -675,7 +692,8 @@ fn emit_enum_get_payload<'ctx>(
                 | doo_core::types::TypeKind::Enum { .. } => payload_ptr.into(),
                 // Value types - load from the heap-allocated payload
                 doo_core::types::TypeKind::Int
-                | doo_core::types::TypeKind::Float
+                | doo_core::types::TypeKind::Float32
+                | doo_core::types::TypeKind::Float64
                 | doo_core::types::TypeKind::Bool => {
                     let llvm_type = ctx.get_llvm_type(type_id);
                     ctx.builder

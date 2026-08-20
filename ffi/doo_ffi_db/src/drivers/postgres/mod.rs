@@ -10,15 +10,15 @@
 //! - PascalCase column name conversion
 //! - PostgreSQL-dialect DDL generation for migrations
 
-pub(crate) mod json_utils;
+pub mod json_utils;
 pub(crate) mod params;
-pub(crate) mod pool;
+pub mod pool;
 
 use doo_ffi_core::ffi_debug;
 
 use crate::driver::{BoxFuture, DbDriver, DriverResult};
 use crate::limits::MAX_ROWS;
-use crate::migrate::TableSchema;
+use crate::schema_types::TableSchema;
 
 pub use pool::{get_client, init_pool, is_pool_initialized};
 

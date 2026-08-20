@@ -1,0 +1,70 @@
+struct Array<T> {
+    data: Int
+    len: Int
+    cap: Int
+}
+
+@extern("doo_core", "doo_alloc")
+fn dooArrayAlloc(size: Int) -> Int
+
+@extern("doo_core", "doo_free")
+fn dooArrayFree(ptr: Int) -> Void
+
+@extern("c", "memcpy")
+fn dooArrayCopy(dst: Int, src: Int, n: Int) -> Void
+
+impl Array<T> {
+    fn len(self) -> Int {
+        return self.len
+    }
+
+    fn isEmpty(self) -> Bool {
+        return self.len == 0
+    }
+
+    fn capacity(self) -> Int {
+        return self.cap
+    }
+
+    fn push(self, val: T) -> Void {
+        if self.len == self.cap {
+            self.grow()
+        }
+        self.storeAt(self.len, val)
+        self.len = self.len + 1
+    }
+
+    fn pop(self) -> T {
+        if self.len == 0 {
+            panic("pop from empty array")
+        }
+        self.len = self.len - 1
+        return self.loadAt(self.len)
+    }
+
+    fn grow(self) -> Void {
+        let newCap = if self.cap == 0 { 4 } else { self.cap * 2 }
+        let newSize = newCap * 8
+        let newData = dooArrayAlloc(newSize)
+        if self.len > 0 {
+            dooArrayCopy(newData, self.data, self.len * 8)
+        }
+        if self.cap > 0 {
+            dooArrayFree(self.data)
+        }
+        self.data = newData
+        self.cap = newCap
+    }
+
+    @extern("doo_array", "doo_array_store")
+    fn storeAt(self, index: Int, val: T) -> Void
+
+    @extern("doo_array", "doo_array_load")
+    fn loadAt(self, index: Int) -> T
+
+    @extern("doo_array", "doo_array_get")
+    fn get(self, index: Int) -> T
+
+    @extern("doo_array", "doo_array_clone")
+    fn clone(self) -> Array<T>
+}

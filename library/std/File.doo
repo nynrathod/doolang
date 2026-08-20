@@ -1,0 +1,14 @@
+@extern("doo_file", "doo_file_read")
+fn read(path: Str) -> Str
+
+@extern("doo_file", "doo_file_write")
+fn write(path: Str, content: Str) -> Void
+
+@extern("doo_file", "doo_file_exists")
+fn exists(path: Str) -> Bool
+
+@extern("doo_file", "doo_file_delete")
+fn delete(path: Str) -> Void
+
+@extern("doo_file", "doo_file_append")
+fn append(path: Str, content: Str) -> Void

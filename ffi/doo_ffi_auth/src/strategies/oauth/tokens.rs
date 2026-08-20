@@ -69,6 +69,16 @@ pub struct UserInfo {
     /// Whether the email is verified by the provider
     #[serde(default)]
     pub email_verified: bool,
+
+    /// When the user first signed up / authenticated (UTC, set by auth layer)
+    /// Format: "YYYY-MM-DD HH:MM:SS.ffffff"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+
+    /// When the user last logged in / was updated (UTC, set by auth layer)
+    /// Format: "YYYY-MM-DD HH:MM:SS.ffffff"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
 }
 
 // ============================================================================
@@ -116,6 +126,8 @@ impl std::fmt::Display for OAuthError {
 /// - `refresh_token`: YOUR long-lived JWT for obtaining new access tokens via `/auth/refresh`
 /// - `expires_in`: Access token lifetime in seconds
 /// - `user`: Normalized user profile from the OAuth provider
+/// - `created_at`: When the user record was first created (UTC, auto-set by DB)
+/// - `updated_at`: When the user record was last updated (UTC, auto-set by DB)
 /// - `provider_access_token`: Google/GitHub's access token (optional, for calling provider APIs)
 /// - `provider_refresh_token`: Google's refresh token (optional, for calling provider APIs)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,6 +145,16 @@ pub struct OAuthExchangeResult {
 
     /// Normalized user info from the provider
     pub user: UserInfo,
+
+    /// When the user record was first created (UTC, auto-set by DB)
+    /// Format: "YYYY-MM-DD HH:MM:SS.ffffff"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+
+    /// When the user record was last updated (UTC, auto-set by DB)
+    /// Format: "YYYY-MM-DD HH:MM:SS.ffffff"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
 
     /// Provider's access token (for calling Google/GitHub APIs directly, if needed)
     #[serde(skip_serializing_if = "Option::is_none")]
