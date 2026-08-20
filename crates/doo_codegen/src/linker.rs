@@ -387,6 +387,12 @@ impl BinaryLinker {
         cmd.arg("-lm");
 
         for lib in &self.extern_libs {
+            // The C standard library ("c") is always linked by the system toolchain.
+            // On Windows it's msvcrt.lib, on Linux it's libc. We don't need to 
+            // explicitly pass -lc, and doing so can cause issues.
+            if lib == "c" {
+                continue;
+            }
             cmd.arg(format!("-l{}", lib));
         }
 

@@ -7,6 +7,17 @@ impl Parser {
     // === Statements ===
 
     pub fn parse_statement(&mut self) -> ParseResult<Stmt> {
+        let span = self.current_span();
+
+        // Handle empty statements (e.g. `;;` or `};`)
+        if self.check(TokenKind::Semi) {
+            self.advance();
+            return Ok(Stmt::new(
+                StmtKind::Expr(Expr::new(ExprKind::Nil, span)),
+                span,
+            ));
+        }
+
         match self.current().kind {
             TokenKind::Let => self.parse_let(),
             TokenKind::If => self.parse_if(),
@@ -393,16 +404,42 @@ impl Parser {
     }
 
     pub(crate) fn parse_block(&mut self) -> ParseResult<Vec<Stmt>> {
+        let (stmts, _) = self.parse_block_parts(false)?;
+        Ok(stmts)
+    }
+
+    /// Parse `{ ... }`.
+    ///
+    /// When `as_expr` is true (if/else expression arms), a final expression
+    /// without a trailing `;` becomes the block's value, matching
+    /// `if cond { 4 } else { x * 2 }`.
+    pub(crate) fn parse_block_parts(
+        &mut self,
+        as_expr: bool,
+    ) -> ParseResult<(Vec<Stmt>, Option<Expr>)> {
         self.expect(TokenKind::LBrace)?;
 
         let mut stmts = Vec::new();
+        let mut tail = None;
         while !self.check(TokenKind::RBrace) && !self.is_at_end() {
+            doo_core::doo_debug!(
+                "parser",
+                "parse_block: parsing statement starting with {:?}",
+                self.current().kind
+            );
+
             match self.parse_statement() {
                 Ok(stmt) => {
-                    // Enforce mandatory semicolons (Rust-like rules)
                     if stmt.kind.needs_semicolon() {
                         if self.check(TokenKind::Semi) {
                             self.advance();
+                            stmts.push(stmt);
+                        } else if as_expr && self.check(TokenKind::RBrace) {
+                            if let StmtKind::Expr(e) = stmt.kind {
+                                tail = Some(e);
+                            } else {
+                                stmts.push(stmt);
+                            }
                         } else {
                             self.errors.push(
                                 CompilerError::new(
@@ -412,14 +449,14 @@ impl Parser {
                                 )
                                 .with_suggestion("add `;` at the end of this statement"),
                             );
+                            stmts.push(stmt);
                         }
                     } else {
-                        // Block-ending statements: consume optional semicolon
                         if self.check(TokenKind::Semi) {
                             self.advance();
                         }
+                        stmts.push(stmt);
                     }
-                    stmts.push(stmt);
                 }
                 Err(e) => {
                     self.errors.push(e);
@@ -429,7 +466,7 @@ impl Parser {
         }
 
         self.expect(TokenKind::RBrace)?;
-        Ok(stmts)
+        Ok((stmts, tail))
     }
 
     fn parse_block_stmt(&mut self) -> ParseResult<Stmt> {
@@ -442,6 +479,12 @@ impl Parser {
     fn parse_expr_or_assign(&mut self) -> ParseResult<Stmt> {
         let start = self.current_span();
         let expr = self.parse_expression()?;
+
+        doo_core::doo_debug!(
+            "parser",
+            "parse_expr_or_assign: parsed expr {:?}",
+            expr.kind
+        );
 
         // Check for assignment
         if self.check(TokenKind::Eq) {
@@ -496,6 +539,12 @@ impl Parser {
     }
 
     fn expr_to_pattern(&self, expr: &Expr) -> ParseResult<Pattern> {
+        doo_core::doo_debug!(
+            "parser",
+            "expr_to_pattern called with expr: {:?}",
+            expr.kind
+        );
+
         match &expr.kind {
             ExprKind::Ident(name) => Ok(Pattern::ident(name.clone(), expr.span)),
             ExprKind::TupleLit(items) => {

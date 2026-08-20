@@ -139,9 +139,8 @@ impl Lower {
             .map(|d| self.lower_decorator(d))
             .collect();
 
-        // Generate mangled name for methods: _method_{TypeName}_{MethodName}
         let func_name = if let Some(type_name) = &f.associated_type {
-            format!("_method_{}_{}", type_name, f.name)
+            doo_core::constants::mangle_method(type_name, &f.name)
         } else {
             f.name.clone()
         };
@@ -223,9 +222,8 @@ impl Lower {
             .map(|d| self.lower_decorator(d))
             .collect();
 
-        // Generate mangled name for methods: _method_{TypeName}_{MethodName}
         let func_name = if let Some(type_name) = &f.associated_type {
-            format!("_method_{}_{}", type_name, f.name)
+            doo_core::constants::mangle_method(type_name, &f.name)
         } else {
             f.name.clone()
         };

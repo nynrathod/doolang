@@ -288,6 +288,7 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
             });
         }
     };
+
     timings.push(("Parse", t.elapsed()));
 
     // === Macro Expansion — between Parse and Type Check ===
@@ -654,7 +655,9 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
 
     // Phase 9: Optimize
     let t = Instant::now();
+    doo_debug!("DEBUG", "Starting LLVM optimization...");
     optimize_module(&module, OptLevel::O3);
+    doo_debug!("DEBUG", "LLVM optimization complete");
 
     // Phase 9.1: Harden ALL functions against stack corruption post-optimization.
     //
@@ -678,8 +681,14 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
         // Stack canary: sspstrong inserts canaries for functions with arrays or address-taken vars
         let ssp = context.create_string_attribute("sspstrong", "");
         let ssp_buf_size = context.create_string_attribute("ssp-buffer-size", "4");
+        let mut seen_funcs: HashSet<String> = HashSet::new();
         let mut func = module.get_first_function();
         while let Some(f) = func {
+            // LLVM 22 can report a cyclic function list; stop instead of hanging.
+            let func_name = f.get_name().to_str().unwrap_or("").to_string();
+            if !seen_funcs.insert(func_name) {
+                break;
+            }
             // (1) Function-level attribute: tell backend "no tail calls"
             f.add_attribute(inkwell::attributes::AttributeLoc::Function, no_tail);
             // (3) Preserve frame pointer in every function
@@ -693,10 +702,20 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
             //     strlen, FFI, etc.). Even with disable-tail-calls, belt-and-
             //     suspenders: remove the IR-level hint so the backend can never
             //     see it.
+            let mut bb_count = 0usize;
             let mut bb = f.get_first_basic_block();
             while let Some(block) = bb {
+                bb_count += 1;
+                if bb_count > 100_000 {
+                    break;
+                }
+                let mut inst_count = 0usize;
                 let mut instr = block.get_first_instruction();
                 while let Some(inst) = instr {
+                    inst_count += 1;
+                    if inst_count > 1_000_000 {
+                        break;
+                    }
                     if inst.get_opcode() == InstructionOpcode::Call {
                         if let Ok(call_site) = inkwell::values::CallSiteValue::try_from(inst) {
                             if call_site.is_tail_call() {
@@ -733,12 +752,16 @@ pub fn compile_project(opts: CompileOptions) -> Result<CompileResult, String> {
 
     // Phase 12: Compile to object file
     let t = Instant::now();
+    doo_debug!("DEBUG", "Compiling LLVM module to object file...");
     let obj_file = compile_to_object(&module, &opts)?;
+    doo_debug!("DEBUG", "Object file written: {}", obj_file.display());
     timings.push(("Compile to object", t.elapsed()));
 
     // Phase 13: Link
     let t = Instant::now();
+    doo_debug!("DEBUG", "Linking executable...");
     let exe_path = link_object_file(&obj_file, &opts, &mir_program)?;
+    doo_debug!("DEBUG", "Linked: {}", exe_path.display());
     timings.push(("Link", t.elapsed()));
 
     // Cleanup object file unless requested to keep
@@ -1399,17 +1422,26 @@ fn link_windows(
     // With /FORCE:MULTIPLE, the FIRST definition of each duplicate symbol wins.
     // Alphabetical order ensures doo_ffi_core's runtime symbols win deduplication,
     // which is correct since core provides the canonical runtime implementation.
+        // Link FFI libraries in deterministic alphabetical order.
+    // With /FORCE:MULTIPLE, the FIRST definition of each duplicate symbol wins.
+    // Alphabetical order ensures doo_ffi_core's runtime symbols win deduplication,
+    // which is correct since core provides the canonical runtime implementation.
     let mut lib_entries: Vec<(&String, PathBuf, PathBuf)> = Vec::new();
     for lib in ffi_libs.iter() {
+        // The C standard library ("c") is always available via the system toolchain.
+        // We never need to find a .lib file for it on disk.
+        if lib == "c" {
+            continue;
+        }
+
         if let Some((lib_dir, lib_file)) = find_ffi_library(lib, search_paths) {
             lib_entries.push((lib, lib_dir, lib_file));
         } else {
-            return Err(format!(
-                "FFI library '{}' (.lib/.dll.lib) not found.\n\
-                Build it first with: cargo build --release\n\
-                Searched in: {:?}",
-                lib, search_paths
-            ));
+            // Warn instead of crashing the compilation.
+            // The system linker will emit an "undefined symbol" error later 
+            // if the program actually uses functions from this missing library.
+            eprintln!("Warning: FFI library '{}' not found. Skipping.", lib);
+            eprintln!("         If your program uses functions from this library, the link step will fail.");
         }
     }
 

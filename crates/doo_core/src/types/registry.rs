@@ -136,6 +136,29 @@ impl TypeInfo {
     pub fn needs_drop(&self) -> bool {
         !self.is_copy()
     }
+
+    /// Names under which inherent `impl` methods are registered.
+    ///
+    /// Collection types use the std type name (`Array`, `Map`, …) rather than
+    /// the display name (`[Int]`), matching `library/std/*.doo` impl blocks.
+    pub fn inherent_impl_names(&self) -> Vec<String> {
+        match &self.kind {
+            TypeKind::Array { .. } => vec!["Array".to_string()],
+            TypeKind::Map { .. } => vec!["Map".to_string()],
+            TypeKind::Set { .. } => vec!["Set".to_string()],
+            TypeKind::Optional { .. } => vec!["Option".to_string(), "Optional".to_string()],
+            TypeKind::Result { .. } => vec!["Result".to_string()],
+            TypeKind::Struct { def } => vec![def.name.resolve().to_string()],
+            TypeKind::Enum { def } => vec![def.name.resolve().to_string()],
+            _ => {
+                if self.name.is_empty() {
+                    vec![self.kind.kind_name().to_string()]
+                } else {
+                    vec![self.name.clone()]
+                }
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -194,6 +217,11 @@ impl TypeRegistry {
             self.types.insert(id, info);
             self.name_to_id.insert(name.to_string(), id);
         }
+
+        // Add type aliases so the registry returns the correct TypeId
+        self.name_to_id
+            .insert("Float".to_string(), builtin::FLOAT64);
+        self.name_to_id.insert("String".to_string(), builtin::STR);
     }
 
     /// Register a new type and return its ID.
@@ -225,8 +253,14 @@ impl TypeRegistry {
     }
 
     /// Define a struct type.
+    ///
+    /// If `name` already identifies a language primitive (e.g. `Str`), keep
+    /// that type. Methods attach through `impl Str` — same as Rust's `impl str`.
     pub fn define_struct(&mut self, def: StructDef) -> TypeId {
         let name = def.name.resolve().to_string();
+        if let Some(id) = self.existing_language_type(&name) {
+            return id;
+        }
         let id = self.declare_named(&name);
         if let Some(info) = self.types.get_mut(&id) {
             info.kind = TypeKind::Struct { def };
@@ -237,11 +271,25 @@ impl TypeRegistry {
     /// Define an enum type.
     pub fn define_enum(&mut self, def: EnumDef) -> TypeId {
         let name = def.name.resolve().to_string();
+        if let Some(id) = self.existing_language_type(&name) {
+            return id;
+        }
         let id = self.declare_named(&name);
         if let Some(info) = self.types.get_mut(&id) {
             info.kind = TypeKind::Enum { def };
         }
         id
+    }
+
+    /// True when `name` already maps to a primitive / collection kind that
+    /// std must not replace with a user struct or enum.
+    fn existing_language_type(&self, name: &str) -> Option<TypeId> {
+        let id = self.lookup(name)?;
+        let info = self.types.get(&id)?;
+        match &info.kind {
+            TypeKind::TypeRef { .. } | TypeKind::Struct { .. } | TypeKind::Enum { .. } => None,
+            _ => Some(id),
+        }
     }
 
     /// Define an interface type.

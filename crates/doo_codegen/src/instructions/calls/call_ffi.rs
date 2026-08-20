@@ -44,13 +44,26 @@ fn get_ffi_signature(symbol: &str) -> Option<FfiSignature> {
         ffi_names::MEMSET => Some((&["ptr", "i32", "i64"], "ptr", false)),
         ffi_names::PRINTF => Some((&["ptr"], "i32", true)),
         ffi_names::SNPRINTF => Some((&["ptr", "i64", "ptr"], "i32", true)),
+        ffi_names::SPRINTF => Some((&["ptr", "ptr"], "i32", true)),
         ffi_names::PUTS => Some((&["ptr"], "i32", false)),
         ffi_names::PUTCHAR => Some((&["i32"], "i32", false)),
+        ffi_names::FFLUSH => Some((&["ptr"], "i32", false)),
+        ffi_names::EXIT => Some((&["i64"], "void", false)),
 
         // Doo Runtime Allocator
         ffi_names::DOO_ALLOC => Some((&["i64"], "ptr", false)),
         ffi_names::DOO_FREE => Some((&["ptr"], "void", false)),
         ffi_names::DOO_REALLOC => Some((&["ptr", "i64"], "ptr", false)),
+
+        // Print/debug runtime (HIR `print` desugars to these names)
+        ffi_names::DOO_PRINT_STR => Some((&["ptr"], "void", false)),
+        ffi_names::DOO_PRINTLN => Some((&[], "void", false)),
+        ffi_names::DOO_FLUSH => Some((&[], "void", false)),
+        ffi_names::DOO_INT_TO_STR => Some((&["i64"], "ptr", false)),
+        ffi_names::DOO_FLOAT_TO_STR => Some((&["f64"], "ptr", false)),
+        ffi_names::DOO_BOOL_TO_STR => Some((&["i32"], "ptr", false)),
+        ffi_names::DOO_NULL_TO_STR => Some((&[], "ptr", false)),
+        ffi_names::DOO_STR_FREE => Some((&["ptr"], "void", false)),
 
         // Math intrinsics
         "fabs" => Some((&["f64"], "f64", false)),
@@ -61,6 +74,10 @@ fn get_ffi_signature(symbol: &str) -> Option<FfiSignature> {
 
         _ => None,
     }
+}
+
+pub(crate) fn is_runtime_symbol(symbol: &str) -> bool {
+    get_ffi_signature(symbol).is_some()
 }
 
 /// Convert FFI type string to LLVM type.
@@ -261,8 +278,7 @@ fn convert_to_ffi_arg<'ctx>(
                     .get_function("doo_format_float")
                     .unwrap_or_else(|| {
                         let fn_ty = ptr_type.fn_type(&[f64_type.into()], false);
-                        ctx.module
-                            .add_function("doo_format_float", fn_ty, None)
+                        ctx.module.add_function("doo_format_float", fn_ty, None)
                     });
 
                 let float_val = val.into_float_value();

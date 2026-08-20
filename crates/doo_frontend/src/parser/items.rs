@@ -20,15 +20,12 @@ impl Parser {
                 Ok(Item::Static(self.parse_static()?))
             }
             TokenKind::Fn => {
-                let mut func = self.parse_function()?;
-                func.decorators = decorators;
+                let func = self.parse_function(decorators)?;
                 Ok(Item::Function(func))
             }
             TokenKind::Async => {
                 // async fn — consume `async`, then parse the function
-                let mut func = self.parse_function()?;
-                func.is_async = true;
-                func.decorators = decorators;
+                let func = self.parse_function(decorators)?;
                 Ok(Item::Function(func))
             }
             TokenKind::Struct => {
@@ -211,7 +208,10 @@ impl Parser {
         Ok(StaticDecl::new(name, type_expr, start.merge(end)))
     }
 
-    pub(crate) fn parse_function(&mut self) -> ParseResult<FunctionDecl> {
+    pub(crate) fn parse_function(
+        &mut self,
+        decorators: Vec<Decorator>,
+    ) -> ParseResult<FunctionDecl> {
         let start = self.current_span();
 
         // Handle `async fn` — consume `async` if present
@@ -286,11 +286,49 @@ impl Parser {
             (None, None)
         };
 
+        let is_extern = decorators.iter().any(|d| d.name == "extern");
+
         // Body - either block or expression function
         self.fn_depth += 1;
-        let (body, is_expr_fn) = if self.check(TokenKind::FatArrow) {
+        let (body, is_expr_fn) = if is_extern {
+            // @extern functions are declarations — no body needed.
+            if self.check(TokenKind::FatArrow) {
+                self.advance();
+                let mut values = Vec::new();
+                values.push(self.parse_expression()?);
+                while self.check(TokenKind::Comma) {
+                    self.advance();
+                    values.push(self.parse_expression()?);
+                }
+                if self.check(TokenKind::Semi) {
+                    self.advance();
+                }
+                (Vec::new(), false)
+            } else if self.check(TokenKind::LBrace) {
+                let _ = self.parse_block()?;
+                (Vec::new(), false)
+            } else {
+                // --- DEBUG LOGGING ---
+                eprintln!("[DEBUG parser] @extern function '{}' parsed. Checking for trailing ';'. Current token: {:?}", name, self.current().kind);
+                if self.check(TokenKind::Semi) {
+                    eprintln!(
+                        "[DEBUG parser] Consuming trailing ';' for @extern function '{}'",
+                        name
+                    );
+                    self.advance();
+                } else {
+                    eprintln!(
+                        "[DEBUG parser] WARNING: No trailing ';' found for @extern function '{}'",
+                        name
+                    );
+                }
+                // ----------------------
+                (Vec::new(), false)
+            }
+        } else if self.check(TokenKind::FatArrow) {
+            // ... rest of the function remains exactly as it is
+            // ... rest of the function remains the same
             self.advance();
-            // Parse comma-separated expressions for tuple returns (same as parse_return)
             let mut values = Vec::new();
             values.push(self.parse_expression()?);
             while self.check(TokenKind::Comma) {
@@ -327,7 +365,7 @@ impl Parser {
             return_type,
             error_type,
             body,
-            decorators: Vec::new(),
+            decorators, // Use the decorators passed into the function
             receiver,
             associated_type,
             is_expr_fn,
@@ -435,6 +473,12 @@ impl Parser {
 
         while !self.check(TokenKind::RParen) && !self.is_at_end() {
             let param_span = self.current_span();
+
+            // Handle `mut` keyword for mutable parameters (e.g., `mut self`, `mut x: Int`)
+            if self.check(TokenKind::Mut) {
+                self.advance();
+            }
+
             let name = self.expect_ident()?;
 
             // Check for duplicate parameter names
@@ -597,8 +641,10 @@ impl Parser {
         let mut seen_methods: HashSet<String> = HashSet::new();
 
         while !self.check(TokenKind::RBrace) && !self.is_at_end() {
-            // Each method must start with `fn`
-            let mut func = self.parse_function().map_err(|e| {
+            // Parse decorators before method (supports @extern inside impl blocks)
+            let method_decorators = self.parse_decorators()?;
+
+            let mut func = self.parse_function(method_decorators).map_err(|e| {
                 CompilerError::new(
                     ErrorCode::UnexpectedToken,
                     format!("invalid method in impl {}: {}", struct_name, e.message),
@@ -658,6 +704,9 @@ impl Parser {
 
         let name = self.expect_ident()?;
 
+        // Support generic enums: enum Option<T> { ... }
+        let _ = self.parse_type_params()?;
+
         let mut seen_variants: HashSet<String> = HashSet::new();
 
         let variants = if self.check(TokenKind::Colon) {
@@ -674,7 +723,6 @@ impl Parser {
                     .with_suggestion(format!("rename one of the '{}' variants", variant.name)));
                 }
                 v.push(variant);
-                // Accept both comma `,` and pipe `|` as variant separators for inline enums
                 while self.check(TokenKind::Comma) || self.check(TokenKind::Or) {
                     self.advance();
                     let variant = self.parse_variant_decl()?;
@@ -692,7 +740,6 @@ impl Parser {
                     v.push(variant);
                 }
             }
-            // Optional semicolon at end of inline decl
             if self.check(TokenKind::Semi) {
                 self.advance();
             }
@@ -711,7 +758,6 @@ impl Parser {
                     .with_suggestion(format!("rename one of the '{}' variants", variant.name)));
                 }
                 v.push(variant);
-                // Allow optional commas in block too
                 if self.check(TokenKind::Comma) {
                     self.advance();
                 }

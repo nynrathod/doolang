@@ -119,7 +119,7 @@ impl Parser {
 
     /// Parse primary expressions (literals, identifiers, blocks).
     fn parse_primary(&mut self) -> ParseResult<Expr> {
-        let span = self.current().span;
+        let span = self.current_span();
 
         match self.current().kind {
             TokenKind::Integer => {
@@ -167,38 +167,33 @@ impl Parser {
                 let name = self.current().text.clone();
                 self.advance();
 
-                // Check for enum variant: `Color::Red` or `Color.Red`
-                if self.check(TokenKind::ColonColon) || self.check(TokenKind::Dot) {
-                    self.advance(); // consume `::` or `.`
-                    let variant = self.expect_ident()?;
-                    if self.check(TokenKind::LParen) {
-                        self.advance();
-                        let mut payload = Vec::new();
-                        while !self.check(TokenKind::RParen) && !self.is_at_end() {
-                            payload.push(self.parse_expression()?);
-                            if !self.check(TokenKind::RParen) {
-                                self.expect(TokenKind::Comma)?;
-                            }
+                // Robustly detect Struct Literals: `Str { data: result, len: self.len }`
+                // In Doolang, struct names are PascalCase (uppercase first letter).
+                // If we see an uppercase Ident followed by `{`, it MUST be a struct literal.
+                // This prevents `Str { ... }` from being parsed as a block.
+                if self.check(TokenKind::LBrace)
+                    && name
+                        .chars()
+                        .next()
+                        .map(|c| c.is_uppercase())
+                        .unwrap_or(false)
+                {
+                    self.advance(); // consume {
+                    let mut fields = Vec::new();
+                    while !self.check(TokenKind::RBrace) && !self.is_at_end() {
+                        let key = self.expect_ident()?;
+                        self.expect(TokenKind::Colon)?;
+                        let value = self.parse_expression()?;
+                        fields.push((key, value));
+                        if !self.check(TokenKind::RBrace) {
+                            self.expect(TokenKind::Comma)?;
                         }
-                        let end_span = self.expect(TokenKind::RParen)?;
-                        return Ok(Expr::new(
-                            ExprKind::EnumVariant {
-                                enum_name: name,
-                                variant,
-                                payload,
-                            },
-                            span.merge(end_span),
-                        ));
-                    } else {
-                        return Ok(Expr::new(
-                            ExprKind::EnumVariant {
-                                enum_name: name,
-                                variant,
-                                payload: Vec::new(),
-                            },
-                            span.merge(self.prev_span()),
-                        ));
                     }
+                    let end_span = self.expect(TokenKind::RBrace)?;
+                    return Ok(Expr::new(
+                        ExprKind::StructLit { name, fields },
+                        span.merge(end_span),
+                    ));
                 }
 
                 Ok(Expr::new(ExprKind::Ident(name), span))
@@ -246,7 +241,6 @@ impl Parser {
                     span.merge(self.prev_span()),
                 ))
             }
-            // Support `go { ... }` or `go expr`
             TokenKind::Go => {
                 self.advance();
                 let body = if self.check(TokenKind::LBrace) {
@@ -263,7 +257,6 @@ impl Parser {
                     span.merge(span_end),
                 ))
             }
-            // Support `scope { ... }`
             TokenKind::Scope => {
                 self.advance();
                 let stmts = self.parse_block()?;
@@ -283,6 +276,7 @@ impl Parser {
             )),
         }
     }
+
     //// Parse postfix operations (`.`, `::`, `()`, `[]`, `await`, `?`, `!`, `??`).
     fn parse_postfix(&mut self, mut expr: Expr) -> ParseResult<Expr> {
         loop {
@@ -616,16 +610,19 @@ impl Parser {
         self.expect(TokenKind::If)?;
         let condition = self.parse_expression()?;
 
-        let then_block = self.parse_block()?;
-        let then_branch = Expr::new(ExprKind::Block(then_block, None), self.prev_span());
+        let (then_stmts, then_tail) = self.parse_block_parts(true)?;
+        let then_branch = Expr::new(
+            ExprKind::Block(then_stmts, then_tail.map(Box::new)),
+            self.prev_span(),
+        );
 
         let else_branch = if self.match_token(TokenKind::Else) {
             if self.check(TokenKind::If) {
                 Some(Box::new(self.parse_if_expression(self.current().span)?))
             } else {
-                let else_block = self.parse_block()?;
+                let (else_stmts, else_tail) = self.parse_block_parts(true)?;
                 Some(Box::new(Expr::new(
-                    ExprKind::Block(else_block, None),
+                    ExprKind::Block(else_stmts, else_tail.map(Box::new)),
                     self.prev_span(),
                 )))
             }

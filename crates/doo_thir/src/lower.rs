@@ -72,9 +72,11 @@ impl<'a> ThirLoweringContext<'a> {
 
     fn collect_inherent_methods(&mut self, items: &[HirItem]) {
         for item in items {
-            if let HirItem::Function(_f) = item {
-                // Note: HIR in this version does not explicitly carry receiver types on functions.
-                // Trait resolution relies on the method name and type registry.
+            if let HirItem::Function(f) = item {
+                if let Some((type_name, method)) = doo_core::constants::demangle_method(&f.name) {
+                    self.trait_solver
+                        .register_inherent_method(type_name, method);
+                }
             }
         }
     }

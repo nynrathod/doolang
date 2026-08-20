@@ -131,7 +131,9 @@ impl Default for OptimizationConfig {
             slp_vectorization: true,
             loop_unrolling: true,
             loop_interleaving: true,
-            merge_functions: true,
+            // MergeFunctions is skipped: LLVM 22's pass can hang on Windows
+            // when many similar stdlib/FFI declarations are present.
+            merge_functions: false,
             verify_each: false,
             debug_logging: false,
         }

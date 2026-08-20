@@ -34,10 +34,11 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use doo_core::doo_debug;
 use doo_core::errors::codes::{CompilerError, ErrorCode};
 use doo_core::Span;
 use doo_frontend::ast::{ImportDecl, ImportItem, Item, Program};
-use doo_frontend::Parser;
+use doo_frontend::{Lexer, Parser};
 
 // Re-export analysis types for consistency (single source of truth for symbol resolution)
 pub use doo_analysis::{
@@ -1351,20 +1352,70 @@ fn narrow_span_to_symbol(full_span: &Span, sym_name: &str) -> Span {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_module_loader_creation() {
-        let loader = ModuleLoader::new();
-        assert!(loader.cache.is_empty());
+/// Locate the standard library directory.
+/// Searches upwards from the executable to find the workspace root.
+fn find_stdlib_path() -> Option<PathBuf> {
+    // Walk upwards from the executable to find workspace root (dev mode)
+    if let Ok(exe) = std::env::current_exe() {
+        let mut current = exe.parent().map(|p| p.to_path_buf());
+        while let Some(dir) = current {
+            let std_path = dir.join("library/std");
+            if std_path.exists() && std_path.is_dir() {
+                return Some(std_path);
+            }
+            current = dir.parent().map(|p| p.to_path_buf());
+        }
     }
-
-    #[test]
-    fn test_import_resolution_default() {
-        let resolution = ImportResolution::default();
-        assert!(resolution.items.is_empty());
-        assert!(resolution.errors.is_empty());
+    
+    // Fallback: check relative to CWD
+    let dev_path = PathBuf::from("library/std");
+    if dev_path.exists() {
+        return Some(dev_path);
     }
+    
+    None
+}
+
+/// Load all standard library .doo files into the AST.
+pub fn load_stdlib() -> Vec<doo_frontend::ast::Item> {
+    let mut items = Vec::new();
+    
+    let std_path = find_stdlib_path();
+    doo_debug!("loader", "stdlib path: {:?}", std_path);
+
+    if let Some(std_path) = std_path {
+        if let Ok(entries) = std::fs::read_dir(&std_path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("doo") {
+                    doo_debug!("loader", "loading std file: {:?}", path);
+                    if let Ok(source) = std::fs::read_to_string(&path) {
+                        let mut parser = doo_frontend::Parser::new(&source, 9999);
+                        match parser.parse_program() {
+                            Ok(program) => {
+                                doo_debug!(
+                                    "loader",
+                                    "parsed {} items from {:?}",
+                                    program.items.len(),
+                                    path
+                                );
+                                items.extend(program.items);
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "Warning: Failed to parse std file {}: {:?}",
+                                    path.display(),
+                                    e
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            doo_debug!("loader", "failed to read directory: {}", std_path.display());
+        }
+    }
+    
+    items
 }

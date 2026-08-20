@@ -15,7 +15,7 @@
 //! At most one applicable impl per type+trait pair (Architecture Part V §5.1).
 //! Interface methods always take `self` by immutable borrow (Decision 6.2).
 
-use doo_core::types::{TypeId, TypeKind, TypeRegistry};
+use doo_core::types::{TypeId, TypeRegistry};
 use rustc_hash::FxHashMap;
 
 use crate::types::ImplResolution;
@@ -72,17 +72,8 @@ impl TraitSolver {
     ) -> ImplResolution {
         // 1. Check inherent methods on the exact type
         if let Some(info) = registry.get(receiver_type) {
-            let type_name = &info.name;
-            if let Some(methods) = self.inherent_methods.get(type_name) {
-                if methods.contains_key(method) {
-                    return ImplResolution::Direct;
-                }
-            }
-
-            // 2. For generic types like Array(Int), try the generic form Array
-            if let TypeKind::Struct { def } = &info.kind {
-                let base_name = def.name.resolve();
-                if let Some(methods) = self.inherent_methods.get(base_name) {
+            for type_name in info.inherent_impl_names() {
+                if let Some(methods) = self.inherent_methods.get(&type_name) {
                     if methods.contains_key(method) {
                         return ImplResolution::Direct;
                     }

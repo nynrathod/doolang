@@ -1010,6 +1010,10 @@ impl MirPass for FunctionInliner {
                         args,
                     } = &instr.kind
                     {
+                        // --- DEBUG LOGGING ---
+                        eprintln!("[DEBUG mir-opt] Found Call to function: {:?}", called_func);
+                        // ----------------------
+
                         let called_name = *called_func;
                         if inlineable.contains_key(&called_name) {
                             for (i, arg) in args.iter().enumerate() {
