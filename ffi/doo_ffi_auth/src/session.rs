@@ -197,11 +197,13 @@ pub fn ensure_keys() -> Result<&'static (EncodingKey, DecodingKey), &'static str
 ///
 /// # Parameters
 /// - `sub`: Subject (email or user identifier)
+/// - `user_id`: Database primary key (0 = not set, looked up on middleware)
 /// - `data_json`: Optional JSON string for additional claims
 /// - `expires_seconds`: Token lifetime in seconds (minimum 1).
 ///   Pass 0 to use the default from env/config.
 pub fn sign_token(
     sub: &str,
+    user_id: i64,
     data_json: Option<&str>,
     expires_seconds: i64,
 ) -> Result<String, String> {
@@ -221,7 +223,7 @@ pub fn sign_token(
 
     let claims = Claims {
         sub: sub.to_string(),
-        user_id: 0,
+        user_id,
         exp: now.saturating_add(expires_secs),
         iat: now,
         iss: JWT_ISSUER.to_string(),
@@ -236,13 +238,14 @@ pub fn sign_token(
 /// Sign a JWT refresh token.
 ///
 /// Refresh tokens have a longer expiry and `token_type: "refresh"`.
-/// They carry minimal claims (sub only) — no user data embedded.
+/// They carry minimal claims (sub + user_id) — no user data embedded.
 /// Used to obtain new access tokens without re-authentication.
 ///
 /// # Parameters
 /// - `sub`: Subject (email or user identifier)
+/// - `user_id`: Database primary key
 /// - `expires_seconds`: Token lifetime in seconds. Pass 0 for default (7 days).
-pub fn sign_refresh_token(sub: &str, expires_seconds: i64) -> Result<String, String> {
+pub fn sign_refresh_token(sub: &str, user_id: i64, expires_seconds: i64) -> Result<String, String> {
     let (enc, _) = ensure_keys().map_err(|e| e.to_string())?;
 
     let now = SystemTime::now()
@@ -258,7 +261,7 @@ pub fn sign_refresh_token(sub: &str, expires_seconds: i64) -> Result<String, Str
 
     let claims = Claims {
         sub: sub.to_string(),
-        user_id: 0,
+        user_id,
         exp: now.saturating_add(expires_secs),
         iat: now,
         iss: JWT_ISSUER.to_string(),
@@ -289,18 +292,27 @@ pub fn verify_token(token: &str) -> Result<String, String> {
     serde_json::to_string(&claims).map_err(|e| format!("Claims serialization failed: {}", e))
 }
 
-/// Verify a refresh token and return the subject.
+/// Verified refresh token claims.
+#[derive(Debug, Clone)]
+pub struct RefreshClaims {
+    pub sub: String,
+    pub user_id: i64,
+}
+
+/// Verify a refresh token and return subject + user_id.
 ///
 /// Validates expiry, signature, and ensures `token_type == "refresh"`.
-/// Returns the subject (email/user identifier) for issuing a new access token.
-pub fn verify_refresh_token(token: &str) -> Result<String, String> {
+pub fn verify_refresh_token(token: &str) -> Result<RefreshClaims, String> {
     let claims = decode_token(token)?;
 
     if claims.token_type != TOKEN_TYPE_REFRESH {
         return Err("Invalid refresh token".to_string());
     }
 
-    Ok(claims.sub)
+    Ok(RefreshClaims {
+        sub: claims.sub,
+        user_id: claims.user_id,
+    })
 }
 
 /// Internal: decode and validate a JWT token (any type).
@@ -349,9 +361,10 @@ pub fn get_token_claims_json(token: &str) -> Result<String, String> {
         return Err("Refresh tokens cannot be used for /auth/me".to_string());
     }
 
-    // Start with sub as the base identity
+    // Start with sub + user_id as the base identity
     let mut user_data = serde_json::json!({
         "sub": claims.sub,
+        "user_id": claims.user_id,
     });
 
     // Flatten embedded data into the user_data object (not nested under "data")

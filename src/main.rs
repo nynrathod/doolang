@@ -2,6 +2,7 @@ use clap::Parser;
 use doo_driver::{
     compile_project, discover_main_doo_candidates, initialize, Cli, Commands, CompileOptions,
 };
+use std::path::PathBuf;
 
 fn main() {
     // Initialize driver
@@ -30,7 +31,9 @@ fn main() {
     // Route commands
     let exit_code = match cli.command {
         None => run_command(
-            std::path::PathBuf::from("."),
+            PathBuf::from("."),
+            false,
+            false,
             false,
             false,
             false,
@@ -53,10 +56,30 @@ fn main() {
             keep_ll,
             debug,
             verbose,
+            migrate,
+            force,
             args,
-        }) => run_command(path, keep_ll, debug, verbose, args),
+        }) => run_command(path, keep_ll, debug, verbose, migrate, force, args),
         Some(Commands::Check { path }) => check_command(path),
-        Some(Commands::Migrate { path, dry_run }) => migrate_command(path, dry_run),
+        Some(Commands::Migrate {
+            path,
+            dry_run,
+            status,
+            rollback,
+            force,
+            diff,
+            json,
+            database_url,
+        }) => doo_driver::migrate_command(
+            path,
+            dry_run,
+            status,
+            rollback,
+            force,
+            diff,
+            json,
+            database_url,
+        ),
         Some(Commands::Init { name, template }) => doo_driver::run_init(name, template),
         Some(Commands::Deploy { verbose }) => doo_driver::run_deploy(verbose),
         Some(Commands::Upgrade) => doo_driver::run_upgrade(),
@@ -110,15 +133,50 @@ fn build_command(
 }
 
 fn run_command(
-    path: std::path::PathBuf,
+    path: PathBuf,
     keep_ll: bool,
     debug: bool,
     verbose: bool,
+    migrate: bool,
+    force: bool,
     args: Vec<String>,
 ) -> i32 {
     if verbose {
         std::env::set_var("DOO_VERBOSE", "1");
     }
+
+    // Run migrations before starting if --migrate flag is set
+    if migrate {
+        eprintln!("→ Running database migrations...");
+        // Pass the path as-is to doo_migrate. If it's a file, doo_migrate
+        // will use it as entry point (Strategy 1: file + imports only).
+        // If it's a directory, doo_migrate resolves main.doo then follows imports.
+        // Never passes a bare directory to scan-all when a file was explicit.
+        let opts = doo_migrate::MigrateOptions {
+            path: path.clone(),
+            dry_run: false,
+            status: false,
+            rollback: None,
+            force,
+            diff_only: false,
+            json_output: false,
+            database_url: None,
+        };
+        match doo_migrate::run_migrate(opts) {
+            Ok(code) => {
+                if code != 0 {
+                    eprintln!("✗ Migration failed with exit code {}", code);
+                    return code;
+                }
+                eprintln!("✓ Migrations complete");
+            }
+            Err(e) => {
+                eprintln!("✗ Migration failed: {}", e);
+                return 1;
+            }
+        }
+    }
+
     doo_driver::run_command_with_compiler(
         path,
         keep_ll,
@@ -158,12 +216,4 @@ fn check_command(path: std::path::PathBuf) -> i32 {
             1
         }
     }
-}
-
-fn migrate_command(_path: std::path::PathBuf, dry_run: bool) -> i32 {
-    eprintln!("Migrate command not yet implemented");
-    if dry_run {
-        eprintln!("  Dry-run mode");
-    }
-    1
 }

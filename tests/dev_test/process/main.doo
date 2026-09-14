@@ -294,24 +294,61 @@ fn main() {
     print("");
 
     // =========================================================================
+    // TEST 24: Exit code 1 — verifies non-zero exit propagation
+    // Uses sh -c "exit 1" which exits with code 1 on Linux/Mac/WSL
+    // =========================================================================
+    print("TEST 24: Exit code 1 propagation");
+    let result24 = Process::run("sh", "[\"-c\", \"exit 1\"]");
+    print("  result = ${result24}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 25: Directory listing — ls (Linux/Mac/WSL)
+    // =========================================================================
+    print("TEST 25: Directory listing (ls)");
+    let result25 = Process::run("ls", "[]")?;
+    print("  result = ${result25}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 26: Current directory — pwd (Linux/Mac/WSL)
+    // =========================================================================
+    print("TEST 26: Current directory (pwd)");
+    let cwd = Process::output("pwd", "[]")?;
+    print("  cwd = ${cwd}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
+    // TEST 27: Stderr output — writes to stderr via sh
+    // =========================================================================
+    print("TEST 27: Stderr output");
+    let result27 = Process::run("sh", "[\"-c\", \"echo err_msg >&2\"]");
+    print("  result = ${result27}");
+    print("  PASS");
+    print("");
+
+    // =========================================================================
     // DOCKER CLI TESTS — Verifies Docker commands work for DooCloud
     // If Docker not installed: will show clear error message and fail
     // Production deployments (fly.io, render.com, railway.com) need Docker
     // =========================================================================
 
     // =========================================================================
-    // TEST 24: Docker --version (verifies Docker CLI available)
+    // TEST 28: Docker --version (verifies Docker CLI available)
     // =========================================================================
-    print("TEST 24: Docker --version");
+    print("TEST 28: Docker --version");
     let docker_ver = Process::output("docker", "[\"--version\"]")?;
     print("  Docker: ${docker_ver}");
     print("  PASS");
     print("");
 
     // =========================================================================
-    // TEST 25: Docker ps (verifies container listing works)
+    // TEST 29: Docker ps (verifies container listing works)
     // =========================================================================
-    print("TEST 25: Docker ps");
+    print("TEST 29: Docker ps");
     let docker_ps = Process::output("docker", "[\"ps\", \"-a\"]")?;
     print("  Docker ps output:");
     print("${docker_ps}");
@@ -319,19 +356,19 @@ fn main() {
     print("");
 
     // =========================================================================
-    // TEST 26: Docker info with format template  
+    // TEST 30: Docker info with format template  
     // Verifies complex args like --format work through cmd.exe
     // =========================================================================
-    print("TEST 26: Docker info (format template)");
+    print("TEST 30: Docker info (format template)");
     let docker_info = Process::output("docker", "[\"info\", \"--format\", \"{{.ServerVersion}}\"]")?;
     print("  Docker version: ${docker_info}");
     print("  PASS");
     print("");
 
     // =========================================================================
-    // TEST 27: Docker images list (DooCloud needs to manage images)
+    // TEST 31: Docker images list (DooCloud needs to manage images)
     // =========================================================================
-    print("TEST 27: Docker images");
+    print("TEST 31: Docker images");
     let docker_images = Process::output("docker", "[\"images\", \"--format\", \"{{.Repository}}:{{.Tag}}\"]")?;
     print("  Docker images:");
     print("${docker_images}");
@@ -340,6 +377,6 @@ fn main() {
 
     print("========================================");
     print("  ALL PROCESS TESTS COMPLETE");
-    print("  27 tests (core + cloud + Docker)");
+    print("  31 tests (core + stderr/ls/pwd/exit + Docker)");
     print("========================================");
 }

@@ -12,8 +12,7 @@ use doo_ffi_core::ffi_debug;
 use doo_ffi_core::DooResult;
 
 use crate::db_bridge::{
-    execute_db_insert, execute_db_query_with_string_param, execute_db_statement,
-    generate_create_table_sql, is_pool_initialized, to_snake_case,
+    execute_db_insert, execute_db_query_with_string_param, is_pool_initialized, to_snake_case,
 };
 use crate::helpers::c_to_string;
 use crate::metadata::get_struct_metadata;
@@ -202,7 +201,11 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
     // Validate extra fields (e.g. enum fields like Role) against struct metadata
     if let Some(struct_name) = get_auth_struct_name() {
         let full_body = serde_json::Value::Object(json.clone());
-        if let Err(e) = crate::validation::validate_item_against_struct(&full_body, &struct_name, "/auth/signup") {
+        if let Err(e) = crate::validation::validate_item_against_struct(
+            &full_body,
+            &struct_name,
+            "/auth/signup",
+        ) {
             return make_err_http(400, &e);
         }
     }
@@ -271,6 +274,9 @@ extern "C" fn auth_signup_handler(req: *const DooRequest) -> *mut DooResult {
 
                         // Push httpOnly cookie — centralized
                         doo_ffi_core::cookies::push_auth_cookies(&token, None, 86400, 0);
+
+                        // === WEBHOOK: fire "signup" event (no-op if no webhooks registered) ===
+                        crate::webhook_engine::fire("auth:signup", "signup", &user_row);
 
                         let response = build_db_auth_response(&token, &user_row);
                         ffi_debug!("AUTH", "Signup success (DB): {}", response);
@@ -379,10 +385,14 @@ extern "C" fn auth_login_handler(req: *const DooRequest) -> *mut DooResult {
                                 let user_id = crate::metadata::json_get_id(&user_row).unwrap_or(0);
                                 // Extract role value from the @role-decorated field if present
                                 let role_value = extract_role_from_user_row(&user_row, &table_name);
-                                let token = generate_jwt_token(&email, user_id, role_value.as_deref());
+                                let token =
+                                    generate_jwt_token(&email, user_id, role_value.as_deref());
 
                                 // Push httpOnly cookie — centralized
                                 doo_ffi_core::cookies::push_auth_cookies(&token, None, 86400, 0);
+
+                                // === WEBHOOK: fire "login" event (no-op if no webhooks registered) ===
+                                crate::webhook_engine::fire("auth:login", "login", &user_row);
 
                                 let response = build_db_auth_response(&token, &user_row);
                                 return make_ok_json(&response);
@@ -460,7 +470,7 @@ fn extract_role_from_user_row(user_row: &serde_json::Value, table_name: &str) ->
     None
 }
 
-fn generate_jwt_token(sub: &str, user_id: i64, role: Option<&str>) -> String {
+pub(crate) fn generate_jwt_token(sub: &str, user_id: i64, role: Option<&str>) -> String {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
     use serde::{Deserialize, Serialize};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -657,40 +667,17 @@ pub extern "C" fn doo_http_auth(
             *auth_struct = Some(struct_name.clone());
         }
 
-        // Try to create users table in database if connected
-        if is_pool_initialized() {
-            ffi_debug!("HTTP", "Database connected, setting up DB-backed auth");
-
-            if let Some(metadata) = get_struct_metadata(&struct_name) {
-                let create_sql = generate_create_table_sql(table_name, &metadata);
-                ffi_debug!("HTTP", "CREATE TABLE SQL for users:\n{}", create_sql);
-
-                match execute_db_statement(&create_sql) {
-                    Ok(_) => {
-                        ffi_debug!(
-                            "HTTP",
-                            "Users table '{}' created/verified successfully",
-                            table_name
-                        );
-                        let mut auth_table = get_auth_db_table()
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner());
-                        *auth_table = Some(table_name.to_string());
-                    }
-                    Err(e) => {
-                        ffi_debug!("HTTP", "Warning: Failed to create users table: {}", e);
-                    }
-                }
-            } else {
-                ffi_debug!(
-                    "HTTP",
-                    "Warning: No metadata found for struct '{}', using in-memory auth",
-                    struct_name
-                );
-            }
-        } else {
-            ffi_debug!("HTTP", "No database connection, using in-memory auth");
-        }
+        // Register auth table name for DB-backed auth.
+        // Table creation is handled by `doo migrate` or `doo run --migrate`.
+        let mut auth_table = get_auth_db_table()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *auth_table = Some(table_name.to_string());
+        ffi_debug!(
+            "HTTP",
+            "Auth mapped to table '{}' (table must be created via `doo migrate`)",
+            table_name
+        );
 
         // Register auth routes
         let routes = get_routes();
@@ -724,5 +711,58 @@ pub extern "C" fn doo_http_auth(
         );
 
         make_ok_void()
+    })
+}
+
+// ============================================================================
+// AUTH ROUTE REGISTRATION WITH WEBHOOKS
+// ============================================================================
+
+/// Set up auth routes for a user struct with webhook support.
+///
+/// Uses the GENERIC webhook_engine — parses webhooks JSON, registers configs
+/// with the engine, then delegates to the same route registration as doo_http_auth.
+/// The handlers check webhook_engine internally — zero code duplication.
+///
+/// Webhook keys used:
+/// - `"auth:signup"` — fired on successful user registration
+/// - `"auth:login"` — fired on successful user login
+#[no_mangle]
+pub extern "C" fn doo_http_auth_with_webhooks(
+    server: *const c_void,
+    signup_path: *const c_char,
+    login_path: *const c_char,
+    user_struct_name: *const c_char,
+    db: *const c_void,
+    webhooks_json: *const c_char,
+) -> *mut DooResult {
+    ffi_safe_result!({
+        // Parse and register webhook configs with the generic engine
+        let wh_json = c_to_string(webhooks_json);
+        if !wh_json.is_empty() && wh_json != "[]" {
+            match crate::webhook_engine::parse_configs(&wh_json) {
+                Ok(configs) if !configs.is_empty() => {
+                    // Register same configs for both signup and login keys.
+                    // Users filter by event in the webhook config's Event field
+                    // (e.g., Event: "signup" or Event: "login").
+                    crate::webhook_engine::register("auth:signup", configs.clone());
+                    crate::webhook_engine::register("auth:login", configs);
+                    ffi_debug!(
+                        "HTTP",
+                        "Registered webhooks for auth events (signup + login)"
+                    );
+                }
+                Ok(_) => {
+                    ffi_debug!("HTTP", "Empty webhook configs for auth");
+                }
+                Err(e) => {
+                    ffi_debug!("HTTP", "Failed to parse auth webhooks JSON: {}", e);
+                    // Non-fatal: auth still works without webhooks
+                }
+            }
+        }
+
+        // Delegate to the standard auth registration
+        doo_http_auth(server, signup_path, login_path, user_struct_name, db)
     })
 }

@@ -86,31 +86,24 @@ pub(crate) fn ensure_runtime() -> &'static tokio::runtime::Runtime {
 /// an existing Tokio runtime (e.g., inside an HTTP handler).
 ///
 /// If no runtime is active on the current thread, uses the shared process runtime.
-/// If already inside a Tokio runtime, spawns a temporary thread with its own runtime
-/// to avoid the "Cannot start a runtime from within a runtime" panic.
+/// If already inside a Tokio runtime, uses `Handle::block_on` to run the future
+/// on the existing runtime without spawning a raw OS thread. This avoids
+/// Windows CRT initialization issues and nested runtime panics.
 fn block_on_safe<F, T>(f: F) -> T
 where
     F: FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>> + Send + 'static,
     T: Send + 'static,
 {
-    match tokio::runtime::Handle::try_current() {
-        Err(_) => {
-            // Not in a runtime — use shared runtime directly
-            let rt = ensure_runtime();
-            rt.block_on(f())
-        }
-        Ok(_) => {
-            // Already inside a Tokio runtime — run on a separate thread
-            std::thread::spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("Failed to create temporary runtime for process");
-                rt.block_on(f())
-            })
-            .join()
-            .unwrap_or_else(|_| panic!("Process thread panicked"))
-        }
+    let rt = ensure_runtime();
+    if tokio::runtime::Handle::try_current().is_ok() {
+        // Already inside a Tokio runtime — use block_in_place to avoid
+        // "Cannot start a runtime from within a runtime" panic.
+        // block_in_place tells the current runtime this thread will block,
+        // allowing it to move other tasks to different worker threads.
+        tokio::task::block_in_place(|| rt.block_on(f()))
+    } else {
+        // Not in a runtime — block directly on the process runtime
+        rt.block_on(f())
     }
 }
 

@@ -340,6 +340,39 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
                 };
                 return Ok(response);
             }
+            "/webhooks/recent" => {
+                // Built-in webhook audit log endpoint — always available.
+                // Returns JSON array of recent webhook dispatch records.
+                // Query: ?limit=N (default 50, 0 = all)
+                let limit: usize = query_owned
+                    .as_deref()
+                    .and_then(|q| {
+                        crate::helpers::parse_query(q)
+                            .get("limit")
+                            .and_then(|v| v.parse().ok())
+                    })
+                    .unwrap_or(50);
+                let body = crate::webhook_log::get_recent_records(limit);
+                return Ok(build_response(200, &body));
+            }
+            "/webhooks/deliveries" => {
+                // Persistent, filterable webhook delivery log (DB-backed).
+                // Query params: resource, event, webhook_id, status, limit, offset
+                let q = query_owned
+                    .as_deref()
+                    .map(|s| crate::helpers::parse_query(s))
+                    .unwrap_or_default();
+                let resource = q.get("resource").map(|s| s.as_str()).unwrap_or("");
+                let event = q.get("event").map(|s| s.as_str()).unwrap_or("");
+                let webhook_id = q.get("webhook_id").map(|s| s.as_str()).unwrap_or("");
+                let status = q.get("status").map(|s| s.as_str()).unwrap_or("");
+                let limit: usize = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(0);
+                let offset: usize = q.get("offset").and_then(|v| v.parse().ok()).unwrap_or(0);
+                let body = crate::webhook_log::query_deliveries(
+                    resource, event, webhook_id, status, limit, offset,
+                );
+                return Ok(build_response(200, &body));
+            }
             _ => {}
         }
     }
@@ -734,6 +767,25 @@ async fn handle_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>,
             }
         };
 
+        // ========================================================================
+        // WEBHOOK FIRING — generic route webhooks for custom handlers.
+        // Fires "on_success" for 2xx, "on_error" for 4xx/5xx.
+        // Zero-cost when no webhooks are registered (fast-path check first).
+        // ========================================================================
+        let route_webhook_key = format!("route:{}:{}", method, path);
+        if crate::webhook_engine::has_webhooks(&route_webhook_key) {
+            let status = handler_response.status().as_u16();
+            let event = if status < 400 { "on_success" } else { "on_error" };
+
+            // Build a lightweight payload with request + response info
+            let payload = serde_json::json!({
+                "method": &*method,
+                "path": &path,
+                "status": status,
+            });
+            crate::webhook_engine::fire(&route_webhook_key, event, &payload);
+        }
+
         // Cleanup DooRequest FIELDS — the struct itself is stack-allocated.
         // At high RPS, leaked field memory causes OOM within minutes.
         unsafe {
@@ -965,6 +1017,9 @@ pub fn start_server(host: &str, port: u16) -> Result<(), String> {
     freeze_routes();
     crate::middleware::freeze_cors();
     crate::middleware::freeze_logger();
+
+    // Ensure webhook delivery persistence table exists (idempotent, DB-backed)
+    crate::webhook_log::ensure_deliveries_table();
 
     // Use the global Tokio runtime from doo_ffi_runtime (single source of truth).
     let local_runtime;

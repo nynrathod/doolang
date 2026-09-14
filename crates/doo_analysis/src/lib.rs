@@ -12,6 +12,7 @@
 
 pub mod borrow;
 pub mod conversions;
+pub mod loader;
 pub mod ownership;
 pub mod semantic;
 pub mod transform;

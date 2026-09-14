@@ -10,7 +10,9 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "doo")]
 #[command(about = "doo language CLI")]
-#[command(long_about = "doo language CLI\n\nIssues / support: https://github.com/nynrathod/doolang/issues")]
+#[command(
+    long_about = "doo language CLI\n\nIssues / support: https://github.com/nynrathod/doolang/issues"
+)]
 #[command(version)]
 pub struct Cli {
     #[command(subcommand)]
@@ -102,6 +104,14 @@ pub enum Commands {
         #[arg(long, short)]
         verbose: bool,
 
+        /// Run database migrations before starting
+        #[arg(long)]
+        migrate: bool,
+
+        /// Auto-approve destructive migration changes (only with --migrate)
+        #[arg(long)]
+        force: bool,
+
         /// Arguments to pass to the program
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -123,6 +133,30 @@ pub enum Commands {
         /// Show migration SQL without executing
         #[arg(long)]
         dry_run: bool,
+
+        /// Show migration status and history
+        #[arg(long)]
+        status: bool,
+
+        /// Rollback the last N migrations
+        #[arg(long)]
+        rollback: Option<u32>,
+
+        /// Auto-approve destructive changes (dangerous)
+        #[arg(long)]
+        force: bool,
+
+        /// Show detailed diff without executing
+        #[arg(long)]
+        diff: bool,
+
+        /// Output JSON instead of human-readable text
+        #[arg(long)]
+        json: bool,
+
+        /// Database URL override (otherwise reads DATABASE_URL from .env)
+        #[arg(long)]
+        database_url: Option<String>,
     },
 
     /// Upgrade doo to the latest version

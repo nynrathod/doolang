@@ -1,0 +1,16 @@
+// modules/types.doo
+import std::Database;
+
+enum AccessLevel { Public, Private, Corporate }
+enum IntegrityStatus { Clean, Flagged, Untrusted }
+
+struct SecurityGate {
+    Level: AccessLevel @default("Private"),
+    IsEncrypted: Bool @default(true),
+}
+
+struct NodeMeta {
+    Gate: SecurityGate,
+    Status: IntegrityStatus @default("Clean"),
+    AuthorId: Int,
+}

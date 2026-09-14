@@ -1,0 +1,32 @@
+[package]
+name = "doo_migrate"
+version.workspace = true
+edition.workspace = true
+description = "Doolang migration engine — compiler-level schema diffing and safe DDL execution"
+
+[dependencies]
+# Compiler frontend for schema extraction
+doo_core = { path = "../doo_core" }
+doo_frontend = { path = "../doo_frontend" }
+doo_hir = { path = "../doo_hir" }
+doo_analysis = { path = "../doo_analysis" }
+
+# Database access via doo_ffi_db pool (single source of truth for DB connections)
+doo_ffi_db = { path = "../../ffi/doo_ffi_db", features = ["postgres"] }
+deadpool-postgres = { version = "0.14.1", features = ["rt_tokio_1"] }
+tokio = { version = "1.0", features = ["full"] }
+tokio-postgres = { version = "0.7" }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Checksums for migration integrity
+sha2 = "0.10"
+
+# Timestamps
+chrono = { version = "0.4", features = ["serde"] }
+
+# Interactive prompts for destructive change approval
+dialoguer = "0.12"
+console = "0.16"

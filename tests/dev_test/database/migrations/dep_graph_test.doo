@@ -1,0 +1,94 @@
+// Dependency Graph Test — Comprehensive dependency chain scenarios
+// Tests: FK chains, enum dependencies, same-table grouping, independent tables
+import std::Database;
+
+// ── Enum types (referenced by tables below) ──
+enum Role { Admin, Moderator, User }
+enum Status { Active, Pending, Suspended }
+enum Priority { Low, Medium, High }
+
+// ═══════════════════════════════════════════════════════════════════
+// CHAIN 1: users → posts → comments (FK dependency chain)
+// ═══════════════════════════════════════════════════════════════════
+
+@table("users")
+struct User {
+    id: Int @primary @auto,
+    Email: Str @unique,
+    Name: Str,
+    Role: Role @default("User"),
+    Status: Status @default("Active"),
+    Age: Int @optional,
+}
+
+@table("posts")
+struct Post {
+    id: Int @primary @auto,
+    AuthorId: Int @foreign(User),
+    Title: Str,
+    Content: Str,
+    ViewCount: Int @default(0),
+}
+
+@table("comments")
+struct Comment {
+    id: Int @primary @auto,
+    PostId: Int @foreign(Post),
+    UserId: Int @foreign(User),
+    Body: Str,
+    IsApproved: Bool @default(true),
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CHAIN 2: projects → tasks → subtasks (FK + enum chain)
+// ═══════════════════════════════════════════════════════════════════
+
+@table("projects")
+struct Project {
+    id: Int @primary @auto,
+    Name: Str @unique,
+    Priority: Priority @default("Medium"),
+}
+
+@table("tasks")
+struct Task {
+    id: Int @primary @auto,
+    ProjectId: Int @foreign(Project),
+    Title: Str,
+    Priority: Priority @default("Low"),
+    AssigneeId: Int @foreign(User),
+}
+
+@table("subtasks")
+struct Subtask {
+    id: Int @primary @auto,
+    TaskId: Int @foreign(Task),
+    Name: Str,
+    Priority: Priority @default("Low"),
+    IsDone: Bool @default(false),
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// INDEPENDENT tables (no FKs to other tables in this file)
+// ═══════════════════════════════════════════════════════════════════
+
+@table("audit_logs")
+struct AuditLog {
+    id: Int @primary @auto,
+    Message: Str,
+    Severity: Str @default("info"),
+    CreatedAt: Str @optional,
+}
+
+@table("settings")
+struct Setting {
+    id: Int @primary @auto,
+    Key: Str @unique,
+    Value: Str,
+}
+
+static DB: Database;
+fn main() {
+    DB = Database::Postgres()?;
+    print("Dependency graph test models loaded.");
+}

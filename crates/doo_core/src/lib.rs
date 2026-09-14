@@ -26,6 +26,7 @@ pub mod logging;
 pub mod methods;
 pub mod query;
 pub mod span;
+pub mod string;
 pub mod symbol;
 pub mod types;
 

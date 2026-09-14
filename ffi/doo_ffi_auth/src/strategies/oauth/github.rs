@@ -293,6 +293,8 @@ impl OAuthProvider for GitHubProvider {
             avatar: github_user.avatar_url,
             provider: "github".to_string(),
             email_verified,
+            created_at: None, // Set by auth layer on user creation
+            updated_at: None, // Set by auth layer on user creation
         })
     }
 

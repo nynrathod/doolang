@@ -1,0 +1,120 @@
+// Doolang Migration Test File
+// Covers all recommended V1 scope migration cases
+// Uses ONLY supported Doo syntax — PascalCase/CamelCase fields only
+
+import std::Database;
+// 1. Enum Types
+enum Role {
+    Admin,
+    Moderator,
+    User,
+}
+
+enum Status {
+    Active,
+    Pending,
+    Suspended,
+}
+
+// 2. Base Table with primary key, auto increment, constraints, default, nullable
+@table("users")
+@autoTimestamp
+struct User {
+    id: Int @primary @auto,
+    Email: Str @unique,
+    Username: Str @unique,
+    PasswordHash: Str @hash,
+    Role: Role @default("User"),
+    Status: Status @default("Active"),
+    Age: Int @optional,
+    IsVerified: Bool @default(false),
+}
+
+// 3. Foreign Keys, Type Mapping
+@table("posts")
+@autoTimestamp
+struct Post {
+    id: Int @primary @auto,
+    AuthorId: Int @foreign(User),
+    Title: Str,
+    Slug: Str @unique,
+    Content: Str,
+    ViewCount: Int @default(0),
+    Rating: Float @default(0.0),
+    MetadataJson: {Str: Str} @optional,
+    PublishedAt: Str @optional,
+}
+
+// 4. Composite concepts (FKs on multiple fields)
+@table("comments")
+@autoTimestamp
+struct Comment {
+    id: Int @primary @auto,
+    PostId: Int @foreign(Post),
+    UserId: Int @foreign(User),
+    Body: Str,
+    IsApproved: Bool @default(true),
+}
+
+// 5. Test table for dropping/renaming later
+@table("tags")
+struct Tag {
+    id: Int @primary @auto,
+    Name: Str @unique,
+    ColorHex: Str @optional,
+}
+
+// 6. Test table for many-to-many relationship
+@table("post_tags")
+struct PostTag {
+    id: Int @primary @auto,
+    PostId: Int @foreign(Post),
+    TagId: Int @foreign(Tag),
+}
+
+// 7. Enum for testing enum value addition
+enum Priority {
+    Low,
+    Medium,
+    High,
+}
+
+// 8. Table referencing Priority enum — for AddEnumValue testing
+@table("tasks")
+struct Task {
+    id: Int @primary @auto,
+    Title: Str,
+    Priority: Priority,
+}
+
+// 9. Table with composite primary key
+@table("project_members")
+struct ProjectMember {
+    UserId: Int @primary,
+    ProjectId: Int @primary,
+    Role: Str,
+}
+
+// 10. Table for default value testing (DropDefault, SetDefault)
+@table("app_config")
+struct AppConfig {
+    id: Int @primary @auto,
+    ConfigKey: Str @unique,
+    StringVal: Str @default("default_str"),
+    BoolVal: Bool @default(true),
+    IntVal: Int @default(42),
+}
+
+// 11. Table without autoTimestamp — for verification comparison
+@table("export_jobs")
+struct ExportJob {
+    id: Int @primary @auto,
+    FileName: Str,
+    Status: Str,
+}
+
+static DB: Database;
+fn main() {
+     DB = Database::Postgres()?;
+    print("Migration test models loaded.");
+}

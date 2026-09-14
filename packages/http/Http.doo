@@ -142,11 +142,27 @@ fn Server.start(self) -> !HttpError {}
 fn Server.listen(self) -> !HttpError {}
 
 // Auth and CRUD helpers
-@extern("doo_http", "doo_http_auth")
-fn Server.auth(self, signupPath: Str, loginPath: Str, userStruct: Str, db: Str) -> !HttpError {}
+// Auth with optional webhooks — webhooksJson can be "" or "[]" for no webhooks.
+// Events: "signup", "login"
+@extern("doo_http", "doo_http_auth_with_webhooks")
+fn Server.auth(self, signupPath: Str, loginPath: Str, userStruct: Str, db: Str, webhooksJson: Str) -> !HttpError {}
 
-@extern("doo_http", "doo_http_crud")
-fn Server.crud(self, basePath: Str, resourceStruct: Str, db: Str) -> !HttpError {}
+// CRUD with optional webhooks — webhooksJson is a JSON array of WebhookConfigPayload objects.
+// Omit the 4th arg for no webhooks, or pass "[]" / a webhook config JSON array.
+@extern("doo_http", "doo_http_crud_with_webhooks")
+fn Server.crud(self, basePath: Str, resourceStruct: Str, db: Str, webhooksJson: Str) -> !HttpError {}
+
+// OAuth is defined in packages/auth/Auth.doo (import std::Auth).
+// Server.oauth(self, options: {Str: Str}?, webhooksJson: Str) -> !AuthError
+
+// Generic route webhook registration — attach webhooks to ANY custom route.
+// Call AFTER registering the route with app.get/post/put/delete/patch.
+// method: "GET", "POST", "PUT", "DELETE", "PATCH"
+// path: the exact route path (e.g., "/api/orders")
+// webhooksJson: JSON array of WebhookConfig objects
+// Events: "on_success" (2xx), "on_error" (4xx/5xx)
+@extern("doo_http", "doo_http_register_route_webhook")
+fn Server.webhookForRoute(self, method: Str, path: Str, webhooksJson: Str) -> !HttpError {}
 
 // CORS and rate limiting middleware
 @extern("doo_http", "doo_http_cors_custom")
@@ -170,6 +186,29 @@ fn Server.logger(self, options: {Str: Str}?) -> Server {}
 // After enabling, GET /metrics returns Prometheus text format.
 @extern("doo_http", "doo_http_metrics")
 fn Server.metrics(self) -> Server {}
+
+// ============================================================================
+// Webhook Audit Log — Query recent dispatch records
+// ============================================================================
+//
+// webhooksRecent(limit) — fast in-memory query (last N records, up to 1000).
+//   Returns JSON array: [{ id, webhookId, resource, event, url, status, responseCode, error, payloadLen, timestamp }]
+//
+// webhooksDeliveries(resource, event, webhookId, status, limit, offset) — DB-backed query with filters.
+//   Empty string = no filter. Returns JSON array with camelCase keys.
+//
+// This is the single source of truth for verifying webhook dispatch.
+// Use in tests, monitoring dashboards, and DooCloud UI webhook activity views.
+
+@extern("doo_http", "doo_http_webhooks_recent")
+fn webhooksRecent(limit: Int) -> Str {}
+
+@extern("doo_http", "doo_http_webhooks_deliveries")
+fn webhooksDeliveries(resource: Str, event: Str, webhookId: Str, status: Str, limit: Int, offset: Int) -> Str {}
+
+// Clear all in-memory webhook dispatch records.
+@extern("doo_http", "doo_http_webhooks_log_clear")
+fn webhooksLogClear() {}
 
 // ============================================================================
 // Request - FFI Functions

@@ -1,0 +1,442 @@
+// =============================================================================
+// DOO WEBHOOK CUSTOM ROUTE TEST — COMPREHENSIVE (Auth + Non-Auth in one file)
+// =============================================================================
+// Tests ALL webhook patterns for custom route handlers:
+//
+//   1. Non-auth routes with webhooks (all 5 HTTP methods)
+//   2. JWT-protected routes with webhooks
+//   3. Custom middleware routes with webhooks
+//   4. Multi-middleware chaining with webhooks
+//   5. Filter operators: equals, not_equals, contains, greater_than, less_than
+//   6. Payload field filtering
+//   7. Multiple webhooks per route
+//   8. on_success (2xx) and on_error (4xx/5xx) events
+//   9. Error handlers triggering on_error webhooks
+//  10. All HTTP methods: GET, POST, PUT, DELETE, PATCH
+//
+// SYNTAX: Webhook JSON is passed as the LAST argument to route methods:
+//   app.get("/path", handler, webhooksJson)           — no middleware
+//   app.get("/path", Jwt(), handler, webhooksJson)    — JWT middleware
+//   app.get("/path", customMw, handler, webhooksJson) — custom middleware
+// =============================================================================
+
+import std::Http::{Server, Request, Response, Next};
+import std::Auth::{Jwt};
+import std::Database;
+
+// ─── Enums ──────────────────────────────────────────────────────────────────
+
+enum AuthError {
+    Unauthorized,
+    Forbidden,
+}
+
+// ─── Response Structs ───────────────────────────────────────────────────────
+
+struct ApiResponse {
+    Status: Str,
+    Message: Str,
+    Value: Int,
+}
+
+struct UserResponse {
+    Id: Int,
+    Name: Str,
+    Role: Str,
+}
+
+struct OrderResponse {
+    OrderId: Str,
+    Amount: Int,
+    Status: Str,
+}
+
+struct ErrorResponse {
+    Error: Str,
+    Code: Int,
+}
+
+// ─── Webhook Config Structs ─────────────────────────────────────────────────
+
+struct WebhookFilter {
+    Id: Str,
+    Field: Str,
+    Operator: Str,
+    Value: Str,
+}
+
+struct WebhookConfig {
+    Id: Str,
+    Event: Str,
+    Url: Str,
+    Filters: [WebhookFilter],
+    PayloadFields: [Str],
+}
+
+// ─── Middleware ─────────────────────────────────────────────────────────────
+
+fn AuthMiddleware(req: Request, next: Next) -> Response ! AuthError {
+    print("🔍 AuthMiddleware: checking token");
+    let token = req.header("Authorization");
+
+    if token == "" {
+        print("❌ AuthMiddleware: No token");
+        return Err AuthError::Unauthorized;
+    }
+
+    if token != "Bearer valid-token" {
+        print("❌ AuthMiddleware: Invalid token");
+        return Err AuthError::Unauthorized;
+    }
+
+    print("✓ AuthMiddleware: Token valid");
+    Ok next.call();
+}
+
+fn RoleMiddleware(req: Request, next: Next) -> Response ! AuthError {
+    print("🔍 RoleMiddleware: checking role");
+    let role = req.header("X-Role");
+
+    if role != "admin" {
+        print("❌ RoleMiddleware: Not admin");
+        return Err AuthError::Forbidden;
+    }
+
+    print("✓ RoleMiddleware: Admin confirmed");
+    Ok next.call();
+}
+
+fn LogMiddleware(req: Request, next: Next) -> Response {
+    print("→ " + req.Method + " " + req.Path);
+    let res = next.call();
+    print("← Status: " + res.Status);
+    return res;
+}
+
+// ─── Handlers — Non-Auth ────────────────────────────────────────────────────
+
+fn GetStatus() -> ApiResponse {
+    print("📍 Handler: GetStatus");
+    return ApiResponse {
+        Status: "ok",
+        Message: "Server running",
+        Value: 100,
+    };
+}
+
+fn CreateOrder() -> OrderResponse {
+    print("📍 Handler: CreateOrder");
+    return OrderResponse {
+        OrderId: "ORD-001",
+        Amount: 500,
+        Status: "pending",
+    };
+}
+
+fn UpdateOrder(id: Int) -> OrderResponse {
+    print("📍 Handler: UpdateOrder - ID: " + id);
+    return OrderResponse {
+        OrderId: "ORD-" + id,
+        Amount: 750,
+        Status: "shipped",
+    };
+}
+
+fn DeleteOrder(id: Int) -> ApiResponse {
+    print("📍 Handler: DeleteOrder - ID: " + id);
+    return ApiResponse {
+        Status: "deleted",
+        Message: "Order " + id + " deleted",
+        Value: 0,
+    };
+}
+
+fn PatchOrder(id: Int) -> OrderResponse {
+    print("📍 Handler: PatchOrder - ID: " + id);
+    return OrderResponse {
+        OrderId: "ORD-" + id,
+        Amount: 600,
+        Status: "processing",
+    };
+}
+
+// ─── Handlers — Auth (JWT) ──────────────────────────────────────────────────
+
+fn GetProfile(req: Request) -> UserResponse {
+    print("📍 Handler: GetProfile (JWT)");
+    return UserResponse {
+        Id: 1,
+        Name: "JWT User",
+        Role: "user",
+    };
+}
+
+fn GetAdminDashboard(req: Request) -> UserResponse {
+    print("📍 Handler: GetAdminDashboard (JWT)");
+    return UserResponse {
+        Id: 99,
+        Name: "Admin",
+        Role: "admin",
+    };
+}
+
+// ─── Handlers — Custom Middleware ────────────────────────────────────────────
+
+fn GetProtected() -> ApiResponse {
+    print("📍 Handler: GetProtected (custom auth)");
+    return ApiResponse {
+        Status: "ok",
+        Message: "Protected resource",
+        Value: 200,
+    };
+}
+
+fn GetAdminResource() -> ApiResponse {
+    print("📍 Handler: GetAdminResource (auth + role)");
+    return ApiResponse {
+        Status: "ok",
+        Message: "Admin resource",
+        Value: 999,
+    };
+}
+
+// ─── Handlers — Error Cases ─────────────────────────────────────────────────
+
+fn AlwaysError() -> ErrorResponse ! Str {
+    print("📍 Handler: AlwaysError");
+    return Err "Intentional error for webhook testing";
+}
+
+fn ConditionalError(id: Int) -> ApiResponse ! Str {
+    print("📍 Handler: ConditionalError - ID: " + id);
+    if id == 0 {
+        return Err "Invalid ID: zero not allowed";
+    }
+    return ApiResponse {
+        Status: "ok",
+        Message: "Valid ID: " + id,
+        Value: id,
+    };
+}
+
+// ─── Handlers — Ping ────────────────────────────────────────────────────────
+
+fn PingHandler() -> Str {
+    return "pong";
+}
+
+// ─── Database ───────────────────────────────────────────────────────────────
+
+static DB: Database;
+
+// ─── Main ───────────────────────────────────────────────────────────────────
+
+fn main() {
+    print("=========================================");
+    print("  DOO WEBHOOK ROUTE TEST — COMPREHENSIVE");
+    print("=========================================");
+    print("");
+
+    // ─── Database ─────────────────────────────────────────────────────────
+    print("Connecting to database...");
+    DB = Database::Postgres()?;
+    print("Database connected.");
+
+    // ══════════════════════════════════════════════════════════════════════
+    // WEBHOOK CONFIGS — Various patterns
+    // ══════════════════════════════════════════════════════════════════════
+
+    // ── Basic: on_success, no filter, all fields ───────────────────────
+    let whStatus = WebhookConfig {
+        Id: "wh-status",
+        Event: "on_success",
+        Url: "http://localhost:9996/webhook-status",
+        Filters: [],
+        PayloadFields: [],
+    };
+
+    // ── Filter: equals ─────────────────────────────────────────────────
+    let whOrderCreated = WebhookConfig {
+        Id: "wh-order-created",
+        Event: "on_success",
+        Url: "http://localhost:9996/webhook-order-created",
+        Filters: [WebhookFilter {
+            Id: "f-status",
+            Field: "status",
+            Operator: "equals",
+            Value: "200",
+        }],
+        PayloadFields: ["method", "path", "status"],
+    };
+
+    // ── Filter: greater_than ────────────────────────────────────────────
+    let whHighValue = WebhookConfig {
+        Id: "wh-high-value",
+        Event: "on_success",
+        Url: "http://localhost:9996/webhook-high-value",
+        Filters: [WebhookFilter {
+            Id: "f-status-gt",
+            Field: "status",
+            Operator: "greater_than",
+            Value: "199",
+        }],
+        PayloadFields: [],
+    };
+
+    // ── Filter: not_equals ──────────────────────────────────────────────
+    let whNonError = WebhookConfig {
+        Id: "wh-non-error",
+        Event: "on_success",
+        Url: "http://localhost:9996/webhook-non-error",
+        Filters: [WebhookFilter {
+            Id: "f-not-err",
+            Field: "status",
+            Operator: "not_equals",
+            Value: "500",
+        }],
+        PayloadFields: [],
+    };
+
+    // ── Error: on_error event ───────────────────────────────────────────
+    let whError = WebhookConfig {
+        Id: "wh-error",
+        Event: "on_error",
+        Url: "http://localhost:9996/webhook-error",
+        Filters: [],
+        PayloadFields: ["method", "path", "status"],
+    };
+
+    // ── Error: on_error with contains filter ────────────────────────────
+    let whServerError = WebhookConfig {
+        Id: "wh-server-error",
+        Event: "on_error",
+        Url: "http://localhost:9996/webhook-server-error",
+        Filters: [WebhookFilter {
+            Id: "f-5xx",
+            Field: "status",
+            Operator: "contains",
+            Value: "5",
+        }],
+        PayloadFields: [],
+    };
+
+    // ── Less than filter ────────────────────────────────────────────────
+    let whClientError = WebhookConfig {
+        Id: "wh-client-error",
+        Event: "on_error",
+        Url: "http://localhost:9996/webhook-client-error",
+        Filters: [WebhookFilter {
+            Id: "f-4xx",
+            Field: "status",
+            Operator: "less_than",
+            Value: "500",
+        }],
+        PayloadFields: [],
+    };
+
+    // ══════════════════════════════════════════════════════════════════════
+    // BUILD WEBHOOK CONFIG ARRAYS PER ENDPOINT
+    // ══════════════════════════════════════════════════════════════════════
+
+    // -- Status endpoint: 3 webhooks (success, non-error, high-value)
+    let whStatusConfigs: [WebhookConfig] = [whStatus, whNonError, whHighValue];
+    let whStatusJson: Str = JSON.stringify(whStatusConfigs);
+
+    // -- Orders endpoint: 2 webhooks (created, non-error)
+    let whOrdersConfigs: [WebhookConfig] = [whOrderCreated, whNonError];
+    let whOrdersJson: Str = JSON.stringify(whOrdersConfigs);
+
+    // -- Error endpoint: 3 webhooks (error, server-error-filter, client-error-filter)
+    let whErrorConfigs: [WebhookConfig] = [whError, whServerError, whClientError];
+    let whErrorJson: Str = JSON.stringify(whErrorConfigs);
+
+    // -- Profile (JWT) endpoint: 2 webhooks
+    let whProfileConfigs: [WebhookConfig] = [whHighValue, whNonError];
+    let whProfileJson: Str = JSON.stringify(whProfileConfigs);
+
+    // -- Admin (JWT) endpoint: 2 webhooks
+    let whAdminConfigs: [WebhookConfig] = [whHighValue, whNonError];
+    let whAdminJson: Str = JSON.stringify(whAdminConfigs);
+
+    // -- Protected (custom middleware) endpoint
+    let whProtectedConfigs: [WebhookConfig] = [whHighValue, whNonError];
+    let whProtectedJson: Str = JSON.stringify(whProtectedConfigs);
+
+    // -- Admin resource (multi middleware) endpoint
+    let whAdminResConfigs: [WebhookConfig] = [whHighValue, whNonError];
+    let whAdminResJson: Str = JSON.stringify(whAdminResConfigs);
+
+    // -- Conditional error endpoint: error + success webhooks
+    let whConditionalConfigs: [WebhookConfig] = [whError, whClientError, whNonError];
+    let whConditionalJson: Str = JSON.stringify(whConditionalConfigs);
+
+    print("All webhook configs built.");
+    print("");
+
+    let app = Server::new(":3135");
+
+    // ══════════════════════════════════════════════════════════════════════
+    // ROUTE REGISTRATION — All patterns
+    // ══════════════════════════════════════════════════════════════════════
+
+    // ── Pattern 1: Non-auth routes with webhooks ────────────────────────
+    print("Registering non-auth routes with webhooks...");
+
+    // GET with webhook
+    app.get("/status", GetStatus, whStatusJson);
+    print("  GET /status — webhook registered");
+
+    // POST with webhook
+    app.post("/orders", CreateOrder, whOrdersJson);
+    print("  POST /orders — webhook registered");
+
+    // PUT with webhook (path param)
+    app.put("/orders/:id", UpdateOrder, whOrdersJson);
+    print("  PUT /orders/:id — webhook registered");
+
+    // DELETE with webhook (path param)
+    app.delete("/orders/:id", DeleteOrder, whOrdersJson);
+    print("  DELETE /orders/:id — webhook registered");
+
+    // PATCH with webhook (path param)
+    app.patch("/orders/:id", PatchOrder, whOrdersJson);
+    print("  PATCH /orders/:id — webhook registered");
+
+    // ── Pattern 2: JWT-protected routes with webhooks ──────────────────
+    print("Registering JWT-protected routes with webhooks...");
+
+    app.get("/profile", Jwt(), GetProfile, whProfileJson);
+    print("  GET /profile (JWT) — webhook registered");
+
+    app.get("/admin/dashboard", Jwt(), GetAdminDashboard, whAdminJson);
+    print("  GET /admin/dashboard (JWT) — webhook registered");
+
+    // ── Pattern 3: Custom middleware routes with webhooks ───────────────
+    print("Registering custom middleware routes with webhooks...");
+
+    app.get("/protected", AuthMiddleware, GetProtected, whProtectedJson);
+    print("  GET /protected (custom auth mw) — webhook registered");
+
+    // ── Pattern 4: Multi-middleware chaining with webhooks ──────────────
+    print("Registering multi-middleware routes with webhooks...");
+
+    app.get("/admin/resource", AuthMiddleware, RoleMiddleware, GetAdminResource, whAdminResJson);
+    print("  GET /admin/resource (auth + role mw) — webhook registered");
+
+    // ── Pattern 5: Error-inducing routes with webhooks ──────────────────
+    print("Registering error routes with webhooks...");
+
+    app.get("/always-error", AlwaysError, whErrorJson);
+    print("  GET /always-error — webhook registered");
+
+    app.get("/conditional/:id", ConditionalError, whConditionalJson);
+    print("  GET /conditional/:id — webhook registered");
+
+    // ── Health check ────────────────────────────────────────────────────
+    app.get("/ping", PingHandler);
+
+    print("");
+    print("All routes registered.");
+    print("Starting server on port 3135...");
+    app.start();
+}

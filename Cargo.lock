@@ -620,7 +620,7 @@ dependencies = [
 
 [[package]]
 name = "doo"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "bumpalo",
  "clap",
@@ -633,6 +633,7 @@ dependencies = [
  "doo_driver",
  "doo_frontend",
  "doo_hir",
+ "doo_migrate",
  "doo_mir",
  "inkwell",
  "llvm-sys",
@@ -644,7 +645,7 @@ dependencies = [
 
 [[package]]
 name = "doo_analysis"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "doo_core",
  "doo_frontend",
@@ -656,7 +657,7 @@ dependencies = [
 
 [[package]]
 name = "doo_codegen"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "doo_core",
  "doo_mir",
@@ -669,7 +670,7 @@ dependencies = [
 
 [[package]]
 name = "doo_core"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "bumpalo",
  "pretty_assertions",
@@ -682,7 +683,7 @@ dependencies = [
 
 [[package]]
 name = "doo_diagnostics"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "doo_core",
  "pretty_assertions",
@@ -692,7 +693,7 @@ dependencies = [
 
 [[package]]
 name = "doo_driver"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -706,6 +707,7 @@ dependencies = [
  "doo_diagnostics",
  "doo_frontend",
  "doo_hir",
+ "doo_migrate",
  "doo_mir",
  "inkwell",
  "serde",
@@ -717,7 +719,7 @@ dependencies = [
 
 [[package]]
 name = "doo_ffi_auth"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "base64",
  "bcrypt",
@@ -733,7 +735,7 @@ dependencies = [
 
 [[package]]
 name = "doo_ffi_core"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "libc",
  "pretty_assertions",
@@ -744,11 +746,13 @@ dependencies = [
 
 [[package]]
 name = "doo_ffi_db"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
+ "bytes",
  "chrono",
  "deadpool",
  "deadpool-postgres",
+ "doo_core",
  "doo_ffi_core",
  "doo_ffi_runtime",
  "itoa",
@@ -766,7 +770,7 @@ dependencies = [
 
 [[package]]
 name = "doo_ffi_file"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "doo_ffi_core",
  "libc",
@@ -774,7 +778,7 @@ dependencies = [
 
 [[package]]
 name = "doo_ffi_git"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "doo_ffi_core",
  "git2",
@@ -783,12 +787,13 @@ dependencies = [
 
 [[package]]
 name = "doo_ffi_http"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "base64",
  "bcrypt",
  "chrono",
  "dashmap",
+ "doo_core",
  "doo_ffi_core",
  "doo_ffi_json",
  "doo_ffi_runtime",
@@ -802,10 +807,12 @@ dependencies = [
  "libloading",
  "matchit",
  "mimalloc",
+ "rand 0.8.5",
  "reqwest",
  "ryu",
  "serde",
  "serde_json",
+ "sha2",
  "socket2 0.5.10",
  "tokio",
  "tokio-tungstenite",
@@ -815,7 +822,7 @@ dependencies = [
 
 [[package]]
 name = "doo_ffi_json"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "doo_ffi_core",
  "itoa",
@@ -827,7 +834,7 @@ dependencies = [
 
 [[package]]
 name = "doo_ffi_process"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "dashmap",
  "doo_ffi_core",
@@ -840,7 +847,7 @@ dependencies = [
 
 [[package]]
 name = "doo_ffi_runtime"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "doo_ffi_core",
  "libc",
@@ -852,7 +859,7 @@ dependencies = [
 
 [[package]]
 name = "doo_frontend"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "bumpalo",
  "doo_core",
@@ -863,7 +870,7 @@ dependencies = [
 
 [[package]]
 name = "doo_hir"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "doo_core",
  "doo_frontend",
@@ -874,7 +881,7 @@ dependencies = [
 
 [[package]]
 name = "doo_lsp"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "doo_analysis",
@@ -891,8 +898,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "doo_migrate"
+version = "0.4.3"
+dependencies = [
+ "chrono",
+ "console",
+ "deadpool-postgres",
+ "dialoguer",
+ "doo_analysis",
+ "doo_core",
+ "doo_ffi_db",
+ "doo_frontend",
+ "doo_hir",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tokio-postgres",
+]
+
+[[package]]
 name = "doo_mir"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "doo_analysis",
  "doo_core",
@@ -1069,6 +1096,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05f29059c0c2090612e8d742178b0580d2dc940c837851ad723096f87af6663e"
 
 [[package]]
+name = "futures-io"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cecba35d7ad927e23624b22ad55235f2239cfa44fd10428eecbeba6d6a717718"
+
+[[package]]
 name = "futures-macro"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1098,9 +1131,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9fa08315bb612088cc391249efdc3bc77536f16c91f6cf495e6fbe85b20a4a81"
 dependencies = [
  "futures-core",
+ "futures-io",
  "futures-macro",
  "futures-sink",
  "futures-task",
+ "memchr",
  "pin-project-lite",
  "pin-utils",
  "slab",
@@ -2070,6 +2105,8 @@ dependencies = [
  "chrono",
  "fallible-iterator",
  "postgres-protocol",
+ "serde_core",
+ "serde_json",
 ]
 
 [[package]]
@@ -2316,7 +2353,9 @@ checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
  "base64",
  "bytes",
+ "futures-channel",
  "futures-core",
+ "futures-util",
  "http",
  "http-body",
  "http-body-util",

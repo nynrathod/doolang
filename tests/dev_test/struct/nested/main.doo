@@ -1,0 +1,55 @@
+// main_cross_file.doo
+import modules::Types::{AccessLevel,IntegrityStatus, SecurityGate, NodeMeta};
+import modules::Engine::{DataNode, ProcessIncomingNode};
+
+fn main() {
+    print("===========================================");
+    print("  Doolang Cross-File Nested Struct Test     ");
+    print("===========================================");
+
+    // 1. Build nested elements from imported module
+    let initialGate = SecurityGate {
+        Level: AccessLevel::Corporate,
+        IsEncrypted: false,
+    };
+
+    let initialMeta = NodeMeta {
+        Gate: initialGate,
+        Status: IntegrityStatus::Flagged,
+        AuthorId: 8841,
+    };
+
+    // 2. Bind into top-level struct from Engine module
+    let primaryNode = DataNode {
+        Id: 5001,
+        Payload: "Secure Transaction Payload Packet",
+        Meta: initialMeta,
+    };
+
+    print("--- Phase 1: Verification Before Processing ---");
+    print("Node Payload:");
+    print(primaryNode.Payload);
+    print("Initial Integrity Status (Expected: Flagged/1):");
+    print(primaryNode.Meta.Status);
+    print("Initial Encryption Flag (Expected: false):");
+    print(primaryNode.Meta.Gate.IsEncrypted);
+
+    print("");
+    print("--- Phase 2: Cross-File Function Execution ---");
+    // Execute function with Corporate clearance to force mutation branch
+    let processedNode = ProcessIncomingNode(
+        primaryNode,
+        AccessLevel::Corporate
+    );
+
+    print("");
+    print("--- Phase 3: Post-Execution Validation ---");
+    // If your backend bug is fixed, these mutations will persist through the return value
+    print("Processed Integrity Status (Expected: Clean):");
+    print(processedNode.Meta.Status);
+
+    print("Processed Encryption Flag (Expected: true):");
+    print(processedNode.Meta.Gate.IsEncrypted);
+
+    print("===========================================");
+}

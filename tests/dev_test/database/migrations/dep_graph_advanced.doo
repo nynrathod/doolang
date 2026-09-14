@@ -1,0 +1,672 @@
+// Dependency Graph — Advanced edge case tests
+// Covers: diamond deps, self-ref FK, many-to-many, alter type to enum
+// @table names match auto-pluralized forms so @foreign(StructName) resolves correctly.
+import std::Database;
+
+// Enums
+enum Category { Tech, Health, Finance }
+enum Level { Junior, Senior, Lead }
+
+// DIAMOND: a -> b, a -> c, b -> d, c -> d
+@table("diamondas")
+struct DiamondA {
+    id: Int @primary @auto,
+    Name: Str,
+}
+
+@table("diamondbs")
+struct DiamondB {
+    id: Int @primary @auto,
+    AId: Int @foreign(DiamondA),
+    Data: Str,
+}
+
+@table("diamondcs")
+struct DiamondC {
+    id: Int @primary @auto,
+    AId: Int @foreign(DiamondA),
+    Data: Str,
+}
+
+@table("diamondds")
+struct DiamondD {
+    id: Int @primary @auto,
+    BId: Int @foreign(DiamondB),
+    CId: Int @foreign(DiamondC),
+    Value: Str,
+}
+
+// SELF-REFERENCING FK
+@table("employees")
+struct Employee {
+    id: Int @primary @auto,
+    Name: Str,
+    ManagerId: Int @foreign(Employee),
+    Level: Level @default("Junior"),
+}
+
+// MANY-TO-MANY JUNCTION
+@table("diamondtags")
+struct DiamondTag {
+    id: Int @primary @auto,
+    Name: Str @unique,
+}
+
+@table("diamondatags")
+struct DiamondATag {
+    id: Int @primary @auto,
+    AId: Int @foreign(DiamondA),
+    TagId: Int @foreign(DiamondTag),
+}
+
+// TABLE WITH ENUM
+@table("articles")
+struct Article {
+    id: Int @primary @auto,
+    Title: Str,
+    Category: Category @default("Tech"),
+    Content: Str,
+}
+
+// INDEPENDENT tables
+@table("systemlogs")
+struct SystemLog {
+    id: Int @primary @auto,
+    Event: Str,
+    Timestamp: Str,
+}
+
+@table("cacheentrys")
+struct CacheEntry {
+    id: Int @primary @auto,
+    Key: Str @unique,
+    Value: Str,
+}
+
+// NESTED STRUCT & DEEP DEPENDENCY CHAINS
+enum MetaType { Internal, External }
+
+struct ContentMeta {
+    Type: MetaType @default("Internal"),
+    OwnerId: Int @foreign(DiamondA),
+}
+
+@table("nested_profiles")
+struct NestedProfile {
+    id: Int @primary @auto,
+    ProfileName: Str,
+    Meta: ContentMeta,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// DEEP NESTING (LEVEL 2+) & OPTIONAL FK RESOLUTION
+// ═══════════════════════════════════════════════════════════════════
+
+enum AccessLevel { Public, Private, Workspace }
+
+// Level 2 struct (Deepest)
+struct AuditMetadata {
+    // Tests if compiler finds an FK two levels deep
+    ModifiedBy: Int @foreign(Employee) @optional,
+    // Tests if compiler finds an enum two levels deep
+    Access: AccessLevel @default("Private"),
+}
+
+// Level 1 struct (Middle)
+struct DocumentConfig {
+    IsPublished: Bool @default(false),
+    Audit: AuditMetadata,
+}
+
+// Level 0 (Top-Level Table)
+@table("complex_documents")
+struct ComplexDocument {
+    id: Int @primary @auto,
+    Title: Str,
+    // Triggers recursive traversal
+    Config: DocumentConfig,
+    // Direct FK check
+    OwnerId: Int @foreign(DiamondA),
+    // Tests if an optional self-referencing FK causes an infinite loop / circular dep error
+    ParentDocId: Int @foreign(ComplexDocument) @optional,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// NON-TABLE STRUCT WITH ENUM (transitive enum dep through non-table struct)
+// ═══════════════════════════════════════════════════════════════════
+
+enum TaskStatus { Todo, InProgress, Done, Archived }
+
+struct TaskMeta {
+    Status: TaskStatus @default("Todo"),
+    Notes: Str,
+}
+
+@table("meta_tasks")
+struct MetaTask {
+    id: Int @primary @auto,
+    Title: Str,
+    // Non-table struct containing an enum (tests transitive enum resolution)
+    Meta: TaskMeta,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ARRAY OF NON-TABLE STRUCT (tests array element type traversal)
+// ═══════════════════════════════════════════════════════════════════
+
+struct Tag {
+    Label: Str,
+    Color: Str @default("blue"),
+}
+
+@table("article_groups")
+struct ArticleGroup {
+    id: Int @primary @auto,
+    Name: Str,
+    // Array of non-table struct (tests TypeKind::Array traversal)
+    Tags: [Tag],
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// OPTIONAL NON-TABLE STRUCT (tests Optional traversal)
+// ═══════════════════════════════════════════════════════════════════
+
+struct Address {
+    Street: Str,
+    City: Str,
+    Zip: Str,
+}
+
+@table("guest_houses")
+struct GuestHouse {
+    id: Int @primary @auto,
+    Name: Str,
+    // Optional non-table struct (tests TypeKind::Optional traversal)
+    Location: Address @optional,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// MAP WITH NON-TABLE STRUCT VALUE (tests Map key/value traversal)
+// ═══════════════════════════════════════════════════════════════════
+
+struct MetadataEntry {
+    Key: Str,
+    Value: Str,
+}
+
+@table("doc_bundles")
+struct DocBundle {
+    id: Int @primary @auto,
+    Name: Str,
+    // Map with non-table struct value (tests TypeKind::Map traversal)
+    Entries: {Str: MetadataEntry},
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// SHARED NON-TABLE STRUCT (two tables referencing same non-table struct)
+// Tests component grouping — both tables should be in same component
+// because they share the same non-table struct dependency.
+// ═══════════════════════════════════════════════════════════════════
+
+struct SharedProfile {
+    Bio: Str,
+    Avatar: Str @optional,
+}
+
+@table("shared_authors")
+struct SharedAuthor {
+    id: Int @primary @auto,
+    Name: Str,
+    // Uses SharedProfile
+    Profile: SharedProfile,
+}
+
+@table("shared_editors")
+struct SharedEditor {
+    id: Int @primary @auto,
+    Name: Str,
+    // Also uses SharedProfile — tests same-component grouping
+    Profile: SharedProfile,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// SIMPLE NON-TABLE STRUCT (matches user's Models.doo pattern)
+// ═══════════════════════════════════════════════════════════════════
+
+struct SimpleProject {
+    Title: Str,
+}
+
+enum SimpleStatus { Active, Draft }
+
+@table("simple_tasks")
+struct SimpleTask {
+    id: Int @primary @auto,
+    Name: Str,
+    // Non-table struct field (stored as JSONB)
+    Project: SimpleProject,
+    // Direct enum field
+    Status: SimpleStatus @default("Active"),
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ARRAY OF ENUM in @table struct (tests Array<Enum> traversal)
+// ═══════════════════════════════════════════════════════════════════
+
+enum Visibility { Public, Private, Internal }
+
+@table("array_enums")
+struct ArrayEnum {
+    id: Int @primary @auto,
+    Name: Str,
+    // Direct array of enum type — tests TypeKind::Array with enum element
+    Permissions: [Visibility],
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// OPTIONAL ENUM in @table struct (tests Optional<Enum> traversal)
+// ═══════════════════════════════════════════════════════════════════
+
+enum Tier { Free, Pro, Enterprise }
+
+@table("optional_enums")
+struct OptionalEnum {
+    id: Int @primary @auto,
+    Name: Str,
+    // Optional enum field — tests TypeKind::Optional with enum inner type
+    CurrentTier: Tier @optional,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// MAP WITH ENUM KEY in @table struct (tests Map<Enum, X> traversal)
+// ═══════════════════════════════════════════════════════════════════
+
+enum FeatureFlag { Beta, Stable, Deprecated }
+
+@table("map_enum_keys")
+struct MapEnumKey {
+    id: Int @primary @auto,
+    Name: Str,
+    // Map with enum key type — tests TypeKind::Map with enum key
+    FeatureMap: {FeatureFlag: Bool},
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// NON-TABLE STRUCT with ARRAY OF ENUM field (transitive Array<Enum> through struct)
+// ═══════════════════════════════════════════════════════════════════
+
+enum ColorMode { Light, Dark, System }
+
+struct DisplayPrefs {
+    Mode: ColorMode @default("System"),
+    // Array of enum inside non-table struct
+    AllowedModes: [ColorMode],
+}
+
+@table("display_configs")
+struct DisplayConfig {
+    id: Int @primary @auto,
+    Name: Str,
+    // Non-table struct containing array of enum
+    Prefs: DisplayPrefs,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// NON-TABLE STRUCT with OPTIONAL ENUM field (transitive Optional<Enum> through struct)
+// ═══════════════════════════════════════════════════════════════════
+
+enum ThemeKind { Light, Dark, Custom }
+
+struct ThemePrefs {
+    Kind: ThemeKind @default("Light"),
+    // Optional enum inside non-table struct
+    Accent: ThemeKind @optional,
+}
+
+@table("theme_configs")
+struct ThemeConfig {
+    id: Int @primary @auto,
+    Name: Str,
+    // Non-table struct containing optional enum
+    Prefs: ThemePrefs,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// NON-TABLE STRUCT with MAP OF ENUM KEY field (transitive Map<Enum, X> through struct)
+// ═══════════════════════════════════════════════════════════════════
+
+enum WidgetSize { Small, Medium, Large }
+
+struct WidgetLayout {
+    DefaultSize: WidgetSize @default("Medium"),
+    // Map with enum key inside non-table struct
+    SizeOverrides: {WidgetSize: Int},
+}
+
+@table("widget_configs")
+struct WidgetConfig {
+    id: Int @primary @auto,
+    Name: Str,
+    // Non-table struct containing map with enum key
+    Layout: WidgetLayout,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 3-LEVEL DEEP NESTING with enums & FKs at every level
+// Tests deep recursive traversal through struct → struct → struct
+// ═══════════════════════════════════════════════════════════════════
+
+enum Region { US, EU, APAC, Global }
+
+struct DataCenter {
+    Location: Region @default("US"),
+    // FK to a @table struct at deepest level
+    ManagedById: Int @foreign(Employee),
+}
+
+struct HostingPlan {
+    PlanName: Str,
+    // Level 2: contains DataCenter which has enum + FK
+    PrimaryDC: DataCenter,
+}
+
+@table("deploy_configs")
+struct DeployConfig {
+    id: Int @primary @auto,
+    Name: Str,
+    // Level 1: contains HostingPlan which contains DataCenter
+    Hosting: HostingPlan,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CIRCULAR NON-TABLE STRUCT REFERENCE (prevents infinite recursion)
+// A → B → A cycle test
+// ═══════════════════════════════════════════════════════════════════
+
+enum PointerType { Strong, Weak }
+
+struct CircularB;
+
+struct CircularA {
+    Label: Str,
+    Kind: PointerType @default("Strong"),
+    // References CircularB which references back to CircularA
+    Link: CircularB,
+}
+
+struct CircularB {
+    Value: Int,
+    // Back-reference to CircularA — creates cycle
+    BackLink: CircularA,
+}
+
+@table("circular_refs")
+struct CircularRef {
+    id: Int @primary @auto,
+    Name: Str,
+    // Uses CircularA which has circular ref to CircularB
+    Data: CircularA,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// MULTIPLE ENUMS in ONE non-table struct (tests collecting multiple enums)
+// ═══════════════════════════════════════════════════════════════════
+
+enum Format { JSON, XML, YAML }
+enum Compression { Gzip, Brotli, None }
+
+struct ExportPrefs {
+    Format: Format @default("JSON"),
+    Compression: Compression @default("Gzip"),
+    MaxSize: Int @default(100),
+}
+
+@table("export_configs")
+struct ExportConfig {
+    id: Int @primary @auto,
+    Name: Str,
+    // Non-table struct containing TWO different enums
+    Prefs: ExportPrefs,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// THE KITCHEN SINK — enum + FK + array + map + optional all in one
+// non-table struct, used by a @table struct
+// Tests: TypeKind::Struct containing fields of all type kinds
+// ═══════════════════════════════════════════════════════════════════
+
+enum SinkLevel { Low, Medium, High, Critical }
+
+struct KitchenSink {
+    // Direct enum
+    Level: SinkLevel @default("Low"),
+    // Optional enum
+    Fallback: SinkLevel @optional,
+    // Array of enum
+    Levels: [SinkLevel],
+    // Map with enum key
+    Thresholds: {SinkLevel: Int},
+    // FK to @table struct
+    ReviewerId: Int @foreign(Employee),
+    // Optional FK
+    EscalationUserId: Int @foreign(Employee) @optional,
+    // Each field above adds a transitive dep edge to the dependency graph
+}
+
+@table("sink_configs")
+struct SinkConfig {
+    id: Int @primary @auto,
+    Name: Str,
+    // Contains ALL transitive dep types at once
+    Data: KitchenSink,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// OPTIONAL ARRAY OF ENUM: [Visibility?] — Optional<Array<Enum>>
+// Tests: TypeKind::Optional wrapping TypeKind::Array wrapping Enum
+// ═══════════════════════════════════════════════════════════════════
+
+@table("opt_array_enums")
+struct OptArrayEnum {
+    id: Int @primary @auto,
+    Name: Str,
+    // Optional array of enum — two levels of wrapping
+    Tags: [Visibility] @optional,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// MAP<ENUM, NON-TABLE STRUCT>: {Tier: DisplayPrefs}
+// Tests: TypeKind::Map with Enum key AND Struct value (both recursed)
+// ═══════════════════════════════════════════════════════════════════
+
+@table("map_enum_structs")
+struct MapEnumStruct {
+    id: Int @primary @auto,
+    Name: Str,
+    // Map with enum key and non-table struct value — both need traversal
+    Configs: {Tier: DisplayPrefs},
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// TABLE WITH ONLY NON-TABLE STRUCT FIELD (zero primitive columns)
+// Tests: table creation when the only column is a non-table struct (JSONB)
+// ═══════════════════════════════════════════════════════════════════
+
+@table("pure_nested")
+struct PureNested {
+    id: Int @primary @auto,
+    // The only data field is a non-table struct (stored as JSONB)
+    Meta: TaskMeta,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// SELF-REFERENCING NON-TABLE STRUCT (not @foreign, just type field)
+// Tests: visited_structs infinite recursion guard on pure type cycles
+// ═══════════════════════════════════════════════════════════════════
+
+enum RecursiveLabel { Node, Leaf, Branch }
+
+struct RecursiveNode {
+    Label: RecursiveLabel @default("Node"),
+    // Self-referencing field — creates infinite recursion risk
+    Child: RecursiveNode,
+}
+
+@table("recursive_trees")
+struct RecursiveTree {
+    id: Int @primary @auto,
+    Name: Str,
+    // Uses RecursiveNode which has a self-referencing field
+    Root: RecursiveNode,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ENUM DIAMOND — one enum used by multiple tables that also FK-chain
+// Tests: enum dep propagates correctly through diamond graph
+// ═══════════════════════════════════════════════════════════════════
+
+enum DiamondEnum { ValueA, ValueB, ValueC }
+
+@table("diamond_left")
+struct DiamondLeft {
+    id: Int @primary @auto,
+    Name: Str,
+    // Uses DiamondEnum directly
+    Category: DiamondEnum @default("ValueA"),
+}
+
+@table("diamond_right")
+struct DiamondRight {
+    id: Int @primary @auto,
+    Name: Str,
+    // Also uses DiamondEnum directly
+    Category: DiamondEnum @default("ValueB"),
+}
+
+@table("diamond_merge")
+struct DiamondMerge {
+    id: Int @primary @auto,
+    Name: Str,
+    // Has FK to both diamond_left and diamond_right
+    LeftId: Int @foreign(DiamondLeft),
+    RightId: Int @foreign(DiamondRight),
+    // Also uses DiamondEnum
+    Category: DiamondEnum @default("ValueC"),
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// HEAVY NON-TABLE STRUCT — 3 enums + 3 FKs in one struct
+// Tests: collecting multiple enum refs and FK refs from single struct
+// ═══════════════════════════════════════════════════════════════════
+
+enum HeavyEnumA { Opt1, Opt2 }
+enum HeavyEnumB { Alpha, Beta, Gamma }
+enum HeavyEnumC { X, Y, Z }
+
+struct HeavyPayload {
+    // Three different enums
+    ChoiceA: HeavyEnumA @default("Opt1"),
+    ChoiceB: HeavyEnumB @default("Alpha"),
+    ChoiceC: HeavyEnumC @default("X"),
+    // Three different FKs to @table structs
+    UserRef: Int @foreign(Employee),
+    LeftRef: Int @foreign(DiamondLeft),
+    RightRef: Int @foreign(DiamondRight),
+    // Mixed with primitives
+    Score: Int @default(0),
+    Label: Str @optional,
+}
+
+@table("heavy_payloads")
+struct HeavyPayloadTable {
+    id: Int @primary @auto,
+    Name: Str,
+    // Non-table struct with 3 enums + 3 FKs + 2 primitives
+    Payload: HeavyPayload,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// OPTIONAL ARRAY OF NON-TABLE STRUCT: [Address?]
+// Tests: Array wrapping Optional wrapping Non-table Struct
+// ═══════════════════════════════════════════════════════════════════
+
+@table("opt_addr_lists")
+struct OptAddrList {
+    id: Int @primary @auto,
+    Name: Str,
+    // Array of optional Address structs
+    Addresses: [Address] @optional,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// MULTIPLE TABLES SHARING SAME ENUM via DIFFERENT PATHS
+// Tests: enum appears in affected_objects of multiple tables correctly
+// ═══════════════════════════════════════════════════════════════════
+
+enum SharedByAll { Alpha, Beta, Gamma }
+
+// Table 1: uses enum directly
+@table("shared_enum_users")
+struct SharedEnumUser {
+    id: Int @primary @auto,
+    Name: Str,
+    Mode: SharedByAll @default("Alpha"),
+}
+
+// Table 2: uses enum through non-table struct
+struct SharedEnumHolder {
+    Mode: SharedByAll @default("Beta"),
+}
+
+@table("shared_enum_indirect")
+struct SharedEnumIndirect {
+    id: Int @primary @auto,
+    Name: Str,
+    Holder: SharedEnumHolder,
+}
+
+// Table 3: uses enum through array
+@table("shared_enum_array")
+struct SharedEnumArray {
+    id: Int @primary @auto,
+    Name: Str,
+    Modes: [SharedByAll],
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// STRUCT WITH ALL OPTIONAL PRIMITIVES
+// Tests: Optional<Str>, Optional<Int>, Optional<Bool>, Optional<Float>
+// ═══════════════════════════════════════════════════════════════════
+
+struct OptionalPrimitives {
+    MaybeStr: Str @optional,
+    MaybeInt: Int @optional,
+    MaybeBool: Bool @optional,
+    MaybeFloat: Float @optional,
+}
+
+@table("optional_primitives")
+struct OptionalPrimitivesTable {
+    id: Int @primary @auto,
+    Name: Str,
+    Primitives: OptionalPrimitives,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// MAP WITH ENUM KEY AND NON-TABLE STRUCT VALUE: {WidgetSize: SharedProfile}
+// Tests: Map<Enum, Struct> where Struct itself has deps
+// ═══════════════════════════════════════════════════════════════════
+
+@table("map_enum_to_struct")
+struct MapEnumToStruct {
+    id: Int @primary @auto,
+    Name: Str,
+    // Map key is enum, value is non-table struct (SharedProfile has Bio, Avatar)
+    Profiles: {WidgetSize: SharedProfile},
+}
+
+static DB: Database;
+fn main() {
+    DB = Database::Postgres()?;
+    print("Advanced dep graph test loaded.");
+}

@@ -102,8 +102,9 @@ pub struct MirBuilder<'a> {
     pub(crate) function_result_types: FxHashMap<String, (CoreTypeId, CoreTypeId)>,
 
     /// Function parameter types for type propagation during Call argument building.
-    /// Key: function name, Value: list of parameter types
-    pub(crate) function_param_types: FxHashMap<String, Vec<CoreTypeId>>,
+    /// Key: (function name, total param count), Value: list of parameter types.
+    /// Param count includes `self` for methods (e.g., `_method_Server_crud` with 4 params).
+    pub(crate) function_param_types: FxHashMap<(String, usize), Vec<CoreTypeId>>,
 
     /// Counter for generating unique closure function names.
     pub(crate) closure_counter: usize,
@@ -122,9 +123,12 @@ pub struct MirBuilder<'a> {
     /// Key: closure function name, Value: return type
     pub(crate) closure_return_types: FxHashMap<String, CoreTypeId>,
 
-    /// FFI function registry: maps function name to FFI info (library, symbol).
+    /// FFI function registry: maps (function name, param count) to FFI info (library, symbol).
+    /// Param count is the total number of parameters including `self` for methods.
     /// Used to emit FfiCall instead of Call for FFI functions.
-    pub(crate) ffi_functions: FxHashMap<String, FfiFunctionInfo>,
+    /// Keyed by (name, param_count) to support overloaded extern functions with
+    /// the same Doo name but different arities (e.g., `Server.crud` with and without webhooks).
+    pub(crate) ffi_functions: FxHashMap<(String, usize), FfiFunctionInfo>,
 
     /// Function name aliases: maps simple import names to mangled names.
     /// e.g., "Postgres" -> "_method_Database_Postgres"
@@ -324,14 +328,16 @@ impl<'a> MirBuilder<'a> {
                 // Collect parameter types for type-aware argument building
                 let param_types: Vec<CoreTypeId> =
                     f.params.iter().filter_map(|p| p.type_id).collect();
+                let total_params = f.params.len();
                 if !param_types.is_empty() {
                     self.function_param_types
-                        .insert(f.name.clone(), param_types);
+                        .insert((f.name.clone(), total_params), param_types);
                 }
 
                 // Extract FFI info from @extern decorator (SINGLE SOURCE OF TRUTH)
                 if let Some(ffi_info) = self.extract_ffi_info(&f.decorators, &f.name) {
-                    self.ffi_functions.insert(f.name.clone(), ffi_info);
+                    self.ffi_functions
+                        .insert((f.name.clone(), total_params), ffi_info);
                 }
 
                 // Create alias from simple name to mangled name for imported associated functions
@@ -720,7 +726,10 @@ impl<'a> MirBuilder<'a> {
         func.is_async = hir.is_async;
 
         // Set FFI linkage info if this is an FFI function
-        if let Some(ffi_info) = self.ffi_functions.get(&hir.name) {
+        if let Some(ffi_info) = self
+            .ffi_functions
+            .get(&(hir.name.clone(), hir.params.len()))
+        {
             let param_types: Vec<doo_core::types::TypeId> = hir
                 .params
                 .iter()
@@ -1142,8 +1151,7 @@ impl<'a> MirBuilder<'a> {
     /// Resolves aliases before lookup.
     pub(crate) fn is_function_name(&self, name: &str) -> bool {
         let resolved = self.resolve_function_name(name);
-        self.function_return_types.contains_key(&resolved)
-            || self.ffi_functions.contains_key(&resolved)
+        self.function_return_types.contains_key(&resolved) || self.is_ffi_name(&resolved)
     }
 
     /// Check if a name refers to a registered type (struct or enum).
@@ -1291,14 +1299,54 @@ impl<'a> MirBuilder<'a> {
 
     /// Get the parameter types of a function by name.
     /// Resolves aliases before lookup.
-    pub(crate) fn get_function_param_types(&self, name: &str) -> Option<&Vec<CoreTypeId>> {
-        // First try direct lookup
-        if let Some(types) = self.function_param_types.get(name) {
+    pub(crate) fn get_function_param_types(
+        &self,
+        name: &str,
+        param_count: usize,
+    ) -> Option<&Vec<CoreTypeId>> {
+        // First try direct lookup by (name, param_count) - exact match
+        if let Some(types) = self
+            .function_param_types
+            .get(&(name.to_string(), param_count))
+        {
             return Some(types);
         }
-        // Then try through alias
+        // Then try through alias - exact match
         if let Some(resolved) = self.function_aliases.get(name) {
-            return self.function_param_types.get(resolved);
+            if let Some(types) = self
+                .function_param_types
+                .get(&(resolved.clone(), param_count))
+            {
+                return Some(types);
+            }
+        }
+        // Overloaded: find lowest count >= param_count (supports optional trailing params)
+        let search = name.to_string();
+        let mut best: Option<(usize, &Vec<CoreTypeId>)> = None;
+        for ((n, count), types) in self.function_param_types.iter() {
+            if *n == search && *count >= param_count {
+                if best.map_or(true, |(c, _)| *count < c) {
+                    best = Some((*count, types));
+                }
+            }
+        }
+        if let Some((_, types)) = best {
+            return Some(types);
+        }
+        // Alias higher counts
+        if let Some(resolved) = self.function_aliases.get(name) {
+            let search = resolved.clone();
+            let mut best: Option<(usize, &Vec<CoreTypeId>)> = None;
+            for ((n, count), types) in self.function_param_types.iter() {
+                if *n == search && *count >= param_count {
+                    if best.map_or(true, |(c, _)| *count < c) {
+                        best = Some((*count, types));
+                    }
+                }
+            }
+            if let Some((_, types)) = best {
+                return Some(types);
+            }
         }
         None
     }
@@ -1430,16 +1478,73 @@ impl<'a> MirBuilder<'a> {
     }
 
     /// Check if a function is an FFI function and get its info.
-    /// Resolves aliases before lookup.
-    pub(crate) fn get_ffi_info(&self, func_name: &str) -> Option<&FfiFunctionInfo> {
-        // First try direct lookup
-        if let Some(info) = self.ffi_functions.get(func_name) {
+    /// Resolves aliases before lookup. Matches by (name, param_count) to
+    /// support overloaded extern functions with different arities.
+    pub(crate) fn get_ffi_info(
+        &self,
+        func_name: &str,
+        param_count: usize,
+    ) -> Option<&FfiFunctionInfo> {
+        // First try exact match
+        if let Some(info) = self
+            .ffi_functions
+            .get(&(func_name.to_string(), param_count))
+        {
             return Some(info);
         }
-        // Then try through alias
+        // Then try through alias with exact match
         if let Some(resolved) = self.function_aliases.get(func_name) {
-            return self.ffi_functions.get(resolved);
+            if let Some(info) = self.ffi_functions.get(&(resolved.clone(), param_count)) {
+                return Some(info);
+            }
+        }
+        // Overloaded functions: try to find one with >= param_count (lowest first).
+        // This supports optional trailing parameters (e.g., webhooksJson in Server.crud).
+        let search = func_name.to_string();
+        let mut best: Option<(usize, &FfiFunctionInfo)> = None;
+        for ((name, count), info) in self.ffi_functions.iter() {
+            if *name == search && *count >= param_count {
+                if best.map_or(true, |(c, _)| *count < c) {
+                    best = Some((*count, info));
+                }
+            }
+        }
+        if let Some((_, info)) = best {
+            return Some(info);
+        }
+        // Also try alias for higher counts
+        if let Some(resolved) = self.function_aliases.get(func_name) {
+            let search = resolved.clone();
+            let mut best: Option<(usize, &FfiFunctionInfo)> = None;
+            for ((name, count), info) in self.ffi_functions.iter() {
+                if *name == search && *count >= param_count {
+                    if best.map_or(true, |(c, _)| *count < c) {
+                        best = Some((*count, info));
+                    }
+                }
+            }
+            if let Some((_, info)) = best {
+                return Some(info);
+            }
         }
         None
+    }
+
+    /// Check if a function name has ANY FFI entry (any arity).
+    /// Used for existence checks that don't need parameter matching.
+    pub(crate) fn is_ffi_name(&self, func_name: &str) -> bool {
+        for ((name, _), _) in self.ffi_functions.iter() {
+            if name == func_name {
+                return true;
+            }
+        }
+        if let Some(resolved) = self.function_aliases.get(func_name) {
+            for ((name, _), _) in self.ffi_functions.iter() {
+                if name == resolved {
+                    return true;
+                }
+            }
+        }
+        false
     }
 }

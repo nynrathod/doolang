@@ -1,0 +1,144 @@
+// =============================================================================
+// DOO WEBHOOK AUTH TEST
+// =============================================================================
+// Tests that app.auth() with webhooks properly:
+// 1. Registers signup/login routes
+// 2. Fires webhooks on signup and login events
+// 3. Webhook filters work (field-based conditional firing)
+// 4. Payload field filtering works
+// =============================================================================
+
+import std::Http::{Server, Request, Response};
+import std::Database;
+import std::Auth::Jwt;
+
+// ─── User Struct ────────────────────────────────────────────────────────────
+
+struct User {
+    id: Int @primary @auto,
+    Email: Str @unique,
+    Password: Str @hash,
+    Name: Str,
+    Role: Str,
+}
+
+// ─── Webhook Config Structs ─────────────────────────────────────────────────
+
+struct WebhookFilter {
+    Id: Str,
+    Field: Str,
+    Operator: Str,
+    Value: Str,
+}
+
+struct WebhookConfig {
+    Id: Str,
+    Event: Str,
+    Url: Str,
+    Filters: [WebhookFilter],
+    PayloadFields: [Str],
+}
+
+// ─── Response Structs ───────────────────────────────────────────────────────
+
+struct MessageResponse {
+    message: Str,
+}
+
+// ─── Database ───────────────────────────────────────────────────────────────
+
+static DB: Database;
+
+// ─── Handlers ───────────────────────────────────────────────────────────────
+
+fn PingHandler() -> Str {
+    return "pong";
+}
+
+fn GetProfile(req: Request) -> MessageResponse {
+    print("📍 Handler: GetProfile (JWT protected)");
+    return MessageResponse {
+        message: "Profile accessed",
+    };
+}
+
+// ─── Main ───────────────────────────────────────────────────────────────────
+
+fn main() {
+    print("=========================================");
+    print("  DOO WEBHOOK AUTH TEST");
+    print("=========================================");
+    print("");
+
+    // ─── Build webhook configs for auth events ───────────────────────────
+    // Events: "signup", "login"
+
+    let whSignup = WebhookConfig {
+        Id: "wh-auth-signup",
+        Event: "signup",
+        Url: "http://localhost:9998/webhook-signup",
+        Filters: [],
+        PayloadFields: [],
+    };
+
+    let whSignupFiltered = WebhookConfig {
+        Id: "wh-auth-signup-admin",
+        Event: "signup",
+        Url: "http://localhost:9998/webhook-signup-admin",
+        Filters: [WebhookFilter {
+            Id: "f-role",
+            Field: "Role",
+            Operator: "equals",
+            Value: "admin",
+        }],
+        PayloadFields: ["Email", "Name", "Role"],
+    };
+
+    let whLogin = WebhookConfig {
+        Id: "wh-auth-login",
+        Event: "login",
+        Url: "http://localhost:9998/webhook-login",
+        Filters: [],
+        PayloadFields: [],
+    };
+
+    let whLoginFiltered = WebhookConfig {
+        Id: "wh-auth-login-admin",
+        Event: "login",
+        Url: "http://localhost:9998/webhook-login-admin",
+        Filters: [WebhookFilter {
+            Id: "f-role-login",
+            Field: "Role",
+            Operator: "equals",
+            Value: "admin",
+        }],
+        PayloadFields: ["Email", "Name"],
+    };
+
+    let configs: [WebhookConfig] = [whSignup, whSignupFiltered, whLogin, whLoginFiltered];
+    let webhooksJson: Str = JSON.stringify(configs);
+
+    print("Webhooks JSON: " + webhooksJson);
+
+    // ─── Database ─────────────────────────────────────────────────────────
+    print("Connecting to database...");
+    DB = Database::Postgres()?;
+    print("Database connected.");
+
+    let app = Server::new(":3115");
+
+    // Register auth with webhooks
+    // Events fired: "signup" on POST /auth/signup, "login" on POST /auth/login
+    print("Registering auth with webhooks...");
+    app.auth("/auth/signup", "/auth/login", User, DB, webhooksJson);
+    print("Auth with webhooks registered.");
+
+    // JWT-protected route (to verify login works + get token)
+    app.get("/profile", Jwt(), GetProfile);
+
+    // Health check
+    app.get("/ping", PingHandler);
+
+    print("Starting server on port 3115...");
+    app.start();
+}
