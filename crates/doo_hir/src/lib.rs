@@ -5,7 +5,7 @@
 //! ## Purpose
 //!
 //! - Simplifies AST constructs through desugaring
-//! - Provides explicit type annotations on all nodes
+//! - Provides explicit type annotations on all nodes via `TypeId`
 //! - Prepares for ownership analysis with ownership placeholders
 //! - Enables simpler semantic analysis passes
 //!
@@ -15,12 +15,12 @@
 //! - `x++` → `x = x + 1`
 //! - Range `1..10` → `Range::new(1, 10, false)`
 
-pub mod types;
 pub mod lowering;
 pub mod monomorphize;
+pub mod types;
 pub mod visitor;
 
-pub use types::*;
 pub use lowering::Lower;
 pub use monomorphize::Monomorphizer;
-pub use visitor::{HirVisitor, HirVisitorMut};
+pub use types::*;
+pub use visitor::{walk_expr, walk_pattern, walk_stmt, HirVisitor, HirVisitorMut, WalkHir};

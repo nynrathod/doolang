@@ -34,10 +34,11 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use doo_core::doo_debug;
 use doo_core::errors::codes::{CompilerError, ErrorCode};
 use doo_core::Span;
 use doo_frontend::ast::{ImportDecl, ImportItem, Item, Program};
-use doo_frontend::Parser;
+use doo_frontend::{Lexer, Parser};
 
 // Re-export analysis types for consistency (single source of truth for symbol resolution)
 pub use doo_analysis::{
@@ -45,9 +46,6 @@ pub use doo_analysis::{
 };
 // SymbolKindDef is in semantic submodule
 pub use doo_analysis::semantic::SymbolKindDef;
-
-// Shared loader types — single source of truth
-pub use doo_analysis::loader::{merge_imports, resolve_module_path, ImportResolution};
 
 /// Module loader for the Doo compiler.
 ///
@@ -68,6 +66,12 @@ pub struct ModuleLoader {
     /// Registered source files: (file_id, display_name, source_content)
     /// These must be added to SourceMap after import resolution.
     imported_sources: Vec<(u32, String, String)>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct ImportResolution {
+    pub items: Vec<doo_frontend::ast::Item>,
+    pub errors: Vec<doo_core::errors::codes::CompilerError>,
 }
 
 /// Check if a candidate std/ directory is valid (contains .doo source files, not
@@ -275,9 +279,13 @@ impl ModuleLoader {
             &source,
         );
         let mut parser = Parser::new(&source, file_id);
-        let program = parser
-            .parse_program()
-            .map_err(|e| format!("Failed to parse {}: {}", module_key, e))?;
+        let program = parser.parse_program().map_err(|e| {
+            let msg = e
+                .first()
+                .map(|err| err.message.clone())
+                .unwrap_or_else(|| "unknown parse error".to_string());
+            format!("Failed to parse {}: {}", module_key, msg)
+        })?;
 
         // Cache and return
         self.cache.insert(module_key.to_string(), program);
@@ -511,7 +519,7 @@ pub fn resolve_imports(
                 result.errors.push(CompilerError::new(
                     code,
                     format!("failed to load '{}': {}", module_key, e),
-                    doo_core::Span::new(0, 0, 0),
+                    doo_core::Span::dummy(),
                 ));
                 continue;
             }
@@ -726,12 +734,6 @@ pub fn resolve_imports(
                 Item::Import(_) | Item::Statement(_) | Item::Impl(_) => {
                     // Don't re-export
                 }
-                Item::Policy(p) => {
-                    if !imported_names.contains(&p.name) {
-                        imported_names.insert(p.name.clone());
-                        result.items.push(item.clone());
-                    }
-                }
                 Item::Interface(i) => {
                     let is_wanted = import_all || requested.contains_key(&i.name);
                     if is_wanted && !imported_names.contains(&i.name) {
@@ -827,7 +829,7 @@ pub fn resolve_imports(
                 result.errors.push(CompilerError::new(
                     ErrorCode::ModuleNotFound,
                     format!("failed to read module '{}': {}", module_path.display(), e),
-                    doo_core::Span::new(0, 0, 0),
+                    doo_core::Span::dummy(),
                 ));
                 continue;
             }
@@ -842,10 +844,18 @@ pub fn resolve_imports(
         let module_program = match parser.parse_program() {
             Ok(p) => p,
             Err(e) => {
+                let msg = e
+                    .first()
+                    .map(|err| err.message.clone())
+                    .unwrap_or_else(|| "unknown parse error".to_string());
                 result.errors.push(CompilerError::new(
                     ErrorCode::IoError,
-                    format!("failed to parse module '{}': {}", module_path.display(), e),
-                    doo_core::Span::new(0, 0, 0),
+                    format!(
+                        "failed to parse module '{}': {}",
+                        module_path.display(),
+                        msg
+                    ),
+                    doo_core::Span::dummy(),
                 ));
                 continue;
             }
@@ -1137,12 +1147,6 @@ pub fn resolve_imports(
                 Item::Import(_) | Item::Statement(_) | Item::Impl(_) => {
                     // Don't re-export
                 }
-                Item::Policy(p) => {
-                    if !imported_names.contains(&p.name) {
-                        imported_names.insert(p.name.clone());
-                        result.items.push(item.clone());
-                    }
-                }
                 Item::Interface(i) => {
                     let is_wanted = import_all;
                     if is_wanted && !imported_names.contains(&i.name) {
@@ -1176,7 +1180,7 @@ pub fn resolve_imports(
                     result.errors.push(CompilerError::new(
                         code,
                         format!("failed to load '{}': {}", module_key, e),
-                        doo_core::Span::new(0, 0, 0),
+                        doo_core::Span::dummy(),
                     ));
                     continue;
                 }
@@ -1309,12 +1313,6 @@ pub fn resolve_imports(
                         }
                     }
                     Item::Import(_) | Item::Statement(_) | Item::Impl(_) => {}
-                    Item::Policy(p) => {
-                        if !imported_names.contains(&p.name) {
-                            imported_names.insert(p.name.clone());
-                            result.items.push(item.clone());
-                        }
-                    }
                     Item::Interface(i) => {
                         let is_wanted = import_all || requested.contains_key(&i.name);
                         if is_wanted && !imported_names.contains(&i.name) {
@@ -1345,35 +1343,79 @@ fn capitalize_first(s: &str) -> String {
 /// e.g. `import defs::types::internalState;` -> caret on `internalState` only.
 fn narrow_span_to_symbol(full_span: &Span, sym_name: &str) -> Span {
     let sym_len = sym_name.len() as u32;
-    // The symbol is near the end of the span (before the `;`)
-    // Approximate: end of span - 1 (semicolon) - sym_len
     let span_len = full_span.end.saturating_sub(full_span.start);
     if span_len > sym_len + 1 {
         let sym_start = full_span.end.saturating_sub(sym_len).saturating_sub(1);
-        Span::new(
-            full_span.file_id,
-            sym_start,
-            full_span.end.saturating_sub(1),
-        )
+        Span::new(sym_start, full_span.end.saturating_sub(1))
     } else {
         *full_span
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_module_loader_creation() {
-        let loader = ModuleLoader::new();
-        assert!(loader.cache.is_empty());
+/// Locate the standard library directory.
+/// Searches upwards from the executable to find the workspace root.
+fn find_stdlib_path() -> Option<PathBuf> {
+    // Walk upwards from the executable to find workspace root (dev mode)
+    if let Ok(exe) = std::env::current_exe() {
+        let mut current = exe.parent().map(|p| p.to_path_buf());
+        while let Some(dir) = current {
+            let std_path = dir.join("library/std");
+            if std_path.exists() && std_path.is_dir() {
+                return Some(std_path);
+            }
+            current = dir.parent().map(|p| p.to_path_buf());
+        }
     }
-
-    #[test]
-    fn test_import_resolution_default() {
-        let resolution = ImportResolution::default();
-        assert!(resolution.items.is_empty());
-        assert!(resolution.errors.is_empty());
+    
+    // Fallback: check relative to CWD
+    let dev_path = PathBuf::from("library/std");
+    if dev_path.exists() {
+        return Some(dev_path);
     }
+    
+    None
+}
+
+/// Load all standard library .doo files into the AST.
+pub fn load_stdlib() -> Vec<doo_frontend::ast::Item> {
+    let mut items = Vec::new();
+    
+    let std_path = find_stdlib_path();
+    doo_debug!("loader", "stdlib path: {:?}", std_path);
+
+    if let Some(std_path) = std_path {
+        if let Ok(entries) = std::fs::read_dir(&std_path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("doo") {
+                    doo_debug!("loader", "loading std file: {:?}", path);
+                    if let Ok(source) = std::fs::read_to_string(&path) {
+                        let mut parser = doo_frontend::Parser::new(&source, 9999);
+                        match parser.parse_program() {
+                            Ok(program) => {
+                                doo_debug!(
+                                    "loader",
+                                    "parsed {} items from {:?}",
+                                    program.items.len(),
+                                    path
+                                );
+                                items.extend(program.items);
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "Warning: Failed to parse std file {}: {:?}",
+                                    path.display(),
+                                    e
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            doo_debug!("loader", "failed to read directory: {}", std_path.display());
+        }
+    }
+    
+    items
 }

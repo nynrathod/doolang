@@ -9,6 +9,7 @@ license = "MIT"
 doo_core = { path = "../doo_core" }
 doo_hir = { path = "../doo_hir" }
 doo_frontend = { path = "../doo_frontend" }
+doo_thir = { path = "../doo_thir" }
 
 # Data structures
 rustc-hash = "1.1"

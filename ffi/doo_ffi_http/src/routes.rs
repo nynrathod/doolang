@@ -18,7 +18,7 @@ use doo_ffi_core::DooResult;
 
 use crate::helpers::c_to_string;
 use crate::make_ok_void;
-use crate::middleware::{
+use crate::framework::middleware::{
     cors_middleware_handler, jwt_middleware_handler, ratelimit_middleware_handler,
 };
 use crate::router::get_routes;
@@ -434,11 +434,11 @@ pub extern "C" fn doo_http_register_route_webhook(
         let wh_json = c_to_string(webhooks_json);
 
         if !wh_json.is_empty() && wh_json != "[]" {
-            match crate::webhook_engine::parse_configs(&wh_json) {
+            match crate::framework::webhook_engine::parse_configs(&wh_json) {
                 Ok(configs) if !configs.is_empty() => {
                     let engine_key = format!("route:{}:{}", method_str.to_uppercase(), path_str);
                     let count = configs.len();
-                    crate::webhook_engine::register(&engine_key, configs);
+                    crate::framework::webhook_engine::register(&engine_key, configs);
                     ffi_debug!(
                         "HTTP",
                         "Registered {} webhook(s) for route '{}'",
@@ -508,11 +508,11 @@ pub extern "C" fn doo_http_register_route_full(
         // 2. Register webhook configs (if any)
         let wh_json = c_to_string(webhooks_json);
         if !wh_json.is_empty() && wh_json != "[]" {
-            match crate::webhook_engine::parse_configs(&wh_json) {
+            match crate::framework::webhook_engine::parse_configs(&wh_json) {
                 Ok(configs) if !configs.is_empty() => {
                     let engine_key = format!("route:{}:{}", method_str.to_uppercase(), path_str);
                     let count = configs.len();
-                    crate::webhook_engine::register(&engine_key, configs);
+                    crate::framework::webhook_engine::register(&engine_key, configs);
                     ffi_debug!(
                         "HTTP",
                         "routeFull: Registered {} webhook(s) for '{}'",

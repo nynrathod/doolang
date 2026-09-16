@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 doo_core = { path = "../doo_core" }
 doo_hir = { path = "../doo_hir" }
+doo_thir = { path = "../doo_thir" }
 doo_analysis = { path = "../doo_analysis" }
 
 # Data structures

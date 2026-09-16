@@ -11,8 +11,8 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use std::fmt::Write;
 use tokio_postgres::Row;
 
-// Re-export from doo_core — single source of truth for string case conversion.
-pub use doo_core::string::to_pascal_case;
+// Re-export from doo_ffi_core — single source of truth for string case conversion.
+pub use doo_ffi_core::to_pascal_case;
 
 /// Write PascalCase directly into buffer without allocating a String.
 fn write_pascal_case(buf: &mut String, s: &str) {

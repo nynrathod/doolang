@@ -1,31 +1,23 @@
-use super::expr::ParserExpr;
-use super::items::ParserItems;
-use super::types::ParserTypes;
 use super::{ParseResult, Parser};
 use crate::ast::*;
 use crate::lexer::TokenKind;
 use doo_core::{CompilerError, ErrorCode};
 
-/// Trait for parsing statements.
-pub trait ParserStmt {
-    fn parse_statement(&mut self) -> ParseResult<Stmt>;
-    fn parse_let(&mut self) -> ParseResult<Stmt>;
-    fn parse_if(&mut self) -> ParseResult<Stmt>;
-    fn parse_for(&mut self) -> ParseResult<Stmt>;
-    fn parse_return(&mut self) -> ParseResult<Stmt>;
-    fn parse_break(&mut self) -> ParseResult<Stmt>;
-    fn parse_continue(&mut self) -> ParseResult<Stmt>;
-    fn parse_print(&mut self) -> ParseResult<Stmt>;
-    fn parse_block(&mut self) -> ParseResult<Vec<Stmt>>;
-    fn parse_block_stmt(&mut self) -> ParseResult<Stmt>;
-    fn parse_expr_or_assign(&mut self) -> ParseResult<Stmt>;
-    fn expr_to_pattern(&self, expr: &Expr) -> ParseResult<Pattern>;
-}
-
-impl ParserStmt for Parser {
+impl Parser {
     // === Statements ===
 
-    fn parse_statement(&mut self) -> ParseResult<Stmt> {
+    pub fn parse_statement(&mut self) -> ParseResult<Stmt> {
+        let span = self.current_span();
+
+        // Handle empty statements (e.g. `;;` or `};`)
+        if self.check(TokenKind::Semi) {
+            self.advance();
+            return Ok(Stmt::new(
+                StmtKind::Expr(Expr::new(ExprKind::Nil, span)),
+                span,
+            ));
+        }
+
         match self.current().kind {
             TokenKind::Let => self.parse_let(),
             TokenKind::If => self.parse_if(),
@@ -40,13 +32,13 @@ impl ParserStmt for Parser {
                 let start = self.current_span();
                 let decl = self.parse_struct()?;
                 let end = self.prev_span();
-                Ok(Stmt::new(StmtKind::StructDecl(decl), start.merge(&end)))
+                Ok(Stmt::new(StmtKind::StructDecl(decl), start.merge(end)))
             }
             TokenKind::Enum => {
                 let start = self.current_span();
                 let decl = self.parse_enum()?;
                 let end = self.prev_span();
-                Ok(Stmt::new(StmtKind::EnumDecl(decl), start.merge(&end)))
+                Ok(Stmt::new(StmtKind::EnumDecl(decl), start.merge(end)))
             }
             _ => self.parse_expr_or_assign(),
         }
@@ -114,7 +106,7 @@ impl ParserStmt for Parser {
                     } else {
                         let ok_start = patterns.first().map(|p| p.span).unwrap_or(start);
                         let ok_end = patterns.last().map(|p| p.span).unwrap_or(start);
-                        Pattern::new(PatternKind::Tuple(patterns), ok_start.merge(&ok_end))
+                        Pattern::new(PatternKind::Tuple(patterns), ok_start.merge(ok_end))
                     };
 
                     return Ok(Stmt::new(
@@ -123,7 +115,7 @@ impl ParserStmt for Parser {
                             ok_pattern,
                             error_var,
                         },
-                        start.merge(&end),
+                        start.merge(end),
                     ));
                 }
 
@@ -136,7 +128,7 @@ impl ParserStmt for Parser {
             let pattern_end = patterns.last().map(|p| p.span).unwrap_or(start);
             let pattern = Pattern::new(
                 PatternKind::Tuple(patterns),
-                pattern_start.merge(&pattern_end),
+                pattern_start.merge(pattern_end),
             );
 
             let type_ann = if self.check(TokenKind::Colon) {
@@ -157,7 +149,7 @@ impl ParserStmt for Parser {
                     type_ann,
                     value,
                 },
-                start.merge(&end),
+                start.merge(end),
             ));
         }
 
@@ -202,7 +194,7 @@ impl ParserStmt for Parser {
                     ok_pattern: first_pattern,
                     error_var,
                 },
-                start.merge(&end),
+                start.merge(end),
             ));
         }
 
@@ -226,7 +218,7 @@ impl ParserStmt for Parser {
                 type_ann,
                 value,
             },
-            start.merge(&end),
+            start.merge(end),
         ))
     }
 
@@ -255,7 +247,7 @@ impl ParserStmt for Parser {
                 then_block,
                 else_branch,
             },
-            start.merge(&end),
+            start.merge(end),
         ))
     }
 
@@ -275,7 +267,7 @@ impl ParserStmt for Parser {
                     iterable: None,
                     body,
                 },
-                start.merge(&end),
+                start.merge(end),
             ));
         }
 
@@ -297,7 +289,7 @@ impl ParserStmt for Parser {
 
             let p_start = patterns.first().map(|p| p.span).unwrap_or(start);
             let p_end = patterns.last().map(|p| p.span).unwrap_or(start);
-            Pattern::new(PatternKind::Tuple(patterns), p_start.merge(&p_end))
+            Pattern::new(PatternKind::Tuple(patterns), p_start.merge(p_end))
         } else {
             first_pattern
         };
@@ -335,7 +327,7 @@ impl ParserStmt for Parser {
                 iterable,
                 body,
             },
-            start.merge(&end),
+            start.merge(end),
         ))
     }
 
@@ -362,7 +354,7 @@ impl ParserStmt for Parser {
         }
 
         let end = self.prev_span();
-        Ok(Stmt::new(StmtKind::Return(values), start.merge(&end)))
+        Ok(Stmt::new(StmtKind::Return(values), start.merge(end)))
     }
 
     fn parse_break(&mut self) -> ParseResult<Stmt> {
@@ -408,20 +400,46 @@ impl ParserStmt for Parser {
 
         self.expect(TokenKind::RParen)?;
         let end = self.prev_span();
-        Ok(Stmt::new(StmtKind::Print(exprs), start.merge(&end)))
+        Ok(Stmt::new(StmtKind::Print(exprs), start.merge(end)))
     }
 
-    fn parse_block(&mut self) -> ParseResult<Vec<Stmt>> {
+    pub(crate) fn parse_block(&mut self) -> ParseResult<Vec<Stmt>> {
+        let (stmts, _) = self.parse_block_parts(false)?;
+        Ok(stmts)
+    }
+
+    /// Parse `{ ... }`.
+    ///
+    /// When `as_expr` is true (if/else expression arms), a final expression
+    /// without a trailing `;` becomes the block's value, matching
+    /// `if cond { 4 } else { x * 2 }`.
+    pub(crate) fn parse_block_parts(
+        &mut self,
+        as_expr: bool,
+    ) -> ParseResult<(Vec<Stmt>, Option<Expr>)> {
         self.expect(TokenKind::LBrace)?;
 
         let mut stmts = Vec::new();
+        let mut tail = None;
         while !self.check(TokenKind::RBrace) && !self.is_at_end() {
+            doo_core::doo_debug!(
+                "parser",
+                "parse_block: parsing statement starting with {:?}",
+                self.current().kind
+            );
+
             match self.parse_statement() {
                 Ok(stmt) => {
-                    // Enforce mandatory semicolons (Rust-like rules)
                     if stmt.kind.needs_semicolon() {
                         if self.check(TokenKind::Semi) {
                             self.advance();
+                            stmts.push(stmt);
+                        } else if as_expr && self.check(TokenKind::RBrace) {
+                            if let StmtKind::Expr(e) = stmt.kind {
+                                tail = Some(e);
+                            } else {
+                                stmts.push(stmt);
+                            }
                         } else {
                             self.errors.push(
                                 CompilerError::new(
@@ -431,14 +449,14 @@ impl ParserStmt for Parser {
                                 )
                                 .with_suggestion("add `;` at the end of this statement"),
                             );
+                            stmts.push(stmt);
                         }
                     } else {
-                        // Block-ending statements: consume optional semicolon
                         if self.check(TokenKind::Semi) {
                             self.advance();
                         }
+                        stmts.push(stmt);
                     }
-                    stmts.push(stmt);
                 }
                 Err(e) => {
                     self.errors.push(e);
@@ -448,19 +466,25 @@ impl ParserStmt for Parser {
         }
 
         self.expect(TokenKind::RBrace)?;
-        Ok(stmts)
+        Ok((stmts, tail))
     }
 
     fn parse_block_stmt(&mut self) -> ParseResult<Stmt> {
         let start = self.current_span();
         let stmts = self.parse_block()?;
         let end = self.prev_span();
-        Ok(Stmt::new(StmtKind::Block(stmts), start.merge(&end)))
+        Ok(Stmt::new(StmtKind::Block(stmts), start.merge(end)))
     }
 
     fn parse_expr_or_assign(&mut self) -> ParseResult<Stmt> {
         let start = self.current_span();
         let expr = self.parse_expression()?;
+
+        doo_core::doo_debug!(
+            "parser",
+            "parse_expr_or_assign: parsed expr {:?}",
+            expr.kind
+        );
 
         // Check for assignment
         if self.check(TokenKind::Eq) {
@@ -475,7 +499,7 @@ impl ParserStmt for Parser {
                     target: pattern,
                     value,
                 },
-                start.merge(&end),
+                start.merge(end),
             ));
         }
 
@@ -491,7 +515,7 @@ impl ParserStmt for Parser {
                     op,
                     value,
                 },
-                start.merge(&end),
+                start.merge(end),
             ));
         }
 
@@ -505,16 +529,22 @@ impl ParserStmt for Parser {
                         variable: name.clone(),
                         op,
                     },
-                    start.merge(&end),
+                    start.merge(end),
                 ));
             }
         }
 
         let end = self.prev_span();
-        Ok(Stmt::new(StmtKind::Expr(expr), start.merge(&end)))
+        Ok(Stmt::new(StmtKind::Expr(expr), start.merge(end)))
     }
 
     fn expr_to_pattern(&self, expr: &Expr) -> ParseResult<Pattern> {
+        doo_core::doo_debug!(
+            "parser",
+            "expr_to_pattern called with expr: {:?}",
+            expr.kind
+        );
+
         match &expr.kind {
             ExprKind::Ident(name) => Ok(Pattern::ident(name.clone(), expr.span)),
             ExprKind::TupleLit(items) => {

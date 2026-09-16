@@ -4,6 +4,7 @@ use super::type_infer::unwrap_optional_type;
 use super::{hir_binop_to_kind, hir_unaryop_to_kind};
 use super::{Lower, LowerError};
 use crate::types::*;
+use doo_core::types::composite::FunctionSig;
 use doo_core::{
     constants::ffi_names,
     infer::{infer_binop_result_type, infer_unaryop_result_type, BinOpKind},
@@ -48,36 +49,11 @@ impl Lower {
                 object,
                 method,
                 args,
-            } => {
-                // Transform HTTP route methods with middleware arguments
-                // app.get("/path", middleware, Handler) -> app.getWithMiddleware("/path", "middleware", Handler)
-                // app.get("/path", m1, m2, Handler) -> app.getWithMiddleware("/path", "m1,m2", Handler)
-                if Self::is_http_route_method(method) && args.len() > 2 {
-                    return self.transform_route_with_middleware(object, method, args, expr.span);
-                }
-
-                // Transform app.group with route block
-                // app.group("/api", middleware, { routes }) -> expand routes with prefix and middleware
-                if method == "group" && args.len() >= 2 {
-                    if let Some(route_block_arg) = args.last() {
-                        if matches!(
-                            route_block_arg,
-                            Expr {
-                                kind: ExprKind::RouteBlock { .. },
-                                ..
-                            }
-                        ) {
-                            return self.transform_group_with_routes(object, args, expr.span);
-                        }
-                    }
-                }
-
-                HirExprKind::MethodCall {
-                    receiver: Box::new(self.lower_expr(object)),
-                    method: method.clone(),
-                    args: args.iter().map(|a| self.lower_expr(a)).collect(),
-                }
-            }
+            } => HirExprKind::MethodCall {
+                receiver: Box::new(self.lower_expr(object)),
+                method: method.clone(),
+                args: args.iter().map(|a| self.lower_expr(a)).collect(),
+            },
 
             ExprKind::Field { object, field } => HirExprKind::Field {
                 object: Box::new(self.lower_expr(object)),
@@ -242,10 +218,6 @@ impl Lower {
 
             ExprKind::Spread(inner) => HirExprKind::Spread(Box::new(self.lower_expr(inner))),
 
-            ExprKind::RouteBlock { routes } => HirExprKind::RouteBlock {
-                routes: routes.iter().map(|r| self.lower_expr(r)).collect(),
-            },
-
             // === Async & Concurrency ===
             ExprKind::Await(inner) => HirExprKind::Await(Box::new(self.lower_expr(inner))),
             ExprKind::GoSpawn { body } => HirExprKind::Spawn {
@@ -337,96 +309,14 @@ impl Lower {
                 object,
                 method,
                 args,
-            } => {
-                // ── Webhook integration (typed path only) ─────────────────
-                // Detect when the LAST argument is a webhook JSON string.
-                // app.get(path, handler, webhooksJson)       → no middleware, with webhook
-                // app.get(path, Jwt(), handler, webhooksJson) → with middleware, with webhook
-                //
-                // Heuristic (does NOT depend on var_types tracking):
-                // The second-to-last arg is always a handler (known function name).
-                // The last arg is a webhook JSON if it's NOT a known function name.
-                // This works for ALL patterns:
-                //   (path, handler, webhook)          — handler is fn, webhook is var
-                //   (path, Jwt(), handler, webhook)    — handler is fn, webhook is var
-                //   (path, mw1, mw2, handler, webhook) — handler is fn, webhook is var
-                //   (path, mw, handler)                — handler is fn, last IS fn → no webhook
-                if Self::is_http_route_method(method) && args.len() >= 3 {
-                    let handler_idx = args.len() - 2;
-                    let webhook_idx = args.len() - 1;
-
-                    // The second-to-last arg must be a known function (the handler)
-                    let handler_is_known_fn = match &args[handler_idx].kind {
-                        ExprKind::Ident(name) => {
-                            let contains = self.known_functions.contains(name.as_str());
-                            contains
-                        }
-                        other => false,
-                    };
-
-                    // The last arg must NOT be a known function (it's a variable, not a handler/middleware)
-                    let last_is_not_fn = match &args[webhook_idx].kind {
-                        ExprKind::StrLit(_) => true,
-                        ExprKind::Ident(name) => {
-                            let not_fn = !self.known_functions.contains(name.as_str());
-                            not_fn
-                        }
-                        ExprKind::Call { .. } | ExprKind::MethodCall { .. } => true,
-                        other => {
-                            let last_arg = &args[webhook_idx];
-                            self.expr_is_str(last_arg) || {
-                                let lowered = self.lower_expr_typed(last_arg, registry);
-                                lowered.type_id.map_or(false, |tid| {
-                                    tid == builtin::STR
-                                        || registry
-                                            .get(tid)
-                                            .map_or(false, |info| info.name == "Str")
-                                })
-                            }
-                        }
-                    };
-
-                    if handler_is_known_fn && last_is_not_fn {
-                        return self.transform_route_with_webhook_typed(
-                            object, method, args, expr.span, registry,
-                        );
-                    }
-                }
-
-                // Transform HTTP route methods with middleware arguments
-                // app.get("/path", middleware, Handler) -> app.getWithMiddleware("/path", "middleware", Handler)
-                if Self::is_http_route_method(method) && args.len() > 2 {
-                    return self.transform_route_with_middleware_typed(
-                        object, method, args, expr.span, registry,
-                    );
-                }
-
-                // Transform app.group with route block
-                if method == "group" && args.len() >= 2 {
-                    if let Some(route_block_arg) = args.last() {
-                        if matches!(
-                            route_block_arg,
-                            Expr {
-                                kind: ExprKind::RouteBlock { .. },
-                                ..
-                            }
-                        ) {
-                            return self.transform_group_with_routes_typed(
-                                object, args, expr.span, registry,
-                            );
-                        }
-                    }
-                }
-
-                HirExprKind::MethodCall {
-                    receiver: Box::new(self.lower_expr_typed(object, registry)),
-                    method: method.clone(),
-                    args: args
-                        .iter()
-                        .map(|a| self.lower_expr_typed(a, registry))
-                        .collect(),
-                }
-            }
+            } => HirExprKind::MethodCall {
+                receiver: Box::new(self.lower_expr_typed(object, registry)),
+                method: method.clone(),
+                args: args
+                    .iter()
+                    .map(|a| self.lower_expr_typed(a, registry))
+                    .collect(),
+            },
 
             ExprKind::Field { object, field } => HirExprKind::Field {
                 object: Box::new(self.lower_expr_typed(object, registry)),
@@ -685,13 +575,6 @@ impl Lower {
                 HirExprKind::Spread(Box::new(self.lower_expr_typed(inner, registry)))
             }
 
-            ExprKind::RouteBlock { routes } => HirExprKind::RouteBlock {
-                routes: routes
-                    .iter()
-                    .map(|r| self.lower_expr_typed(r, registry))
-                    .collect(),
-            },
-
             // === Async & Concurrency ===
             ExprKind::Await(inner) => {
                 HirExprKind::Await(Box::new(self.lower_expr_typed(inner, registry)))
@@ -797,7 +680,12 @@ impl Lower {
                     .map(|(_, t)| t.unwrap_or(builtin::ANY))
                     .collect();
                 let return_type = body.type_id.unwrap_or(builtin::ANY);
-                out.type_id = Some(registry.register_function(param_types, return_type));
+                out.type_id = Some(registry.register_function(FunctionSig {
+                    params: param_types,
+                    return_type: return_type,
+                    error_type: None,
+                    is_closure: true,
+                }));
             }
             HirExprKind::MethodCall {
                 receiver,
@@ -847,16 +735,17 @@ impl Lower {
                     for _ in 0..10 {
                         if let Some(info) = registry.get(current_type) {
                             match &info.kind {
-                                TypeKind::Struct { fields, .. } => {
-                                    if let Some((_, field_type, _)) =
-                                        fields.iter().find(|(n, _, _)| n == field)
+                                TypeKind::Struct { def } => {
+                                    let fields = &def.fields;
+                                    if let Some(field_def) =
+                                        fields.iter().find(|f| f.name.resolve() == field)
                                     {
-                                        out.type_id = Some(*field_type);
+                                        out.type_id = Some(field_def.type_id);
                                     }
                                     break;
                                 }
                                 TypeKind::TypeRef { name } => {
-                                    if let Some(resolved) = registry.lookup(name) {
+                                    if let Some(resolved) = registry.lookup(name.resolve()) {
                                         current_type = resolved;
                                     } else {
                                         break;
@@ -874,5 +763,62 @@ impl Lower {
         }
 
         out
+    }
+
+    /// Lower a match expression to HIR.
+    ///
+    /// Desugars scrutinee-less matches to if/else chains, and OR patterns
+    /// to duplicated arms.
+    pub(crate) fn lower_match(&mut self, expr: &Expr) -> HirExpr {
+        if let ExprKind::Match { values, arms } = &expr.kind {
+            // Scrutinee-less match: `match { cond => body }`
+            if values.is_empty() {
+                let mut else_expr = HirExpr::new(HirExprKind::Const(ConstValue::Nil), expr.span);
+                for arm in arms.iter().rev() {
+                    if let Some(guard) = &arm.guard {
+                        let cond = self.lower_expr(guard);
+                        let body = self.lower_expr(&arm.body);
+                        else_expr = HirExpr::new(
+                            HirExprKind::If {
+                                condition: Box::new(cond),
+                                then_expr: Box::new(body),
+                                else_expr: Some(Box::new(else_expr)),
+                            },
+                            expr.span,
+                        );
+                    } else {
+                        // Wildcard arm `_ => body`
+                        else_expr = self.lower_expr(&arm.body);
+                    }
+                }
+                return else_expr;
+            }
+
+            // Standard match with scrutinees
+            let hir_values: Vec<HirExpr> = values.iter().map(|v| self.lower_expr(v)).collect();
+            let mut hir_arms = Vec::new();
+
+            for arm in arms {
+                let pattern = self.lower_match_pattern(&arm.pattern);
+                let guard = arm.guard.as_ref().map(|g| self.lower_expr(g));
+                let body = self.lower_expr(&arm.body);
+                hir_arms.push(HirMatchArm {
+                    pattern,
+                    guard,
+                    body,
+                    span: arm.span,
+                });
+            }
+
+            HirExpr::new(
+                HirExprKind::Match {
+                    values: hir_values,
+                    arms: hir_arms,
+                },
+                expr.span,
+            )
+        } else {
+            unreachable!("lower_match called on non-match expression")
+        }
     }
 }

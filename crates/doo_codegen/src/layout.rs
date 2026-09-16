@@ -20,9 +20,10 @@
 //!     [Entry] data;  // Entry = {key, value}
 //! }
 //! ```
-
 use crate::context::CodegenContext;
 use doo_core::constants::ffi_names;
+use doo_core::Symbol;
+use doo_mir::types::MirType;
 use inkwell::types::BasicType;
 use inkwell::values::{IntValue, PointerValue};
 use inkwell::IntPredicate;
@@ -32,6 +33,198 @@ use inkwell::IntPredicate;
 /// both of which are 8 bytes on 64-bit systems. If we ever support different-sized
 /// key/value types, this must become dynamic based on key_type.size_of() + value_type.size_of().
 pub const MAP_ENTRY_SIZE: u64 = 16;
+
+/// Memory layout for a type: size, alignment, and field offsets.
+///
+/// Computed once per type and cached for codegen. Respects platform ABI
+/// alignment rules — fields are padded to their natural alignment.
+#[derive(Debug, Clone)]
+pub struct Layout {
+    /// Total size in bytes (after padding to alignment).
+    pub size: usize,
+    /// Alignment requirement in bytes.
+    pub align: usize,
+    /// Byte offsets of each field (for structs/tuples/enums).
+    pub fields: Vec<usize>,
+}
+
+impl Layout {
+    /// Create a layout with given size and alignment, no fields.
+    pub fn new(size: usize, align: usize) -> Self {
+        Self {
+            size,
+            align,
+            fields: Vec::new(),
+        }
+    }
+
+    /// Create a zero-sized layout (for Void/Never).
+    pub fn zero() -> Self {
+        Self::new(0, 1)
+    }
+
+    /// Add a field to the layout. Returns the field's byte offset.
+    ///
+    /// The field is placed at the next aligned offset, and the layout's
+    /// size and alignment are updated accordingly.
+    pub fn add_field(&mut self, field_size: usize, field_align: usize) -> usize {
+        let offset = align_up(self.size, field_align);
+        self.fields.push(offset);
+        self.size = offset + field_size;
+        self.align = self.align.max(field_align);
+        offset
+    }
+
+    /// Finalize the layout by padding size to alignment.
+    pub fn finish(&mut self) {
+        if self.align > 0 {
+            self.size = align_up(self.size, self.align);
+        }
+    }
+
+    /// Get the offset of the field at the given index.
+    pub fn field_offset(&self, index: usize) -> Option<usize> {
+        self.fields.get(index).copied()
+    }
+
+    /// Number of fields in this layout.
+    pub fn num_fields(&self) -> usize {
+        self.fields.len()
+    }
+}
+
+/// Align an offset up to the next multiple of `align`.
+fn align_up(offset: usize, align: usize) -> usize {
+    if align == 0 || align == 1 {
+        return offset;
+    }
+    (offset + align - 1) & !(align - 1)
+}
+
+/// Compute the layout for a struct type.
+///
+/// Fields are laid out sequentially with ABI-aligned offsets.
+/// The struct's alignment is the maximum of all field alignments.
+pub fn compute_struct_layout(fields: &[(Symbol, MirType)]) -> Layout {
+    let mut layout = Layout::new(0, 1);
+
+    for (_, field_ty) in fields {
+        let (field_size, field_align) = mir_type_size_align(field_ty);
+        layout.add_field(field_size, field_align);
+    }
+
+    layout.finish();
+    layout
+}
+
+/// Compute the layout for an enum type.
+///
+/// Layout: tag (i32) + max payload size, aligned to max(tag_align, payload_align).
+pub fn compute_enum_layout(variants: &[(Symbol, Vec<MirType>)]) -> Layout {
+    let mut layout = Layout::new(0, 1);
+
+    // Tag field: i32 (4 bytes, 4-byte alignment)
+    layout.add_field(4, 4);
+
+    // Find the maximum payload size across all variants
+    let mut max_payload_size = 0usize;
+    let mut max_payload_align = 1usize;
+
+    for (_, payload_types) in variants {
+        let mut payload_size = 0usize;
+        let mut payload_align = 1usize;
+
+        for ty in payload_types {
+            let (size, align) = mir_type_size_align(ty);
+            payload_size = align_up(payload_size, align) + size;
+            payload_align = payload_align.max(align);
+        }
+
+        payload_size = align_up(payload_size, payload_align);
+        max_payload_size = max_payload_size.max(payload_size);
+        max_payload_align = max_payload_align.max(payload_align);
+    }
+
+    // Add payload field
+    layout.add_field(max_payload_size, max_payload_align);
+    layout.finish();
+    layout
+}
+
+/// Compute the layout for an array type.
+///
+/// Layout: header (len: i64, cap: i64) + data (element_size * count).
+pub fn compute_array_layout(elem_ty: &MirType, count: usize) -> Layout {
+    let mut layout = Layout::new(0, 8);
+
+    // Length field (i64)
+    layout.add_field(8, 8);
+
+    // Capacity field (i64)
+    layout.add_field(8, 8);
+
+    // Data field
+    let (elem_size, elem_align) = mir_type_size_align(elem_ty);
+    let data_size = elem_size * count;
+    layout.add_field(data_size, elem_align);
+
+    layout.finish();
+    layout
+}
+
+/// Compute the layout for a tuple type.
+///
+/// Fields are laid out sequentially, same as structs.
+pub fn compute_tuple_layout(elements: &[MirType]) -> Layout {
+    let mut layout = Layout::new(0, 1);
+
+    for ty in elements {
+        let (size, align) = mir_type_size_align(ty);
+        layout.add_field(size, align);
+    }
+
+    layout.finish();
+    layout
+}
+
+/// Get the size and alignment of a MIR type in bytes.
+fn mir_type_size_align(ty: &MirType) -> (usize, usize) {
+    match ty {
+        MirType::Int | MirType::Float => (8, 8),
+        MirType::Bool => (1, 1),
+        MirType::Char => (4, 4),
+        MirType::Str => (16, 8), // Fat pointer: { ptr, len }
+        MirType::Void | MirType::Never => (0, 1),
+        MirType::Ptr(_) => (8, 8),
+        MirType::Array(_) => (8, 8),   // Pointer to array data
+        MirType::Map { .. } => (8, 8), // Opaque pointer
+        MirType::Optional(inner) => {
+            let (inner_size, inner_align) = mir_type_size_align(inner);
+            (1 + inner_size, inner_align.max(1)) // tag + payload
+        }
+        MirType::Result { ok, err } => {
+            let (ok_size, ok_align) = mir_type_size_align(ok);
+            let (err_size, err_align) = mir_type_size_align(err);
+            let max_size = ok_size.max(err_size);
+            let max_align = ok_align.max(err_align);
+            (1 + max_size, max_align) // tag + payload union
+        }
+        MirType::Tuple(elements) => {
+            let layout = compute_tuple_layout(elements);
+            (layout.size, layout.align)
+        }
+        MirType::Struct { fields, .. } => {
+            let layout = compute_struct_layout(fields);
+            (layout.size, layout.align)
+        }
+        MirType::Enum { variants, .. } => {
+            let layout = compute_enum_layout(variants);
+            (layout.size, layout.align)
+        }
+        MirType::Function { .. } => (8, 8), // Function pointer
+        MirType::Closure { .. } => (16, 8), // { fn_ptr, env_ptr }
+    }
+}
 
 /// Compute map entry size from key and value TypeIds.
 /// Currently returns the constant MAP_ENTRY_SIZE (16) since all Doo values are 8 bytes.
@@ -199,25 +392,30 @@ pub fn get_array_length_from_data<'ctx>(
     let null_block = ctx.context.append_basic_block(current_fn, "arr_len_null");
     let ok_block = ctx.context.append_basic_block(current_fn, "arr_len_ok");
     let done_block = ctx.context.append_basic_block(current_fn, "arr_len_done");
-    
-    ctx.builder.build_conditional_branch(is_null, null_block, ok_block).ok()?;
-    
+
+    ctx.builder
+        .build_conditional_branch(is_null, null_block, ok_block)
+        .ok()?;
+
     // Null block: return 0
     ctx.builder.position_at_end(null_block);
     let zero = ctx.context.i64_type().const_zero();
     ctx.builder.build_unconditional_branch(done_block).ok()?;
-    
+
     // Ok block: load from header
     ctx.builder.position_at_end(ok_block);
     let header_ptr = header_ptr_from_data(ctx, data_ptr)?;
     let len = get_array_length(ctx, header_ptr)?;
     ctx.builder.build_unconditional_branch(done_block).ok()?;
-    
+
     // Done block: phi
     ctx.builder.position_at_end(done_block);
-    let phi = ctx.builder.build_phi(ctx.context.i64_type(), "arr_len_res").ok()?;
+    let phi = ctx
+        .builder
+        .build_phi(ctx.context.i64_type(), "arr_len_res")
+        .ok()?;
     phi.add_incoming(&[(&zero, null_block), (&len, ok_block)]);
-    
+
     Some(phi.as_basic_value().into_int_value())
 }
 

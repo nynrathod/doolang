@@ -11,6 +11,7 @@ use inkwell::values::BasicValueEnum;
 use super::InstructionHandler;
 use crate::context::CodegenContext;
 use crate::utils::operand_to_value;
+use inkwell::types::BasicType;
 
 /// Memory instruction handler.
 pub struct MemoryHandler;
@@ -243,7 +244,7 @@ fn emit_deep_clone<'ctx>(
         let kind = ctx.get_type_kind(tid)?;
         // If it's a TypeRef, resolve it to the actual type
         if let TypeKind::TypeRef { name } = &kind {
-            let resolved_tid = ctx.type_registry.lookup(name)?;
+            let resolved_tid = ctx.type_registry.lookup(name.resolve())?;
             ctx.get_type_kind(resolved_tid)
         } else {
             Some(kind)
@@ -258,7 +259,7 @@ fn emit_deep_clone<'ctx>(
     let cloned = match &type_kind {
         // Primitives: simple copy (no heap allocation)
         Some(TypeKind::Int)
-        | Some(TypeKind::Float)
+        | Some(TypeKind::Float32 | TypeKind::Float64)
         | Some(TypeKind::Bool)
         | Some(TypeKind::Void) => val,
 
@@ -274,13 +275,18 @@ fn emit_deep_clone<'ctx>(
         }
 
         // Struct: allocate new struct and clone fields
-        Some(TypeKind::Struct { name, fields, .. }) => {
+        Some(TypeKind::Struct { def }) => {
             // Propagate struct type association
-            ctx.set_temp_struct_type(dest, name);
+            ctx.set_temp_struct_type(dest, def.name.resolve());
             if val.is_pointer_value() {
                 // Extract just name and type for clone_struct (visibility not needed)
-                let field_pairs: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
-                clone_struct(ctx, val.into_pointer_value(), name, &field_pairs)
+                let struct_name = def.name.resolve().to_string();
+                let field_pairs: Vec<_> = def
+                    .fields
+                    .iter()
+                    .map(|f| (f.name.resolve().to_string(), f.type_id))
+                    .collect();
+                clone_struct(ctx, val.into_pointer_value(), &struct_name, &field_pairs)
                     .map(|p| p.into())
                     .unwrap_or(val)
             } else {
@@ -469,7 +475,20 @@ pub(crate) fn clone_string<'ctx>(
         (&dst_ptr, clone_block),
     ]);
 
-    Some(phi.as_basic_value().into_pointer_value())
+    // Pass through opaque identity function — prevents LLVM O3 from
+    // seeing the null PHI value and exploiting it to break the null
+    // check in drop_pointer/drop_string. Same pattern as clone_struct
+    // and clone_array already use.
+    let opaque_fn = ctx.get_or_create_doo_opaque_ptr();
+    let safe_result = ctx
+        .builder
+        .build_call(opaque_fn, &[phi.as_basic_value().into()], "safe_str")
+        .ok()?
+        .try_as_basic_value()
+        .basic()?
+        .into_pointer_value();
+
+    Some(safe_result)
 }
 
 /// Clone a struct by allocating new memory and copying/cloning fields.
@@ -622,14 +641,14 @@ pub(crate) fn clone_struct<'ctx>(
                     .map(|p| p.into())
                     .unwrap_or(src_val)
             }
-            Some(TypeKind::Struct {
-                ref name,
-                ref fields,
-                ..
-            }) if src_val.is_pointer_value() => {
+            Some(TypeKind::Struct { def }) if src_val.is_pointer_value() => {
                 // Deep-clone nested struct fields to prevent use-after-free
-                let fp: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
-                let sn = name.clone();
+                let sn = def.name.resolve().to_string();
+                let fp: Vec<_> = def
+                    .fields
+                    .iter()
+                    .map(|f| (f.name.resolve().to_string(), f.type_id))
+                    .collect();
                 clone_struct(ctx, src_val.into_pointer_value(), &sn, &fp)
                     .map(|p| p.into())
                     .unwrap_or(src_val)
@@ -749,9 +768,13 @@ pub(crate) fn clone_array<'ctx>(
     // struct elements. Without this, clone_array does a shallow pointer copy
     // and the original array's drop frees the structs — leaving dangling ptrs.
     let struct_info: Option<(String, Vec<(String, doo_core::types::TypeId)>)> = match &type_kind {
-        Some(doo_core::types::TypeKind::Struct { name, fields, .. }) => {
-            let field_pairs: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
-            Some((name.clone(), field_pairs))
+        Some(doo_core::types::TypeKind::Struct { def }) => {
+            let field_pairs: Vec<_> = def
+                .fields
+                .iter()
+                .map(|f| (f.name.resolve().to_string(), f.type_id))
+                .collect();
+            Some((def.name.resolve().to_string(), field_pairs))
         }
         _ => None,
     };
@@ -1151,10 +1174,9 @@ pub(crate) fn clone_optional<'ctx>(
 // ============================================================================
 
 /// Emit drop (cleanup) for a variable based on its type.
+/// Emit drop (cleanup) for a variable based on its type.
 pub(crate) fn emit_drop<'ctx>(ctx: &mut CodegenContext<'ctx>, var_name: &str) {
     // Skip internal loop variables - they are just copies of array pointers
-    // and should not be freed (the original array variable handles cleanup).
-    // Internal variables are prefixed with "__" (e.g., __num_arr, __idx).
     if var_name.starts_with("__") {
         return;
     }
@@ -1165,68 +1187,115 @@ pub(crate) fn emit_drop<'ctx>(ctx: &mut CodegenContext<'ctx>, var_name: &str) {
         None => return,
     };
 
-    // Only drop pointer types (heap-allocated)
-    if !val.is_pointer_value() {
+    // Try to get the TypeId for the variable
+    let type_id = ctx.get_variable_type(var_name);
+    let type_kind = type_id.and_then(|tid| ctx.get_type_kind(tid));
+
+    // Determine if this type is heap-allocated (needs drop)
+    let is_heap_type = matches!(
+        &type_kind,
+        Some(TypeKind::Str)
+            | Some(TypeKind::Array { .. })
+            | Some(TypeKind::Map { .. })
+            | Some(TypeKind::Struct { .. })
+            | Some(TypeKind::Optional { .. })
+    );
+
+    // Get the pointer, handling i64 values from type coercion
+    let ptr = if val.is_pointer_value() {
+        val.into_pointer_value()
+    } else if val.is_int_value() && is_heap_type {
+        // Array/Map/Str stored as i64 due to type coercion in set_local.
+        // Convert back to pointer so we can free the memory.
+        eprintln!(
+            "[DROP-DEBUG] {} stored as i64, converting to ptr for drop",
+            var_name
+        );
+        match ctx.builder.build_int_to_ptr(
+            val.into_int_value(),
+            ctx.context
+                .i8_type()
+                .ptr_type(inkwell::AddressSpace::default()),
+            "drop_inttoptr",
+        ) {
+            Ok(p) => p,
+            Err(_) => return,
+        }
+    } else {
+        // Primitive (Int, Float, Bool) or unknown — no heap cleanup needed
+        return;
+    };
+
+    // Null check before any drop operation
+    let is_null = match ctx.builder.build_is_null(ptr, "drop_is_null") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let current_block = match ctx.builder.get_insert_block() {
+        Some(b) => b,
+        None => return,
+    };
+    let func = match current_block.get_parent() {
+        Some(f) => f,
+        None => return,
+    };
+
+    let drop_block = ctx.context.append_basic_block(func, "drop_do");
+    let skip_block = ctx.context.append_basic_block(func, "drop_skip");
+
+    if ctx
+        .builder
+        .build_conditional_branch(is_null, skip_block, drop_block)
+        .is_err()
+    {
         return;
     }
 
-    let ptr = val.into_pointer_value();
-
-    // Try to get the TypeId for the variable
-    let type_id = ctx.get_variable_type(var_name);
-
-    // Get the TypeKind if we have a TypeId
-    let type_kind = type_id.and_then(|tid| ctx.get_type_kind(tid));
+    ctx.builder.position_at_end(drop_block);
 
     // Dispatch based on type
     match &type_kind {
-        // Primitives: no-op (not heap allocated)
         Some(TypeKind::Int)
-        | Some(TypeKind::Float)
+        | Some(TypeKind::Float32 | TypeKind::Float64)
         | Some(TypeKind::Bool)
         | Some(TypeKind::Void) => {
             // No cleanup needed
         }
 
-        // String: DO NOT free - strings are either static constants or borrowed
-        // from arrays. We don't have dynamic string allocation yet.
         Some(TypeKind::Str) => {
-            // No cleanup - strings point to static or array memory
+            // No cleanup - strings point to static or borrowed memory
         }
 
-        // Struct: drop each field, then free
-        Some(TypeKind::Struct { name, fields, .. }) => {
-            // Extract just name and type for drop_struct (visibility not needed)
-            let field_pairs: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
-            drop_struct(ctx, ptr, name, &field_pairs);
+        Some(TypeKind::Struct { def }) => {
+            let struct_name = def.name.resolve().to_string();
+            let field_pairs: Vec<_> = def
+                .fields
+                .iter()
+                .map(|f| (f.name.resolve().to_string(), f.type_id))
+                .collect();
+            drop_struct(ctx, ptr, &struct_name, &field_pairs);
         }
 
-        // Array: drop each element, then free
         Some(TypeKind::Array { element }) => {
             drop_array(ctx, ptr, *element);
         }
 
-        // Map: drop each pair, then free
         Some(TypeKind::Map { key, value }) => {
             drop_map(ctx, ptr, *key, *value);
         }
 
-        // Optional: drop inner if present, then free
         Some(TypeKind::Optional { inner }) => {
             drop_optional(ctx, ptr, *inner);
         }
 
-        // Unknown type: do nothing to be safe
-        // We can't know if it's heap-allocated or static
-        None => {
-            // No cleanup - unknown type, better to leak than crash
-        }
-
-        // Other complex types: do nothing to be safe
         _ => {
-            // No cleanup - unknown type, better to leak than crash
+            // Unknown type — don't free to be safe
         }
     }
+
+    ctx.builder.build_unconditional_branch(skip_block).ok();
+    ctx.builder.position_at_end(skip_block);
 }
 
 // ============================================================================
@@ -1385,16 +1454,13 @@ fn drop_struct<'ctx>(
                         Some(TypeKind::Str) => {
                             // No cleanup for strings - they point to static memory
                         }
-                        Some(TypeKind::Struct {
-                            name: nested_name,
-                            fields: nested_fields,
-                            ..
-                        }) => {
-                            let nested_name = nested_name.clone();
+                        Some(TypeKind::Struct { def }) => {
+                            let nested_name = def.name.resolve().to_string();
                             // Extract just name and type for nested drop_struct
-                            let nested_pairs: Vec<_> = nested_fields
+                            let nested_pairs: Vec<_> = def
+                                .fields
                                 .iter()
-                                .map(|(n, t, _)| (n.clone(), *t))
+                                .map(|f| (f.name.resolve().to_string(), f.type_id))
                                 .collect();
                             drop_struct(ctx, field_ptr_val, &nested_name, &nested_pairs);
                         }
@@ -1473,7 +1539,14 @@ fn drop_array<'ctx>(
         // Get array length and iterate elements
         let i64_type = ctx.context.i64_type();
         let ptr_type = ctx.ptr_type();
-        let elem_size = i64_type.const_int(8, false); // All elements are 8 bytes (ptrs or i64)
+
+        // Use ACTUAL element size from the type registry — fat strings are 16 bytes,
+        // primitives are 8 bytes. Hardcoding 8 causes the loop to read the i64
+        // length field of a fat string as a pointer → crash on free().
+        let elem_llvm_ty = ctx.get_llvm_type(element_type);
+        let elem_size = elem_llvm_ty
+            .size_of()
+            .unwrap_or_else(|| i64_type.const_int(8, false));
 
         if let Some(arr_len) = get_array_length_from_data(ctx, ptr) {
             // Create element drop loop
@@ -1563,31 +1636,57 @@ fn drop_array<'ctx>(
                     }
                 }
             };
-
-            // Load the element pointer value
-            if let Ok(elem_val) = ctx.builder.build_load(ptr_type, elem_ptr, "elem_val") {
-                if elem_val.is_pointer_value() {
-                    let elem_ptr_val = elem_val.into_pointer_value();
-                    // Drop based on element type
-                    match &type_kind {
-                        Some(TypeKind::Str) => drop_string(ctx, elem_ptr_val),
-                        Some(TypeKind::Struct { name, fields, .. }) => {
-                            let name = name.clone();
-                            let pairs: Vec<_> =
-                                fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
-                            drop_struct(ctx, elem_ptr_val, &name, &pairs);
-                        }
-                        Some(TypeKind::Array { element }) => {
-                            drop_array(ctx, elem_ptr_val, *element);
-                        }
-                        Some(TypeKind::Map { key, value }) => {
-                            drop_map(ctx, elem_ptr_val, *key, *value);
-                        }
-                        Some(TypeKind::Optional { inner }) => {
-                            drop_optional(ctx, elem_ptr_val, *inner);
-                        }
-                        _ => drop_pointer(ctx, elem_ptr_val),
+            // Load element using its ACTUAL LLVM type (handles fat strings { ptr, i64 })
+            let elem_llvm_ty = ctx.get_llvm_type(element_type);
+            if let Ok(elem_val) = ctx.builder.build_load(elem_llvm_ty, elem_ptr, "elem_val") {
+                // Extract pointer — handles plain pointer, fat string, and i64
+                let elem_ptr_val = if elem_val.is_pointer_value() {
+                    elem_val.into_pointer_value()
+                } else if elem_val.is_struct_value() {
+                    // Fat string { ptr, i64 } — extract ptr field (index 0)
+                    match ctx.builder.build_extract_value(
+                        elem_val.into_struct_value(),
+                        0,
+                        "drop_str_ptr",
+                    ) {
+                        Ok(v) if v.is_pointer_value() => v.into_pointer_value(),
+                        Ok(v) if v.is_int_value() => ctx
+                            .builder
+                            .build_int_to_ptr(v.into_int_value(), ptr_type, "drop_i2p")
+                            .ok()
+                            .unwrap_or(ptr_type.const_null()),
+                        _ => ptr_type.const_null(),
                     }
+                } else if elem_val.is_int_value() {
+                    ctx.builder
+                        .build_int_to_ptr(elem_val.into_int_value(), ptr_type, "drop_i2p")
+                        .ok()
+                        .unwrap_or(ptr_type.const_null())
+                } else {
+                    ptr_type.const_null()
+                };
+                // Drop based on element type
+                match &type_kind {
+                    Some(TypeKind::Str) => drop_string(ctx, elem_ptr_val),
+                    Some(TypeKind::Struct { def }) => {
+                        let sname = def.name.resolve().to_string();
+                        let pairs: Vec<_> = def
+                            .fields
+                            .iter()
+                            .map(|f| (f.name.resolve().to_string(), f.type_id))
+                            .collect();
+                        drop_struct(ctx, elem_ptr_val, &sname, &pairs);
+                    }
+                    Some(TypeKind::Array { element }) => {
+                        drop_array(ctx, elem_ptr_val, *element);
+                    }
+                    Some(TypeKind::Map { key, value }) => {
+                        drop_map(ctx, elem_ptr_val, *key, *value);
+                    }
+                    Some(TypeKind::Optional { inner }) => {
+                        drop_optional(ctx, elem_ptr_val, *inner);
+                    }
+                    _ => drop_pointer(ctx, elem_ptr_val),
                 }
             }
 
@@ -1852,10 +1951,14 @@ fn drop_by_type_kind<'ctx>(
 ) {
     match kind {
         Some(TypeKind::Str) => drop_string(ctx, ptr),
-        Some(TypeKind::Struct { name, fields, .. }) => {
-            let name = name.clone();
-            let pairs: Vec<_> = fields.iter().map(|(n, t, _)| (n.clone(), *t)).collect();
-            drop_struct(ctx, ptr, &name, &pairs);
+        Some(TypeKind::Struct { def }) => {
+            let sname = def.name.resolve().to_string();
+            let pairs: Vec<_> = def
+                .fields
+                .iter()
+                .map(|f| (f.name.resolve().to_string(), f.type_id))
+                .collect();
+            drop_struct(ctx, ptr, &sname, &pairs);
         }
         Some(TypeKind::Array { element }) => drop_array(ctx, ptr, *element),
         Some(TypeKind::Map { key, value }) => drop_map(ctx, ptr, *key, *value),

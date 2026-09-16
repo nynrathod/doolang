@@ -1,66 +1,174 @@
-//! Memory Management Module
+//! Memory Operations — alloca, GEP, heap allocation, and field access.
 //!
-//! Centralized memory operations for the Doo ownership model.
-//! No reference counting - pure ownership with Move/Clone/Drop.
+//! Centralized helpers for LLVM memory instructions. All heap allocation
+//! goes through `doo_alloc` / `doo_free` from `doo_ffi_core`).
 
-use inkwell::context::Context;
-use inkwell::module::Module;
-use inkwell::AddressSpace;
+use crate::context::CodegenContext;
 use doo_core::constants::ffi_names;
+use inkwell::types::BasicType;
+use inkwell::values::{BasicValueEnum, PointerValue};
+use inkwell::AddressSpace;
 
-/// Memory manager for ownership-based memory.
-pub struct MemoryManager {
-    /// Whether to use custom allocator
-    use_custom_allocator: bool,
-}
+/// Allocate a local variable (alloca) in the function entry block.
+///
+/// Creating allocas at the entry block is required for LLVM mem2reg pass
+/// and ensures the alloca is valid for the entire function lifetime.
+pub fn alloca<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    ty: impl BasicType<'ctx>,
+    name: &str,
+) -> Option<PointerValue<'ctx>> {
+    let current_block = ctx.builder.get_insert_block()?;
+    let func = current_block.get_parent()?;
 
-impl MemoryManager {
-    /// Create a new memory manager.
-    pub fn new() -> Self {
-        Self {
-            use_custom_allocator: false,
+    // Position at entry block for alloca
+    let entry = func.get_first_basic_block()?;
+    let current_pos = ctx.builder.get_insert_block();
+
+    // Find the position after existing allocas
+    let insert_before = entry.get_first_instruction();
+
+    if let Some(first_instr) = insert_before {
+        // Walk past existing allocas
+        let mut last_alloca = None;
+        let mut instr = Some(first_instr);
+        while let Some(i) = instr {
+            if i.get_opcode() == inkwell::values::InstructionOpcode::Alloca {
+                last_alloca = Some(i);
+            } else {
+                break;
+            }
+            instr = i.get_next_instruction();
         }
+
+        if let Some(last) = last_alloca {
+            if let Some(next) = last.get_next_instruction() {
+                ctx.builder.position_before(&next);
+            } else {
+                ctx.builder.position_at_end(entry);
+            }
+        } else {
+            ctx.builder.position_before(&first_instr);
+        }
+    } else {
+        ctx.builder.position_at_end(entry);
     }
 
-    /// Declare memory functions in the module.
-    pub fn declare_runtime_functions<'ctx>(&self, context: &'ctx Context, module: &Module<'ctx>) {
-        // Use i8.ptr_type() for pointer types (modern inkwell API)
-        let ptr_type = context.i8_type().ptr_type(AddressSpace::default());
-        let i64_type = context.i64_type();
-        let void_type = context.void_type();
-        
-        // doo_alloc: (size: i64) -> ptr
-        let alloc_type = ptr_type.fn_type(&[i64_type.into()], false);
-        module.add_function(ffi_names::DOO_ALLOC, alloc_type, None);
+    let result = ctx.builder.build_alloca(ty, name).ok();
 
-        // doo_realloc: (ptr, new_size: i64) -> ptr
-        let realloc_type = ptr_type.fn_type(&[ptr_type.into(), i64_type.into()], false);
-        module.add_function(ffi_names::DOO_REALLOC, realloc_type, None);
-
-        // doo_free: (ptr) -> void
-        let free_type = void_type.fn_type(&[ptr_type.into()], false);
-        module.add_function(ffi_names::DOO_FREE, free_type, None);
-
-        // doo_clone: (ptr, size: i64) -> ptr
-        let clone_type = ptr_type.fn_type(&[ptr_type.into(), i64_type.into()], false);
-        module.add_function(ffi_names::DOO_CLONE, clone_type, None);
-
-        // doo_memcpy: (dest, src, size: i64) -> void
-        let memcpy_type = void_type.fn_type(&[ptr_type.into(), ptr_type.into(), i64_type.into()], false);
-        module.add_function(ffi_names::DOO_MEMCPY, memcpy_type, None);
-
-        // doo_zero: (ptr, size: i64) -> void
-        let zero_type = void_type.fn_type(&[ptr_type.into(), i64_type.into()], false);
-        module.add_function(ffi_names::DOO_ZERO, zero_type, None);
-
-        // printf for debugging
-        let printf_type = context.i32_type().fn_type(&[ptr_type.into()], true);
-        module.add_function(ffi_names::PRINTF, printf_type, None);
+    // Restore original position
+    if let Some(pos) = current_pos {
+        ctx.builder.position_at_end(pos);
     }
+
+    result
 }
 
-impl Default for MemoryManager {
-    fn default() -> Self {
-        Self::new()
-    }
+/// Allocate heap memory via `doo_alloc`.
+///
+/// Uses the centralized runtime allocator. All heap
+/// allocations in generated code go through this function.
+pub fn heap_alloc<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    size: inkwell::values::IntValue<'ctx>,
+    name: &str,
+) -> Option<PointerValue<'ctx>> {
+    let alloc_fn = ctx
+        .module
+        .get_function(ffi_names::DOO_ALLOC)
+        .or_else(|| ctx.module.get_function(ffi_names::MALLOC))?;
+
+    let ptr = ctx
+        .builder
+        .build_call(alloc_fn, &[size.into()], name)
+        .ok()?
+        .try_as_basic_value()
+        .basic()?
+        .into_pointer_value();
+
+    // Zero-initialize to prevent uninitialized fields
+    let memset_fn = ctx
+        .module
+        .get_function(ffi_names::MEMSET)
+        .unwrap_or_else(|| {
+            let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+            let fn_ty = ptr_type.fn_type(
+                &[
+                    ptr_type.into(),
+                    ctx.context.i32_type().into(),
+                    ctx.context.i64_type().into(),
+                ],
+                false,
+            );
+            ctx.module.add_function(ffi_names::MEMSET, fn_ty, None)
+        });
+
+    let _ = ctx.builder.build_call(
+        memset_fn,
+        &[
+            ptr.into(),
+            ctx.context.i32_type().const_zero().into(),
+            size.into(),
+        ],
+        "zero_init",
+    );
+
+    Some(ptr)
+}
+
+/// Free heap memory via `doo_free`.
+pub fn heap_free<'ctx>(ctx: &mut CodegenContext<'ctx>, ptr: PointerValue<'ctx>) -> Option<()> {
+    let free_fn = ctx
+        .module
+        .get_function(ffi_names::DOO_FREE)
+        .or_else(|| ctx.module.get_function(ffi_names::FREE))?;
+
+    ctx.builder
+        .build_call(free_fn, &[ptr.into()], "free")
+        .ok()?;
+    Some(())
+}
+
+/// Get a pointer to a struct field via GEP (GetElementPtr).
+pub fn struct_gep<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    struct_ty: inkwell::types::StructType<'ctx>,
+    ptr: PointerValue<'ctx>,
+    field_idx: u32,
+    name: &str,
+) -> Option<PointerValue<'ctx>> {
+    ctx.builder
+        .build_struct_gep(struct_ty, ptr, field_idx, name)
+        .ok()
+}
+
+/// Get a pointer to an array element via GEP.
+pub fn array_gep<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    elem_ty: impl BasicType<'ctx>,
+    base: PointerValue<'ctx>,
+    index: inkwell::values::IntValue<'ctx>,
+    name: &str,
+) -> Option<PointerValue<'ctx>> {
+    unsafe { ctx.builder.build_gep(elem_ty, base, &[index], name) }.ok()
+}
+
+/// Load a value from a pointer.
+pub fn load<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    ty: impl BasicType<'ctx>,
+    ptr: PointerValue<'ctx>,
+    name: &str,
+) -> Option<BasicValueEnum<'ctx>> {
+    ctx.builder.build_load(ty, ptr, name).ok()
+}
+
+/// Store a value to a pointer.
+pub fn store<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    ptr: PointerValue<'ctx>,
+    value: BasicValueEnum<'ctx>,
+) -> Option<()> {
+    ctx.builder.build_store(ptr, value).ok()?;
+    Some(())
 }

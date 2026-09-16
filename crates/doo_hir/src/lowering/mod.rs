@@ -9,13 +9,14 @@
 //! - `for x in iter` → while loop (basic structure)
 //! - Range expressions → Range construction
 
+mod constraints;
 mod expr;
 mod for_loops;
 mod helpers;
 mod items;
-mod route;
 mod stmt;
 mod type_infer;
+mod unify;
 
 use doo_core::{
     infer::{BinOpKind, UnaryOpKind},
@@ -33,6 +34,8 @@ pub struct Lower {
     errors: Vec<LowerError>,
     /// Variable type tracking for typed lowering (name -> TypeId)
     var_types: FxHashMap<String, TypeId>,
+    /// Scope stack for name resolution and hygiene
+    scope_stack: Vec<FxHashMap<String, String>>,
     /// Counter for generating unique internal variable names
     unique_counter: u64,
     /// Track JSON stringify sources: variable name -> type of the stringified value
@@ -49,6 +52,8 @@ pub struct Lower {
     /// Compile-time constants declared at module level (name -> AST expression).
     /// When an identifier resolves to a known const, its expression is inlined at the use site.
     pub(crate) known_consts: FxHashMap<String, ast::Expr>,
+    /// Type variable table for Hindley-Milner style type inference (Phase 18/19).
+    pub(crate) type_var_table: constraints::TypeVarTable,
 }
 
 /// Lowering error.
@@ -73,20 +78,54 @@ impl Lower {
         Self {
             errors: Vec::new(),
             var_types: FxHashMap::default(),
+            scope_stack: Vec::new(),
             unique_counter: 0,
             json_stringify_sources: FxHashMap::default(),
             hoisted_items: Vec::new(),
             known_functions: FxHashSet::default(),
             known_qualified_methods: FxHashMap::default(),
             known_consts: FxHashMap::default(),
+            type_var_table: constraints::TypeVarTable::new(),
         }
     }
 
     /// Generate a unique suffix for internal variable names.
-    fn unique_suffix(&mut self) -> u64 {
+    pub(crate) fn unique_suffix(&mut self) -> u64 {
         let id = self.unique_counter;
         self.unique_counter += 1;
         id
+    }
+
+    /// Push a new scope onto the scope stack.
+    pub fn push_scope(&mut self) {
+        self.scope_stack.push(FxHashMap::default());
+    }
+
+    /// Pop the current scope from the scope stack.
+    pub fn pop_scope(&mut self) {
+        self.scope_stack.pop();
+    }
+
+    /// Define a name in the current scope.
+    pub fn define_name(&mut self, ast_name: &str, hir_name: String) {
+        if let Some(scope) = self.scope_stack.last_mut() {
+            scope.insert(ast_name.to_string(), hir_name);
+        }
+    }
+
+    /// Resolve a name from the scope stack.
+    pub fn resolve_name(&self, ast_name: &str) -> String {
+        for scope in self.scope_stack.iter().rev() {
+            if let Some(hir_name) = scope.get(ast_name) {
+                return hir_name.clone();
+            }
+        }
+        ast_name.to_string()
+    }
+
+    /// Emit a lowering error.
+    pub fn emit_error(&mut self, message: impl Into<String>, span: Span) {
+        self.errors.push(LowerError::new(message, span));
     }
 
     /// Recursively substitute a local variable name in a statement.
@@ -216,11 +255,6 @@ impl Lower {
             }
             HirExprKind::Spread(inner) => {
                 self.substitute_local_in_expr(inner, old_name, new_name);
-            }
-            HirExprKind::RouteBlock { routes } => {
-                for route in routes {
-                    self.substitute_local_in_expr(route, old_name, new_name);
-                }
             }
             HirExprKind::If {
                 condition,
@@ -677,20 +711,20 @@ fn hir_binop_to_kind(op: HirBinOp) -> BinOpKind {
         HirBinOp::Div => BinOpKind::Div,
         HirBinOp::Mod => BinOpKind::Mod,
         HirBinOp::Eq => BinOpKind::Eq,
-        HirBinOp::NotEq => BinOpKind::Ne,
+        HirBinOp::NotEq => BinOpKind::NotEq,
         HirBinOp::Lt => BinOpKind::Lt,
         HirBinOp::Gt => BinOpKind::Gt,
-        HirBinOp::LtEq => BinOpKind::Le,
-        HirBinOp::GtEq => BinOpKind::Ge,
+        HirBinOp::LtEq => BinOpKind::LtEq,
+        HirBinOp::GtEq => BinOpKind::GtEq,
         HirBinOp::And => BinOpKind::And,
         HirBinOp::Or => BinOpKind::Or,
-        // In and BitAnd/BitOr don't have direct equivalents, default to appropriate
-        HirBinOp::In => BinOpKind::Eq, // Comparison semantics
-        HirBinOp::BitAnd | HirBinOp::BitOr => BinOpKind::And, // Logical semantics for type inference
+        HirBinOp::BitAnd => BinOpKind::BitAnd,
+        HirBinOp::BitOr => BinOpKind::BitOr,
+        HirBinOp::BitXor => BinOpKind::BitXor,
+        HirBinOp::In => BinOpKind::In,
         HirBinOp::NullCoalesce => BinOpKind::NullCoalesce,
     }
 }
-
 /// Convert HirUnaryOp to UnaryOpKind for centralized type inference.
 fn hir_unaryop_to_kind(op: HirUnaryOp) -> UnaryOpKind {
     match op {

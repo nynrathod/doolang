@@ -1,0 +1,27 @@
+struct Map<K, V> {
+    data: Int
+    len: Int
+    cap: Int
+}
+
+impl Map<K, V> {
+    fn len(self) -> Int {
+        return self.len
+    }
+
+    fn isEmpty(self) -> Bool {
+        return self.len == 0
+    }
+
+    @extern("doo_map", "doo_map_get")
+    fn get(self, key: K) -> V
+
+    @extern("doo_map", "doo_map_set")
+    fn set(self, key: K, val: V) -> Void
+
+    @extern("doo_map", "doo_map_has")
+    fn has(self, key: K) -> Bool
+
+    @extern("doo_map", "doo_map_clone")
+    fn clone(self) -> Map<K, V>
+}

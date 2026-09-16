@@ -391,35 +391,3 @@ impl InterfaceMethodDecl {
         }
     }
 }
-
-// ============================================================================
-// RBAC Policy
-// ============================================================================
-
-/// A policy block: `policy FooPolicy for Foo { create: public, ... }`.
-///
-/// Policies are compiled into RBAC metadata and enforced by the HTTP FFI at
-/// runtime. They are NOT function bodies — just declarative rule tables.
-#[derive(Debug, Clone)]
-pub struct PolicyDecl {
-    /// Policy name (e.g. "PostPolicy").
-    pub name: String,
-    /// The struct this policy guards (e.g. "Post").
-    pub for_struct: String,
-    /// CRUD + custom actions with their access rules (serialised as strings).
-    /// e.g. `("create", "authenticated")`, `("update", "own|Admin")`
-    pub rules: Vec<(String, String)>,
-    /// Source location.
-    pub span: Span,
-}
-
-impl PolicyDecl {
-    pub fn new(name: String, for_struct: String, span: Span) -> Self {
-        Self {
-            name,
-            for_struct,
-            rules: Vec::new(),
-            span,
-        }
-    }
-}

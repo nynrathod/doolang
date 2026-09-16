@@ -19,6 +19,8 @@ use doo_core::types::{TypeId, TypeKind, TypeRegistry};
 use rustc_hash::FxHashMap;
 
 use crate::types::*;
+use doo_core::symbol::Symbol;
+use doo_core::types::composite::{FieldDef, FunctionSig, StructDef};
 
 /// Monomorphization context.
 pub struct Monomorphizer<'a> {
@@ -66,11 +68,7 @@ impl<'a> Monomorphizer<'a> {
     ///   TypeId via the registry. The registry interns by structural name, so
     ///   identical composites dedup automatically — no hardcoding.
     /// - Otherwise returns `tid` unchanged.
-    fn substitute_type_id(
-        &mut self,
-        tid: TypeId,
-        type_map: &FxHashMap<TypeId, TypeId>,
-    ) -> TypeId {
+    fn substitute_type_id(&mut self, tid: TypeId, type_map: &FxHashMap<TypeId, TypeId>) -> TypeId {
         if let Some(&concrete) = type_map.get(&tid) {
             return concrete;
         }
@@ -124,17 +122,20 @@ impl<'a> Monomorphizer<'a> {
                     self.registry.register_result(no, ne)
                 }
             }
-            TypeKind::Function { params, returns } => {
-                let np: Vec<TypeId> = params
+            TypeKind::Function { sig } => {
+                let np = sig
+                    .params
                     .iter()
                     .map(|&p| self.substitute_type_id(p, type_map))
                     .collect();
-                let nr = self.substitute_type_id(returns, type_map);
-                if np == params && nr == returns {
-                    tid
-                } else {
-                    self.registry.register_function(np, nr)
-                }
+                let nr = self.substitute_type_id(sig.return_type, type_map);
+                let ne = sig.error_type.map(|e| self.substitute_type_id(e, type_map));
+                self.registry.register_function(FunctionSig {
+                    params: np,
+                    return_type: nr,
+                    error_type: ne,
+                    is_closure: sig.is_closure,
+                })
             }
             _ => tid,
         }
@@ -163,10 +164,7 @@ impl<'a> Monomorphizer<'a> {
         concrete_types: &[TypeId],
     ) -> FxHashMap<TypeId, TypeId> {
         let mut type_map: FxHashMap<TypeId, TypeId> = FxHashMap::default();
-        for (tp_name, &concrete_id) in generic_struct
-            .type_params
-            .iter()
-            .zip(concrete_types.iter())
+        for (tp_name, &concrete_id) in generic_struct.type_params.iter().zip(concrete_types.iter())
         {
             let tp_key = format!("__typeparam_{}", tp_name);
             if let Some(tp_id) = self.registry.lookup(&tp_key) {
@@ -192,10 +190,7 @@ impl<'a> Monomorphizer<'a> {
         let mut substitution: FxHashMap<String, TypeId> = FxHashMap::default();
 
         for (field_name, value_expr) in fields {
-            let Some(field_def) = generic_struct
-                .fields
-                .iter()
-                .find(|f| &f.name == field_name)
+            let Some(field_def) = generic_struct.fields.iter().find(|f| &f.name == field_name)
             else {
                 continue;
             };
@@ -221,17 +216,20 @@ impl<'a> Monomorphizer<'a> {
 
     /// Walk paired (declared, actual) types to discover TypeParam→concrete bindings.
     /// Recurses into composites so `[T]` matched with `[Int]` yields T=Int.
-    fn unify_type_param(
-        &self,
-        decl: TypeId,
-        actual: TypeId,
-        out: &mut FxHashMap<String, TypeId>,
-    ) {
-        if let Some(name) = self.registry.type_param_name(decl) {
-            // Don't pollute the binding with another TypeParam or ANY.
-            if !self.registry.is_type_param(actual)
-                && actual != doo_core::types::builtin::ANY
-            {
+    fn unify_type_param(&self, decl: TypeId, actual: TypeId, out: &mut FxHashMap<String, TypeId>) {
+        let mut is_type_param_name = None;
+        if let Some(info) = self.registry.get(decl) {
+            if let TypeKind::TypeParam { name } = &info.kind {
+                is_type_param_name = Some(name.resolve().to_string());
+            }
+        }
+        if let Some(name) = is_type_param_name {
+            let is_actual_type_param = self
+                .registry
+                .get(actual)
+                .map(|i| matches!(i.kind, TypeKind::TypeParam { .. }))
+                .unwrap_or(false);
+            if !is_actual_type_param && actual != doo_core::types::builtin::ANY {
                 out.insert(name.to_string(), actual);
             }
             return;
@@ -246,10 +244,7 @@ impl<'a> Monomorphizer<'a> {
             (TypeKind::Array { element: a }, TypeKind::Array { element: b }) => {
                 self.unify_type_param(a, b, out);
             }
-            (
-                TypeKind::Map { key: k1, value: v1 },
-                TypeKind::Map { key: k2, value: v2 },
-            ) => {
+            (TypeKind::Map { key: k1, value: v1 }, TypeKind::Map { key: k2, value: v2 }) => {
                 self.unify_type_param(k1, k2, out);
                 self.unify_type_param(v1, v2, out);
             }
@@ -263,10 +258,7 @@ impl<'a> Monomorphizer<'a> {
             (TypeKind::Optional { inner: a }, TypeKind::Optional { inner: b }) => {
                 self.unify_type_param(a, b, out);
             }
-            (
-                TypeKind::Result { ok: o1, err: e1 },
-                TypeKind::Result { ok: o2, err: e2 },
-            ) => {
+            (TypeKind::Result { ok: o1, err: e1 }, TypeKind::Result { ok: o2, err: e2 }) => {
                 self.unify_type_param(o1, o2, out);
                 self.unify_type_param(e1, e2, out);
             }
@@ -320,9 +312,23 @@ impl<'a> Monomorphizer<'a> {
                 )
             })
             .collect();
-        let new_type_id = self
-            .registry
-            .register_struct(&mangled, registry_fields, std::collections::HashMap::new());
+        let struct_def = StructDef {
+            name: Symbol::intern(&mangled),
+            fields: registry_fields
+                .iter()
+                .map(|(n, t, p)| FieldDef {
+                    name: Symbol::intern(n),
+                    type_id: *t,
+                    is_public: *p,
+                    is_optional: false,
+                    default_value: None,
+                    decorators: vec![],
+                })
+                .collect(),
+            is_public: true,
+            decorators: vec![],
+        };
+        let new_type_id = self.registry.define_struct(struct_def);
 
         self.struct_specializations
             .insert(key, (mangled.clone(), new_type_id));
@@ -514,10 +520,8 @@ impl<'a> Monomorphizer<'a> {
                         if let Some(concrete_types) =
                             self.infer_types_from_args(&generic_func, args)
                         {
-                            let mangled = self.get_or_create_specialization(
-                                &generic_func,
-                                &concrete_types,
-                            );
+                            let mangled =
+                                self.get_or_create_specialization(&generic_func, &concrete_types);
                             // Rewrite the call target to the mangled name
                             *func = Box::new(HirExpr {
                                 kind: HirExprKind::Local { name: mangled },
@@ -563,11 +567,12 @@ impl<'a> Monomorphizer<'a> {
                 // pinned to the generic-struct's TypeParam-typed field.
                 if let Some(obj_tid) = object.type_id {
                     if let Some(info) = self.registry.get(obj_tid) {
-                        if let TypeKind::Struct { fields, .. } = &info.kind {
-                            if let Some((_, ftid, _)) =
-                                fields.iter().find(|(fname, _, _)| fname == field)
+                        if let TypeKind::Struct { def } = &info.kind {
+                            let fields = &def.fields;
+                            if let Some(field_def) =
+                                fields.iter().find(|f| f.name.resolve() == field)
                             {
-                                expr.type_id = Some(*ftid);
+                                expr.type_id = Some(field_def.type_id);
                             }
                         }
                     }
@@ -606,10 +611,7 @@ impl<'a> Monomorphizer<'a> {
                         self.infer_types_from_struct_fields(&generic_struct, fields)
                     {
                         let (mangled, new_type_id) = self
-                            .get_or_create_struct_specialization(
-                                &generic_struct,
-                                &concrete_types,
-                            );
+                            .get_or_create_struct_specialization(&generic_struct, &concrete_types);
                         *name = mangled;
                         expr.type_id = Some(new_type_id);
                     }
@@ -668,7 +670,10 @@ impl<'a> Monomorphizer<'a> {
             | HirExprKind::Clone(inner) => {
                 self.process_expr(inner);
             }
-            HirExprKind::UnwrapOrPanic { expr: inner, message } => {
+            HirExprKind::UnwrapOrPanic {
+                expr: inner,
+                message,
+            } => {
                 self.process_expr(inner);
                 self.process_expr(message);
             }
@@ -684,11 +689,6 @@ impl<'a> Monomorphizer<'a> {
             HirExprKind::ScopeBlock { stmts } => {
                 for s in stmts {
                     self.process_stmt(s);
-                }
-            }
-            HirExprKind::RouteBlock { routes } => {
-                for r in routes {
-                    self.process_expr(r);
                 }
             }
             // For Local references, refresh the type_id from the current
@@ -806,9 +806,7 @@ impl<'a> Monomorphizer<'a> {
 
     fn substitute_stmt(&mut self, stmt: &mut HirStmt, type_map: &FxHashMap<TypeId, TypeId>) {
         match &mut stmt.kind {
-            HirStmtKind::Let {
-                value, type_id, ..
-            } => {
+            HirStmtKind::Let { value, type_id, .. } => {
                 if let Some(ref mut tid) = type_id {
                     *tid = self.substitute_type_id(*tid, type_map);
                 }
@@ -967,7 +965,10 @@ impl<'a> Monomorphizer<'a> {
             | HirExprKind::Clone(inner) => {
                 self.substitute_expr(inner, type_map);
             }
-            HirExprKind::UnwrapOrPanic { expr: inner, message } => {
+            HirExprKind::UnwrapOrPanic {
+                expr: inner,
+                message,
+            } => {
                 self.substitute_expr(inner, type_map);
                 self.substitute_expr(message, type_map);
             }
@@ -982,11 +983,6 @@ impl<'a> Monomorphizer<'a> {
             }
             HirExprKind::ScopeBlock { stmts } => {
                 self.substitute_stmts(stmts, type_map);
-            }
-            HirExprKind::RouteBlock { routes } => {
-                for r in routes {
-                    self.substitute_expr(r, type_map);
-                }
             }
             // Literals, locals, globals — no types to substitute
             HirExprKind::Const(_) | HirExprKind::Local { .. } | HirExprKind::Global { .. } => {}

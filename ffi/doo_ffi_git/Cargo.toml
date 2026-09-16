@@ -17,5 +17,5 @@ crate-type = ["staticlib", "rlib"]
 # Local git ops (init, commit, status) work without these features.
 # libgit2 is still vendored (built from source) by libgit2-sys default features.
 git2 = { version = "0.20.4", default-features = false }
-doo_ffi_core = { path = "../doo_ffi_core" }
+doo_ffi_core = { path = "../../library/ffi/doo_ffi_core" }
 libc = "0.2"

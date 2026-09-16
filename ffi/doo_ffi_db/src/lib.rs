@@ -27,7 +27,7 @@ pub mod driver;
 pub mod drivers;
 pub mod error;
 pub mod limits;
-pub mod migrate;
+pub mod schema_types;
 
 use std::ffi::c_void;
 use std::os::raw::c_char;
@@ -901,7 +901,7 @@ pub extern "C" fn doo_db_migrate_schemas(schema_json: *const c_char) -> *mut Doo
             None => return db_result_err(503, "Database not connected — cannot run migrations"),
         };
 
-        let schemas: Vec<migrate::TableSchema> = match serde_json::from_str(&schema_str) {
+        let schemas: Vec<schema_types::TableSchema> = match serde_json::from_str(&schema_str) {
             Ok(s) => s,
             Err(e) => return db_result_err(400, &format!("Invalid schema JSON: {}", e)),
         };

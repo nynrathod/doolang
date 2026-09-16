@@ -83,7 +83,7 @@ impl<'ctx> InstructionHandler<'ctx> for ClosureHandler {
                 };
 
                 // Closure layout expected by array/map builtins: { i8* fn_ptr, i8* env_ptr }
-                let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+                let ptr_type = ctx.context.ptr_type(AddressSpace::default());
                 let i64_type = ctx.context.i64_type();
                 let closure_type = ctx
                     .context
@@ -103,7 +103,7 @@ impl<'ctx> InstructionHandler<'ctx> for ClosureHandler {
                     .builder
                     .build_pointer_cast(
                         closure_raw,
-                        closure_type.ptr_type(AddressSpace::default()),
+                        ctx.ptr_type(),
                         "closure_ptr",
                     )
                     .ok()?;
@@ -125,7 +125,7 @@ impl<'ctx> InstructionHandler<'ctx> for ClosureHandler {
                         .builder
                         .build_pointer_cast(
                             env_raw,
-                            i64_type.ptr_type(AddressSpace::default()),
+                            ctx.ptr_type(),
                             "env_i64_ptr",
                         )
                         .ok()?;
@@ -191,7 +191,7 @@ impl<'ctx> InstructionHandler<'ctx> for ClosureHandler {
                     return None;
                 }
 
-                let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+                let ptr_type = ctx.context.ptr_type(AddressSpace::default());
                 let i64_type = ctx.context.i64_type();
                 let closure_type = ctx
                     .context
@@ -203,7 +203,7 @@ impl<'ctx> InstructionHandler<'ctx> for ClosureHandler {
                     .builder
                     .build_pointer_cast(
                         closure_ptr_raw,
-                        closure_type.ptr_type(AddressSpace::default()),
+                        ctx.ptr_type(),
                         "closure_ptr",
                     )
                     .ok()?;
@@ -247,7 +247,7 @@ impl<'ctx> InstructionHandler<'ctx> for ClosureHandler {
                     .builder
                     .build_pointer_cast(
                         fn_ptr_i8,
-                        fn_type.ptr_type(AddressSpace::default()),
+                        ctx.ptr_type(),
                         "fn_typed",
                     )
                     .ok()?;
@@ -320,7 +320,7 @@ fn get_or_declare_doo_alloc<'ctx>(ctx: &mut CodegenContext<'ctx>) -> FunctionVal
     if let Some(f) = ctx.get_function(ffi_names::DOO_ALLOC) {
         return f;
     }
-    let ptr_type = ctx.context.i8_type().ptr_type(AddressSpace::default());
+    let ptr_type = ctx.context.ptr_type(AddressSpace::default());
     let fn_type = ptr_type.fn_type(&[ctx.context.i64_type().into()], false);
     ctx.module.add_function(ffi_names::DOO_ALLOC, fn_type, None)
 }

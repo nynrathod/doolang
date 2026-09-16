@@ -1,0 +1,37 @@
+struct JsonValue {
+    data: Int
+    kind: Int
+}
+
+@extern("doo_json", "doo_json_parse")
+fn parse(json: Str) -> JsonValue
+
+@extern("doo_json", "doo_json_stringify")
+fn stringify(val: JsonValue) -> Str
+
+@extern("doo_json", "doo_json_parse_int")
+fn parseInt(json: Str) -> Int
+
+@extern("doo_json", "doo_json_parse_float")
+fn parseFloat(json: Str) -> Float
+
+@extern("doo_json", "doo_json_parse_bool")
+fn parseBool(json: Str) -> Bool
+
+@extern("doo_json", "doo_json_parse_str")
+fn parseStr(json: Str) -> Str
+
+@extern("doo_json", "doo_json_write_int")
+fn writeInt(val: Int) -> Str
+
+@extern("doo_json", "doo_json_write_float")
+fn writeFloat(val: Float) -> Str
+
+@extern("doo_json", "doo_json_write_bool")
+fn writeBool(val: Bool) -> Str
+
+@extern("doo_json", "doo_json_write_string")
+fn writeString(val: Str) -> Str
+
+@extern("doo_json", "doo_json_write_null")
+fn writeNull() -> Str

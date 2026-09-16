@@ -2,9 +2,9 @@
 //!
 //! Statements that perform actions but don't produce values directly.
 
-use doo_core::Span;
-use super::{Expr, Pattern, TypeExpr, StructDecl, EnumDecl};
+use super::{EnumDecl, Expr, Pattern, StructDecl, TypeExpr};
 use crate::lexer::TokenKind;
+use doo_core::Span;
 
 /// A statement.
 #[derive(Debug, Clone)]
@@ -39,10 +39,7 @@ pub enum StmtKind {
 
     // === Assignments ===
     /// Simple assignment: `x = 1`
-    Assign {
-        target: Pattern,
-        value: Expr,
-    },
+    Assign { target: Pattern, value: Expr },
     /// Compound assignment: `x += 1`
     CompoundAssign {
         target: Pattern,
@@ -50,10 +47,7 @@ pub enum StmtKind {
         value: Expr,
     },
     /// Increment/Decrement: `x++` or `x--`
-    IncDec {
-        variable: String,
-        op: IncDecOp,
-    },
+    IncDec { variable: String, op: IncDecOp },
     /// Element assignment: `arr[i] = x`
     ElementAssign {
         array: Expr,
@@ -110,6 +104,24 @@ pub enum StmtKind {
     EnumDecl(EnumDecl),
 }
 
+/// For loop: `for x in iter { body }` or `for cond { body }`
+#[derive(Debug, Clone)]
+pub struct ForStmt {
+    /// `Some(pattern)` for `for x in iter`, `None` for `for cond { }`
+    pub pattern: Option<Pattern>,
+    /// `Some(iterable)` for `for x in iter`, `None` for `for cond { }`
+    pub iterable: Option<Expr>,
+    /// `Some(cond)` for `for cond { }`, `None` for standard for-in
+    pub condition: Option<Expr>,
+    /// The loop body
+    pub body: Vec<Stmt>,
+    /// `if cond` guard: `for x in iter if x.active { }`
+    pub filter: Option<Expr>,
+    /// `take N` limit: `for x in iter take 10 { }`
+    pub take: Option<Expr>,
+    pub span: Span,
+}
+
 impl StmtKind {
     /// Whether this statement kind requires a trailing semicolon (Rust-like rules).
     /// Statements ending with `}` do NOT require `;`.
@@ -139,11 +151,11 @@ pub enum ElseBranch {
 /// Compound assignment operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompoundOp {
-    Add,    // +=
-    Sub,    // -=
-    Mul,    // *=
-    Div,    // /=
-    Mod,    // %=
+    Add, // +=
+    Sub, // -=
+    Mul, // *=
+    Div, // /=
+    Mod, // %=
 }
 
 impl CompoundOp {

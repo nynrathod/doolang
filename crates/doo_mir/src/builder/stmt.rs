@@ -2,10 +2,11 @@
 
 use super::MirBuilder;
 use crate::sym::{sym, Sym};
-use crate::types::Span;
+use crate::types::{MirInstruction, MirValue, Span};
 use crate::{LocalDef, MirInstrKind, MirOperand, MirTerminator};
 use doo_core::types::{builtin, TypeId as CoreTypeId, TypeKind};
 use doo_hir::{HirExprKind, HirStmt, HirStmtKind};
+use doo_thir::{ThirStmt, ThirStmtKind};
 
 /// Build a MIR statement from a HIR statement.
 pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
@@ -154,10 +155,10 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                         .type_registry
                         .get(receiver_type)
                         .map(|info| {
-                            if let TypeKind::Interface { methods, .. } = &info.kind {
-                                methods
+                            if let TypeKind::Interface { def, .. } = &info.kind {
+                                def.methods
                                     .iter()
-                                    .any(|(mname, _, _, err)| mname == method && err.is_some())
+                                    .any(|m| m.name.resolve() == method && m.error_type.is_some())
                             } else {
                                 false
                             }
@@ -213,12 +214,12 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                             .type_registry
                             .get(receiver_type)
                             .and_then(|info| {
-                                if let TypeKind::Interface { methods, .. } = &info.kind {
-                                    methods.iter().find(|(mname, _, _, _)| mname == method).map(
-                                        |(_, _, ret, err)| {
+                                if let TypeKind::Interface { def, .. } = &info.kind {
+                                    def.methods.iter().find(|m| m.name.resolve() == method).map(
+                                        |m| {
                                             (
-                                                ret.unwrap_or(builtin::ANY),
-                                                err.unwrap_or(builtin::ANY),
+                                                m.return_type,
+                                                m.error_type.unwrap_or(builtin::ANY),
                                                 false, // interface methods are never FFI
                                             )
                                         },
@@ -753,16 +754,13 @@ pub fn build_stmt(builder: &mut MirBuilder, stmt: &HirStmt) {
                         .type_registry
                         .get(receiver_type)
                         .and_then(|info| {
-                            if let TypeKind::Interface { methods, .. } = &info.kind {
-                                methods.iter().find(|(mname, _, _, _)| mname == method).map(
-                                    |(_, _, ret, err)| {
-                                        (
-                                            ret.unwrap_or(builtin::ANY),
-                                            err.unwrap_or(builtin::ANY),
-                                            false,
-                                        )
-                                    },
-                                )
+                            if let TypeKind::Interface { def, .. } = &info.kind {
+                                def.methods
+                                    .iter()
+                                    .find(|m| m.name.resolve() == method)
+                                    .map(|m| {
+                                        (m.return_type, m.error_type.unwrap_or(builtin::ANY), false)
+                                    })
                             } else {
                                 None
                             }
@@ -839,4 +837,38 @@ fn emit_nested_field_writeback(
         // Recursively handle deeper nesting
         emit_nested_field_writeback(builder, &inner_object.kind, &parent_operand, span);
     }
+}
+
+/// Build MIR instructions from a THIR statement.
+pub fn build_thir_stmt(builder: &mut MirBuilder, stmt: &ThirStmt) -> Vec<MirInstruction> {
+    let mut instructions = Vec::new();
+    match &stmt.kind {
+        ThirStmtKind::Let {
+            name,
+            ty,
+            value,
+            mutable,
+        } => {
+            let val = builder.build_thir_expr(value);
+            instructions.push(MirInstruction::StoreLocal(sym(name), val));
+        }
+        ThirStmtKind::Assign { target, value } => {
+            let val = builder.build_thir_expr(value);
+            if let doo_thir::ThirExprKind::Var(name) = &target.kind {
+                instructions.push(MirInstruction::StoreLocal(sym(name), val));
+            }
+        }
+        ThirStmtKind::Return(opt_expr) => {
+            if let Some(e) = opt_expr {
+                let val = builder.build_thir_expr(e);
+                instructions.push(MirInstruction::Return(val));
+            } else {
+                instructions.push(MirInstruction::Return(MirValue::Const(
+                    crate::types::MirConst::Nil,
+                )));
+            }
+        }
+        _ => {}
+    }
+    instructions
 }

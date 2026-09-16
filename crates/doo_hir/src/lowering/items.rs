@@ -2,12 +2,13 @@
 
 use super::Lower;
 use crate::types::*;
-use doo_core::{
-    doo_debug,
-    types::{builtin, TypeId, TypeKind, TypeRegistry},
+use doo_core::symbol::Symbol;
+use doo_core::types::composite::{
+    EnumDef, FieldDef, InterfaceDef, MethodSig, StructDef, VariantDef,
 };
+use doo_core::types::{builtin, TypeId, TypeKind, TypeRegistry};
 use doo_frontend::ast::{
-    self, Decorator, EnumDecl, ExprKind, FunctionDecl, ImportDecl, InterfaceDecl, Item, StaticDecl,
+    self, Decorator, EnumDecl, FunctionDecl, ImportDecl, InterfaceDecl, Item, StaticDecl,
     StructDecl,
 };
 
@@ -21,7 +22,6 @@ impl Lower {
             Item::Enum(e) => Some(HirItem::Enum(self.lower_enum(e))),
             Item::Interface(i) => Some(HirItem::Interface(self.lower_interface(i))),
             Item::Import(i) => Some(HirItem::Import(self.lower_import(i))),
-            Item::Policy(p) => Some(HirItem::Policy(self.lower_policy(p))),
             Item::Impl(impl_decl) => {
                 for method in &impl_decl.methods {
                     let hir_func = self.lower_function(method);
@@ -46,7 +46,6 @@ impl Lower {
             Item::Enum(e) => Some(HirItem::Enum(self.lower_enum_typed(e, registry))),
             Item::Interface(i) => Some(HirItem::Interface(self.lower_interface_typed(i, registry))),
             Item::Import(i) => Some(HirItem::Import(self.lower_import(i))),
-            Item::Policy(p) => Some(HirItem::Policy(self.lower_policy(p))),
             Item::Impl(impl_decl) => {
                 for method in &impl_decl.methods {
                     let hir_func = self.lower_function_typed(method, registry);
@@ -140,9 +139,8 @@ impl Lower {
             .map(|d| self.lower_decorator(d))
             .collect();
 
-        // Generate mangled name for methods: _method_{TypeName}_{MethodName}
         let func_name = if let Some(type_name) = &f.associated_type {
-            format!("_method_{}_{}", type_name, f.name)
+            doo_core::constants::mangle_method(type_name, &f.name)
         } else {
             f.name.clone()
         };
@@ -165,7 +163,7 @@ impl Lower {
         f: &FunctionDecl,
         registry: &mut TypeRegistry,
     ) -> HirFunction {
-        for (i, stmt) in f.body.iter().enumerate() {}
+        for (_i, _stmt) in f.body.iter().enumerate() {}
         // Clear variable types for new function scope
         self.var_types.clear();
 
@@ -224,9 +222,8 @@ impl Lower {
             .map(|d| self.lower_decorator(d))
             .collect();
 
-        // Generate mangled name for methods: _method_{TypeName}_{MethodName}
         let func_name = if let Some(type_name) = &f.associated_type {
-            format!("_method_{}_{}", type_name, f.name)
+            doo_core::constants::mangle_method(type_name, &f.name)
         } else {
             f.name.clone()
         };
@@ -338,14 +335,25 @@ impl Lower {
             }
         }
 
-        registry.define_struct(
-            &s.name,
-            fields
+        let struct_def = StructDef {
+            name: Symbol::intern(&s.name),
+            fields: fields
                 .iter()
-                .filter_map(|f| f.type_id.map(|id| (f.name.clone(), id, f.is_public)))
+                .filter_map(|f| {
+                    f.type_id.map(|id| FieldDef {
+                        name: Symbol::intern(&f.name),
+                        type_id: id,
+                        is_public: f.is_public,
+                        is_optional: f.is_optional,
+                        default_value: None,
+                        decorators: vec![],
+                    })
+                })
                 .collect(),
-            field_json_names,
-        );
+            is_public: s.name.chars().next().map_or(false, |c| c.is_uppercase()),
+            decorators: vec![],
+        };
+        registry.define_struct(struct_def);
 
         let decorators = s
             .decorators
@@ -408,13 +416,23 @@ impl Lower {
             })
             .collect();
 
-        registry.define_enum(
-            &e.name,
-            variants
+        let enum_def = EnumDef {
+            name: Symbol::intern(&e.name),
+            variants: e
+                .variants
                 .iter()
-                .map(|v| (v.name.clone(), v.payload))
+                .map(|v| VariantDef {
+                    name: Symbol::intern(&v.name),
+                    payload: v
+                        .payload
+                        .as_ref()
+                        .map(|t| self.resolve_type_expr(t, registry)),
+                    decorators: vec![],
+                })
                 .collect(),
-        );
+            is_public: e.name.chars().next().map_or(false, |c| c.is_uppercase()),
+        };
+        registry.define_enum(enum_def);
 
         HirEnum {
             name: e.name.clone(),
@@ -456,7 +474,7 @@ impl Lower {
         i: &InterfaceDecl,
         registry: &mut TypeRegistry,
     ) -> HirInterface {
-        let methods: Vec<HirInterfaceMethod> = i
+        let hir_methods: Vec<HirInterfaceMethod> = i
             .methods
             .iter()
             .map(|m| {
@@ -492,22 +510,26 @@ impl Lower {
             .collect();
 
         // Register the interface type in the registry
-        let method_sigs: Vec<(String, Vec<TypeId>, Option<TypeId>, Option<TypeId>)> = methods
+        let registry_methods: Vec<MethodSig> = hir_methods
             .iter()
-            .map(|m| {
-                (
-                    m.name.clone(),
-                    m.params.iter().filter_map(|p| p.type_id).collect(),
-                    m.return_type,
-                    m.error_type,
-                )
+            .map(|m| MethodSig {
+                name: Symbol::intern(&m.name),
+                params: m.params.iter().filter_map(|p| p.type_id).collect(),
+                return_type: m.return_type.unwrap_or(builtin::VOID),
+                error_type: m.error_type,
             })
             .collect();
-        registry.define_interface(&i.name, method_sigs);
+
+        let interface_def = InterfaceDef {
+            name: Symbol::intern(&i.name),
+            methods: registry_methods,
+            is_public: i.name.chars().next().map_or(false, |c| c.is_uppercase()),
+        };
+        registry.define_interface(interface_def);
 
         HirInterface {
             name: i.name.clone(),
-            methods,
+            methods: hir_methods,
             span: i.span,
         }
     }
@@ -538,16 +560,6 @@ impl Lower {
             name: d.name.clone(),
             args: d.args.iter().map(|e| self.lower_expr(e)).collect(),
             span: d.span,
-        }
-    }
-
-    /// Lower a `PolicyDecl` to `HirPolicy`.
-    pub(crate) fn lower_policy(&mut self, p: &doo_frontend::ast::PolicyDecl) -> HirPolicy {
-        HirPolicy {
-            name: p.name.clone(),
-            for_struct: p.for_struct.clone(),
-            rules: p.rules.clone(),
-            span: p.span,
         }
     }
 }

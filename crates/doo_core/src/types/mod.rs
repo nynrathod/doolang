@@ -1,19 +1,12 @@
-//! # Doo Core Types
+//! # Core Type System
 //!
-//! Central type system for the Doo compiler.
+//! Defines the central type registry and all type representations for the Doo compiler.
 //!
-//! ## Design (from implementation_plan.md Phase 1)
+//! ## Design
 //!
-//! - **Single Source of Truth**: All types flow through TypeRegistry
-//! - **Primitive, Collection, Composite**: Organized by category
-//! - **TypeId-based**: Fast lookup, cheap copies
-//!
-//! ## Structure
-//!
-//! - `primitive`: Int, Float, Bool, Str, Void, etc.
-//! - `collection`: Array, Map, Tuple, Optional, Result
-//! - `composite`: Struct, Enum, Function
-//! - `registry`: TypeRegistry - the central type store
+//! - **Single Source of Truth**: All types flow through the `TypeRegistry`.
+//! - **TypeId-based**: Fast lookup, cheap copies (4 bytes).
+//! - **Comprehensive**: Includes primitives, collections, composites, and compiler internals.
 
 pub mod collection;
 pub mod composite;
@@ -24,7 +17,13 @@ pub mod registry;
 // Re-export key types from each module
 pub use collection::CollectionType;
 pub use composite::{
-    CompositeType, DecoratorDef, EnumDef, FieldDef, FunctionType, StructDef, VariantDef,
+    CompositeDef, DecoratorDef, EnumDef, FieldDef, FunctionSig, InterfaceDef, MethodSig, StructDef,
+    VariantDef,
 };
 pub use primitive::PrimitiveType;
-pub use registry::{builtin, TargetDataLayout, TypeId, TypeKind, TypeRegistry};
+pub use registry::{TargetDataLayout, TypeId, TypeInfo, TypeKind, TypeRegistry};
+
+/// Re-export the built-in type IDs for convenience.
+pub mod builtin {
+    pub use crate::types::registry::builtin::*;
+}

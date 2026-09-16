@@ -1,0 +1,16 @@
+[package]
+name = "doo_thir"
+version.workspace = true
+edition.workspace = true
+description = "Typed High-level Intermediate Representation (THIR) for the Doo compiler"
+license = "MIT"
+
+[dependencies]
+doo_core = { path = "../doo_core" }
+doo_hir = { path = "../doo_hir" }
+
+rustc-hash = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+pretty_assertions = "1.4"

@@ -1,0 +1,13 @@
+@extern("c", "getenv")
+fn getEnv(name: Str) -> Str
+
+@extern("c", "setenv")
+fn setEnv(name: Str, val: Str, overwrite: Int) -> Int
+
+fn get(name: Str) -> Str {
+    return getEnv(name)
+}
+
+fn set(name: Str, val: Str) -> Void {
+    setEnv(name, val, 1)
+}

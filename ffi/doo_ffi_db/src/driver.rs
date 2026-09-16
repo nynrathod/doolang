@@ -17,7 +17,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::OnceLock;
 
-use crate::migrate::TableSchema;
+use crate::schema_types::TableSchema;
 
 /// Boxed future for async trait methods (Rust doesn't support `async fn` in traits natively).
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

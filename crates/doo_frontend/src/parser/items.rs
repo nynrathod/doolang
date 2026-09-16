@@ -1,39 +1,12 @@
-use super::expr::ParserExpr;
-use super::stmt::ParserStmt;
-use super::types::ParserTypes;
 use super::{ParseResult, Parser};
 use crate::ast::*;
 use crate::lexer::TokenKind;
 use doo_core::{CompilerError, ErrorCode};
 use std::collections::HashSet;
 
-/// Trait for parsing top-level items.
-pub trait ParserItems {
-    fn parse_item(&mut self) -> ParseResult<Item>;
-    fn parse_decorators(&mut self) -> ParseResult<Vec<Decorator>>;
-    fn parse_decorator(&mut self) -> ParseResult<Decorator>;
-    fn parse_const(&mut self) -> ParseResult<ConstDecl>;
-    fn parse_static(&mut self) -> ParseResult<StaticDecl>;
-    fn parse_function(&mut self) -> ParseResult<FunctionDecl>;
-    fn parse_function_name(&mut self) -> ParseResult<(String, Option<String>, Option<String>)>;
-    fn parse_type_params(&mut self) -> ParseResult<Vec<TypeParam>>;
-    fn parse_param_list(&mut self) -> ParseResult<Vec<(String, Option<TypeExpr>)>>;
-    fn parse_struct(&mut self) -> ParseResult<StructDecl>;
-    fn parse_field_decl(&mut self) -> ParseResult<FieldDecl>;
-    fn parse_impl(&mut self) -> ParseResult<ImplDecl>;
-    fn parse_enum(&mut self) -> ParseResult<EnumDecl>;
-    fn parse_variant_decl(&mut self) -> ParseResult<VariantDecl>;
-    fn parse_interface(&mut self) -> ParseResult<InterfaceDecl>;
-    fn parse_interface_method(&mut self) -> ParseResult<InterfaceMethodDecl>;
-    fn parse_import(&mut self) -> ParseResult<ImportDecl>;
-    fn parse_policy(&mut self) -> ParseResult<PolicyDecl>;
-    fn parse_policy_rule(&mut self) -> ParseResult<String>;
-    fn parse_policy_term(&mut self) -> ParseResult<String>;
-}
-
-impl ParserItems for Parser {
+impl Parser {
     /// Parse a top-level item.
-    fn parse_item(&mut self) -> ParseResult<Item> {
+    pub fn parse_item(&mut self) -> ParseResult<Item> {
         // Skip decorators and collect them
         let decorators = self.parse_decorators()?;
 
@@ -47,15 +20,12 @@ impl ParserItems for Parser {
                 Ok(Item::Static(self.parse_static()?))
             }
             TokenKind::Fn => {
-                let mut func = self.parse_function()?;
-                func.decorators = decorators;
+                let func = self.parse_function(decorators)?;
                 Ok(Item::Function(func))
             }
             TokenKind::Async => {
                 // async fn — consume `async`, then parse the function
-                let mut func = self.parse_function()?;
-                func.is_async = true;
-                func.decorators = decorators;
+                let func = self.parse_function(decorators)?;
                 Ok(Item::Function(func))
             }
             TokenKind::Struct => {
@@ -78,11 +48,6 @@ impl ParserItems for Parser {
                 drop(decorators);
                 Ok(Item::Import(self.parse_import()?))
             }
-            TokenKind::Policy => {
-                // Decorators not supported on policy blocks
-                drop(decorators);
-                Ok(Item::Policy(self.parse_policy()?))
-            }
             TokenKind::Impl => {
                 let mut impl_block = self.parse_impl()?;
                 impl_block.decorators = decorators;
@@ -99,7 +64,7 @@ impl ParserItems for Parser {
 
     // === Decorators ===
 
-    fn parse_decorators(&mut self) -> ParseResult<Vec<Decorator>> {
+    pub(crate) fn parse_decorators(&mut self) -> ParseResult<Vec<Decorator>> {
         let mut decorators = Vec::new();
 
         while self.check(TokenKind::At) {
@@ -153,7 +118,7 @@ impl ParserItems for Parser {
         }
 
         let end = self.prev_span();
-        Ok(Decorator::with_args(name, args, start.merge(&end)))
+        Ok(Decorator::with_args(name, args, start.merge(end)))
     }
 
     // === Declarations ===
@@ -164,7 +129,7 @@ impl ParserItems for Parser {
     ///   const MaxItems = 10
     ///   const FreePlan = "free"
     ///   const Regions = { "us": "us-west1" }
-    fn parse_const(&mut self) -> ParseResult<ConstDecl> {
+    pub(crate) fn parse_const(&mut self) -> ParseResult<ConstDecl> {
         let start = self.current_span();
         self.expect(TokenKind::Const)?;
 
@@ -201,7 +166,7 @@ impl ParserItems for Parser {
         })?;
 
         let end = self.prev_span();
-        Ok(ConstDecl::new(name, value, start.merge(&end)))
+        Ok(ConstDecl::new(name, value, start.merge(end)))
     }
 
     /// Parse `static Name: Type` — runtime global variable declaration.
@@ -215,7 +180,7 @@ impl ParserItems for Parser {
     ///   - Type annotation is required
     ///   - Set exactly once in main(), immutable after
     ///   - PascalCase = public, camelCase = private
-    fn parse_static(&mut self) -> ParseResult<StaticDecl> {
+    pub(crate) fn parse_static(&mut self) -> ParseResult<StaticDecl> {
         let start = self.current_span();
         self.expect(TokenKind::Static)?;
 
@@ -240,10 +205,13 @@ impl ParserItems for Parser {
         let type_expr = self.parse_type_expr()?;
 
         let end = self.prev_span();
-        Ok(StaticDecl::new(name, type_expr, start.merge(&end)))
+        Ok(StaticDecl::new(name, type_expr, start.merge(end)))
     }
 
-    fn parse_function(&mut self) -> ParseResult<FunctionDecl> {
+    pub(crate) fn parse_function(
+        &mut self,
+        decorators: Vec<Decorator>,
+    ) -> ParseResult<FunctionDecl> {
         let start = self.current_span();
 
         // Handle `async fn` — consume `async` if present
@@ -296,7 +264,7 @@ impl ParserItems for Parser {
                     Some(types.remove(0))
                 } else {
                     let end = self.prev_span();
-                    Some(TypeExpr::new(TypeExprKind::Tuple(types), start.merge(&end)))
+                    Some(TypeExpr::new(TypeExprKind::Tuple(types), start.merge(end)))
                 };
 
                 // Check for error type after return type
@@ -318,11 +286,49 @@ impl ParserItems for Parser {
             (None, None)
         };
 
+        let is_extern = decorators.iter().any(|d| d.name == "extern");
+
         // Body - either block or expression function
         self.fn_depth += 1;
-        let (body, is_expr_fn) = if self.check(TokenKind::FatArrow) {
+        let (body, is_expr_fn) = if is_extern {
+            // @extern functions are declarations — no body needed.
+            if self.check(TokenKind::FatArrow) {
+                self.advance();
+                let mut values = Vec::new();
+                values.push(self.parse_expression()?);
+                while self.check(TokenKind::Comma) {
+                    self.advance();
+                    values.push(self.parse_expression()?);
+                }
+                if self.check(TokenKind::Semi) {
+                    self.advance();
+                }
+                (Vec::new(), false)
+            } else if self.check(TokenKind::LBrace) {
+                let _ = self.parse_block()?;
+                (Vec::new(), false)
+            } else {
+                // --- DEBUG LOGGING ---
+                eprintln!("[DEBUG parser] @extern function '{}' parsed. Checking for trailing ';'. Current token: {:?}", name, self.current().kind);
+                if self.check(TokenKind::Semi) {
+                    eprintln!(
+                        "[DEBUG parser] Consuming trailing ';' for @extern function '{}'",
+                        name
+                    );
+                    self.advance();
+                } else {
+                    eprintln!(
+                        "[DEBUG parser] WARNING: No trailing ';' found for @extern function '{}'",
+                        name
+                    );
+                }
+                // ----------------------
+                (Vec::new(), false)
+            }
+        } else if self.check(TokenKind::FatArrow) {
+            // ... rest of the function remains exactly as it is
+            // ... rest of the function remains the same
             self.advance();
-            // Parse comma-separated expressions for tuple returns (same as parse_return)
             let mut values = Vec::new();
             values.push(self.parse_expression()?);
             while self.check(TokenKind::Comma) {
@@ -359,19 +365,20 @@ impl ParserItems for Parser {
             return_type,
             error_type,
             body,
-            decorators: Vec::new(),
+            decorators, // Use the decorators passed into the function
             receiver,
             associated_type,
             is_expr_fn,
             is_async,
-            span: start.merge(&end),
+            span: start.merge(end),
         })
     }
 
     fn parse_function_name(&mut self) -> ParseResult<(String, Option<String>, Option<String>)> {
         let first = self.expect_ident()?;
 
-        if self.check(TokenKind::Dot) {
+        // Support both `.` and `::` for method definitions
+        if self.check(TokenKind::Dot) || self.check(TokenKind::ColonColon) {
             self.advance();
             let method_name = self.expect_ident()?;
 
@@ -440,7 +447,7 @@ impl ParserItems for Parser {
             params.push(TypeParam {
                 name,
                 constraint,
-                span: param_span.merge(&end),
+                span: param_span.merge(end),
             });
 
             if !self.check(TokenKind::Gt) {
@@ -466,6 +473,12 @@ impl ParserItems for Parser {
 
         while !self.check(TokenKind::RParen) && !self.is_at_end() {
             let param_span = self.current_span();
+
+            // Handle `mut` keyword for mutable parameters (e.g., `mut self`, `mut x: Int`)
+            if self.check(TokenKind::Mut) {
+                self.advance();
+            }
+
             let name = self.expect_ident()?;
 
             // Check for duplicate parameter names
@@ -495,7 +508,7 @@ impl ParserItems for Parser {
         Ok(params)
     }
 
-    fn parse_struct(&mut self) -> ParseResult<StructDecl> {
+    pub(crate) fn parse_struct(&mut self) -> ParseResult<StructDecl> {
         let start = self.current_span();
         self.expect(TokenKind::Struct)?;
 
@@ -541,7 +554,7 @@ impl ParserItems for Parser {
             type_params,
             fields,
             decorators: Vec::new(),
-            span: start.merge(&end),
+            span: start.merge(end),
         })
     }
 
@@ -586,15 +599,15 @@ impl ParserItems for Parser {
             is_optional,
             default,
             decorators,
-            span: start.merge(&end),
+            span: start.merge(end),
         })
     }
 
-    fn parse_impl(&mut self) -> ParseResult<ImplDecl> {
+    pub(crate) fn parse_impl(&mut self) -> ParseResult<ImplDecl> {
         let start = self.current_span();
         self.expect(TokenKind::Impl)?;
 
-        let struct_name = self.expect_ident().map_err(|_| {
+        let mut struct_name = self.expect_ident().map_err(|_| {
             CompilerError::new(
                 ErrorCode::ExpectedIdentifier,
                 "expected struct name after `impl`",
@@ -602,6 +615,19 @@ impl ParserItems for Parser {
             )
             .with_suggestion("usage: impl StructName { fn method(self) -> ... }")
         })?;
+
+        // Support module paths: impl Module::Struct { ... }
+        while self.check(TokenKind::ColonColon) {
+            self.advance();
+            let next = self.expect_ident()?;
+            struct_name = format!("{}::{}", struct_name, next);
+        }
+
+        // Support generic impl: impl Array<T> { ... }
+        // Parse and discard the type parameters for now
+        if self.check(TokenKind::Lt) {
+            let _ = self.parse_type_params()?;
+        }
 
         self.expect(TokenKind::LBrace).map_err(|_| {
             CompilerError::new(
@@ -615,8 +641,10 @@ impl ParserItems for Parser {
         let mut seen_methods: HashSet<String> = HashSet::new();
 
         while !self.check(TokenKind::RBrace) && !self.is_at_end() {
-            // Each method must start with `fn`
-            let mut func = self.parse_function().map_err(|e| {
+            // Parse decorators before method (supports @extern inside impl blocks)
+            let method_decorators = self.parse_decorators()?;
+
+            let mut func = self.parse_function(method_decorators).map_err(|e| {
                 CompilerError::new(
                     ErrorCode::UnexpectedToken,
                     format!("invalid method in impl {}: {}", struct_name, e.message),
@@ -666,15 +694,18 @@ impl ParserItems for Parser {
             struct_name,
             methods,
             decorators: Vec::new(),
-            span: start.merge(&end),
+            span: start.merge(end),
         })
     }
 
-    fn parse_enum(&mut self) -> ParseResult<EnumDecl> {
+    pub(crate) fn parse_enum(&mut self) -> ParseResult<EnumDecl> {
         let start = self.current_span();
         self.expect(TokenKind::Enum)?;
 
         let name = self.expect_ident()?;
+
+        // Support generic enums: enum Option<T> { ... }
+        let _ = self.parse_type_params()?;
 
         let mut seen_variants: HashSet<String> = HashSet::new();
 
@@ -692,7 +723,6 @@ impl ParserItems for Parser {
                     .with_suggestion(format!("rename one of the '{}' variants", variant.name)));
                 }
                 v.push(variant);
-                // Accept both comma `,` and pipe `|` as variant separators for inline enums
                 while self.check(TokenKind::Comma) || self.check(TokenKind::Or) {
                     self.advance();
                     let variant = self.parse_variant_decl()?;
@@ -710,7 +740,6 @@ impl ParserItems for Parser {
                     v.push(variant);
                 }
             }
-            // Optional semicolon at end of inline decl
             if self.check(TokenKind::Semi) {
                 self.advance();
             }
@@ -729,7 +758,6 @@ impl ParserItems for Parser {
                     .with_suggestion(format!("rename one of the '{}' variants", variant.name)));
                 }
                 v.push(variant);
-                // Allow optional commas in block too
                 if self.check(TokenKind::Comma) {
                     self.advance();
                 }
@@ -749,7 +777,7 @@ impl ParserItems for Parser {
             name,
             is_public,
             variants,
-            span: start.merge(&end),
+            span: start.merge(end),
         })
     }
 
@@ -772,7 +800,7 @@ impl ParserItems for Parser {
                 Some(types.remove(0))
             } else {
                 let end = self.prev_span();
-                Some(TypeExpr::new(TypeExprKind::Tuple(types), start.merge(&end)))
+                Some(TypeExpr::new(TypeExprKind::Tuple(types), start.merge(end)))
             }
         } else {
             None
@@ -786,11 +814,11 @@ impl ParserItems for Parser {
             name,
             payload,
             decorators,
-            span: start.merge(&end),
+            span: start.merge(end),
         })
     }
 
-    fn parse_interface(&mut self) -> ParseResult<InterfaceDecl> {
+    pub(crate) fn parse_interface(&mut self) -> ParseResult<InterfaceDecl> {
         let start = self.current_span();
         self.expect(TokenKind::Interface)?;
 
@@ -825,7 +853,7 @@ impl ParserItems for Parser {
             name,
             is_public,
             methods,
-            span: start.merge(&end),
+            span: start.merge(end),
         })
     }
 
@@ -858,7 +886,7 @@ impl ParserItems for Parser {
                     Some(types.remove(0))
                 } else {
                     let end = self.prev_span();
-                    Some(TypeExpr::new(TypeExprKind::Tuple(types), start.merge(&end)))
+                    Some(TypeExpr::new(TypeExprKind::Tuple(types), start.merge(end)))
                 };
                 let err_type = if self.check(TokenKind::Bang) {
                     self.advance();
@@ -887,11 +915,11 @@ impl ParserItems for Parser {
             params,
             return_type,
             error_type,
-            span: start.merge(&end),
+            span: start.merge(end),
         })
     }
 
-    fn parse_import(&mut self) -> ParseResult<ImportDecl> {
+    pub(crate) fn parse_import(&mut self) -> ParseResult<ImportDecl> {
         let start = self.current_span();
         self.expect(TokenKind::Import)?;
 
@@ -908,7 +936,7 @@ impl ParserItems for Parser {
                     items: Vec::new(),
                     alias: None,
                     wildcard: true,
-                    span: start.merge(&end),
+                    span: start.merge(end),
                 });
             }
 
@@ -933,7 +961,7 @@ impl ParserItems for Parser {
                 items: Vec::new(),
                 alias,
                 wildcard: false,
-                span: start.merge(&end),
+                span: start.merge(end),
             });
         }
 
@@ -971,88 +999,7 @@ impl ParserItems for Parser {
             items,
             alias: None,
             wildcard: false,
-            span: start.merge(&end),
+            span: start.merge(end),
         })
-    }
-
-    // === RBAC Policy ===
-
-    /// Parse a `policy PolicyName for StructName { action: rule, ... }` block.
-    ///
-    /// Rules are parsed as free-form expressions and serialised to a canonical
-    /// string understood by the FFI runtime:
-    ///   - `public`           → "public"
-    ///   - `authenticated`    → "authenticated"
-    ///   - `own`              → "own"
-    ///   - `Role::Admin`      → "Admin"
-    ///   - `a | b`            → "a|b"
-    ///   - `a & b`            → "a&b"
-    fn parse_policy(&mut self) -> ParseResult<PolicyDecl> {
-        let start = self.current_span();
-        self.expect(TokenKind::Policy)?;
-
-        let name = self.expect_ident()?;
-        self.expect(TokenKind::For)?;
-        let for_struct = self.expect_ident()?;
-        self.expect(TokenKind::LBrace)?;
-
-        let mut rules: Vec<(String, String)> = Vec::new();
-        while !self.check(TokenKind::RBrace) && !self.is_at_end() {
-            let action = self.expect_ident()?;
-            self.expect(TokenKind::Colon)?;
-            let rule_str = self.parse_policy_rule()?;
-            rules.push((action, rule_str));
-            // Optional trailing comma
-            if self.check(TokenKind::Comma) {
-                self.advance();
-            }
-        }
-
-        self.expect(TokenKind::RBrace)?;
-        let end = self.prev_span();
-
-        let mut decl = PolicyDecl::new(name, for_struct, start.merge(&end));
-        decl.rules = rules;
-        Ok(decl)
-    }
-
-    /// Parse a policy rule expression and serialise it to a canonical string.
-    ///
-    /// Grammar (simple recursive descent):
-    ///   rule  = term (('|' | '&') term)*
-    ///   term  = ident ('::' ident)?   -- e.g. Role::Admin, public, own, authenticated
-    fn parse_policy_rule(&mut self) -> ParseResult<String> {
-        // Canonical serialization (single source of truth):
-        // - no whitespace
-        // - Role::Variant lowered to "Variant" by parse_policy_term
-        // - operators preserved in source order
-        let mut result = self.parse_policy_term()?;
-
-        while self.check(TokenKind::Or) || self.check(TokenKind::And) {
-            if self.check(TokenKind::Or) {
-                self.advance();
-                result.push('|');
-            } else {
-                self.advance();
-                result.push('&');
-            }
-            result.push_str(&self.parse_policy_term()?);
-        }
-
-        Ok(result)
-    }
-
-    /// Parse a single policy term: an identifier, optionally qualified with `::`.
-    /// Examples: `public`, `authenticated`, `own`, `Role::Admin`, `Role::User`
-    fn parse_policy_term(&mut self) -> ParseResult<String> {
-        let first = self.expect_ident()?;
-        if self.check(TokenKind::ColonColon) {
-            self.advance();
-            let variant = self.expect_ident()?;
-            // Discard the enum name prefix — the FFI matches on variant name only
-            Ok(variant)
-        } else {
-            Ok(first)
-        }
     }
 }

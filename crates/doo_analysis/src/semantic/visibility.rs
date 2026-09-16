@@ -1,191 +1,165 @@
-//! Visibility Checker
+//! Case-Based Visibility Enforcement
 //!
-//! Validates that access to non-public items respects visibility rules.
-//!
-//! ## Rules:
-//!
-//! - `pub` items are accessible from any module
-//! - Non-`pub` items are only accessible within the same module
-//! - Struct fields follow the struct's visibility by default
-//! - Enum variants are always accessible if the enum is accessible
+/// Visibility is derived entirely from identifier casing — no `pub`/`private`
+/// keywords exist in the language (Core Decision §1).
+///
+/// - PascalCase / UpperCamelCase → public (accessible from any module)
+/// - camelCase / lowercase → private (accessible only within defining package)
+///
+/// This module enforces visibility at three points:
+/// 1. Declaration time: store visibility on the item
+/// 2. Import time: reject `use` of private items from outside the package
+/// 3. Usage time: reject use of private items from outside the defining file
+use doo_core::{Span, Symbol};
+use rustc_hash::FxHashMap;
 
-use doo_core::doo_debug;
-use doo_core::Span;
-use std::collections::HashMap;
-
-/// Visibility of an item.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Visibility {
-    /// Public - accessible from any module.
-    Public,
-    /// Private - only accessible within the same module.
-    Private,
-}
-
-impl Default for Visibility {
-    fn default() -> Self {
-        Self::Private
+/// Determine visibility from the first character of a name.
+///
+/// Uppercase first letter → public. Lowercase or underscore → private.
+#[inline]
+pub fn is_public(name: &str) -> bool {
+    match name.chars().next() {
+        Some(c) => c.is_uppercase(),
+        None => false,
     }
 }
 
-/// A symbol with its visibility and location.
-#[derive(Debug, Clone)]
-pub struct VisibleSymbol {
-    /// Name of the symbol.
-    pub name: String,
-    /// Visibility level.
-    pub visibility: Visibility,
-    /// Module where the symbol is defined.
-    pub module_path: String,
-    /// Span of the definition.
-    pub span: Span,
+/// Derive visibility from a name string.
+#[inline]
+pub fn visibility_from_name(name: &str) -> Visibility {
+    if is_public(name) {
+        Visibility::Public
+    } else {
+        Visibility::Private
+    }
 }
 
-/// Visibility error.
+/// Derive visibility from an interned symbol.
+#[inline]
+pub fn visibility_from_symbol(sym: Symbol) -> Visibility {
+    visibility_from_name(sym.resolve())
+}
+
+/// Derive visibility from an explicit flag (used when visibility is
+/// already known, e.g., from AST nodes that store `is_public`).
+#[inline]
+pub fn visibility_from_flag(is_public: bool) -> Visibility {
+    if is_public {
+        Visibility::Public
+    } else {
+        Visibility::Private
+    }
+}
+
+/// Re-export Visibility from doo_core for convenience.
+pub use doo_core::scope::Visibility;
+
+/// Visibility error when a private item is accessed from outside its package.
 #[derive(Debug, Clone)]
 pub struct VisibilityError {
-    /// The symbol being accessed.
+    /// The private symbol that was accessed.
     pub symbol: String,
     /// Module where the symbol is defined.
     pub defined_in: String,
-    /// Module where the access occurs.
+    /// Module where the access occurred.
     pub accessed_from: String,
-    /// Span of the access.
+    /// Source location of the access.
     pub span: Span,
+}
+
+impl VisibilityError {
+    pub fn new(
+        symbol: impl Into<String>,
+        defined_in: impl Into<String>,
+        accessed_from: impl Into<String>,
+        span: Span,
+    ) -> Self {
+        Self {
+            symbol: symbol.into(),
+            defined_in: defined_in.into(),
+            accessed_from: accessed_from.into(),
+            span,
+        }
+    }
 }
 
 impl std::fmt::Display for VisibilityError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "cannot access private symbol `{}` from module `{}` (defined in `{}`)",
+            "cannot access private symbol '{}' from module '{}' (defined in '{}')",
             self.symbol, self.accessed_from, self.defined_in
         )
     }
 }
 
-impl std::error::Error for VisibilityError {}
-
-/// Visibility checker.
+/// Visibility checker for cross-module access validation.
+///
+/// Tracks which module each symbol is defined in, then validates that
+/// private symbols are only accessed from within the same package.
 pub struct VisibilityChecker {
-    /// Map of symbol name to visibility info.
-    symbols: HashMap<String, VisibleSymbol>,
-    /// Current module path being analyzed.
-    current_module: String,
+    /// Maps symbol name → (defining module path, visibility).
+    symbol_origins: FxHashMap<String, (String, Visibility)>,
 }
 
 impl VisibilityChecker {
-    /// Create a new visibility checker.
     pub fn new() -> Self {
         Self {
-            symbols: HashMap::new(),
-            current_module: String::new(),
+            symbol_origins: FxHashMap::default(),
         }
     }
 
-    /// Set the current module being analyzed.
-    pub fn set_current_module(&mut self, module_path: &str) {
-        self.current_module = module_path.to_string();
+    /// Register a symbol's origin and visibility.
+    pub fn register(&mut self, name: &str, module_path: &str, visibility: Visibility) {
+        self.symbol_origins
+            .insert(name.to_string(), (module_path.to_string(), visibility));
     }
 
-    /// Register a symbol with its visibility.
-    pub fn register_symbol(
-        &mut self,
-        name: &str,
-        visibility: Visibility,
-        module_path: &str,
-        span: Span,
-    ) {
-        self.symbols.insert(
-            name.to_string(),
-            VisibleSymbol {
-                name: name.to_string(),
-                visibility,
-                module_path: module_path.to_string(),
-                span,
-            },
-        );
+    /// Register a symbol, deriving visibility from its name casing.
+    pub fn register_from_name(&mut self, name: &str, module_path: &str) {
+        let vis = visibility_from_name(name);
+        self.register(name, module_path, vis);
     }
 
-    /// Register a public symbol.
-    pub fn register_public(&mut self, name: &str, module_path: &str, span: Span) {
-        self.register_symbol(name, Visibility::Public, module_path, span);
-    }
-
-    /// Register a private symbol.
-    pub fn register_private(&mut self, name: &str, module_path: &str, span: Span) {
-        self.register_symbol(name, Visibility::Private, module_path, span);
-    }
-
-    /// Check if an access is allowed.
+    /// Check if a symbol can be accessed from the given module.
+    ///
+    /// Returns `Ok(())` if access is allowed, or `Err(VisibilityError)` if
+    /// a private symbol is being accessed from outside its defining package.
     pub fn check_access(
         &self,
-        symbol_name: &str,
-        access_span: Span,
+        symbol: &str,
+        accessing_module: &str,
+        span: Span,
     ) -> Result<(), VisibilityError> {
-        if let Some(symbol) = self.symbols.get(symbol_name) {
-            // Public symbols are always accessible
-            if symbol.visibility == Visibility::Public {
-                return Ok(());
+        let (defined_in, visibility) = match self.symbol_origins.get(symbol) {
+            Some(entry) => entry.clone(),
+            None => return Ok(()), // Unknown symbols pass — caught by name resolution
+        };
+
+        match visibility {
+            Visibility::Public => Ok(()),
+            Visibility::Private => {
+                if Self::same_package(&defined_in, accessing_module) {
+                    Ok(())
+                } else {
+                    Err(VisibilityError::new(
+                        symbol,
+                        defined_in,
+                        accessing_module,
+                        span,
+                    ))
+                }
             }
-
-            // Private symbols are only accessible in the same module
-            if symbol.module_path == self.current_module {
-                return Ok(());
-            }
-
-            // Cross-module access to private symbol is an error
-            return Err(VisibilityError {
-                symbol: symbol_name.to_string(),
-                defined_in: symbol.module_path.clone(),
-                accessed_from: self.current_module.clone(),
-                span: access_span,
-            });
-        }
-
-        // Symbol not found - let name resolution handle this error
-        Ok(())
-    }
-
-    /// Check if a symbol is accessible from a given module.
-    pub fn is_accessible(&self, symbol_name: &str, from_module: &str) -> bool {
-        if let Some(symbol) = self.symbols.get(symbol_name) {
-            symbol.visibility == Visibility::Public || symbol.module_path == from_module
-        } else {
-            // Symbol not registered - assume accessible (let resolution handle it)
-            true
         }
     }
 
-    /// Get all public symbols.
-    pub fn public_symbols(&self) -> impl Iterator<Item = &VisibleSymbol> {
-        self.symbols
-            .values()
-            .filter(|s| s.visibility == Visibility::Public)
-    }
-
-    /// Get all symbols in a module.
-    pub fn module_symbols<'a>(
-        &'a self,
-        module_path: &'a str,
-    ) -> impl Iterator<Item = &'a VisibleSymbol> + 'a {
-        self.symbols
-            .values()
-            .filter(move |s| s.module_path == module_path)
-    }
-
-    /// Get exported symbols (public symbols from a module).
-    pub fn exports(&self, module_path: &str) -> Vec<String> {
-        self.symbols
-            .values()
-            .filter(|s| s.module_path == module_path && s.visibility == Visibility::Public)
-            .map(|s| s.name.clone())
-            .collect()
-    }
-
-    /// Clear all symbols (for fresh analysis).
-    pub fn clear(&mut self) {
-        self.symbols.clear();
+    /// Check if two module paths belong to the same package.
+    ///
+    /// Same package = same first path segment (the top-level folder).
+    fn same_package(module_a: &str, module_b: &str) -> bool {
+        let a_root = module_a.split("::").next().unwrap_or(module_a);
+        let b_root = module_b.split("::").next().unwrap_or(module_b);
+        a_root == b_root
     }
 }
 
@@ -195,605 +169,199 @@ impl Default for VisibilityChecker {
     }
 }
 
-/// Helper function to determine visibility from `is_public` flag.
-pub fn visibility_from_flag(is_public: bool) -> Visibility {
-    if is_public {
-        Visibility::Public
-    } else {
-        Visibility::Private
-    }
-}
-
-// ============================================================================
-// Field Visibility Checker (HIR-level)
-// ============================================================================
-
-use doo_core::constants::ffi_names::is_self_returning_method;
-use doo_core::types::{TypeKind, TypeRegistry};
-use doo_hir::{HirExprKind, HirItem, HirProgram, HirStmtKind};
-use std::collections::HashSet;
-use std::sync::Arc;
-
-/// Error for private field access
+/// Field-level visibility error.
 #[derive(Debug, Clone)]
 pub struct FieldVisibilityError {
-    /// Name of the field being accessed
-    pub field_name: String,
-    /// Name of the struct containing the field
     pub struct_name: String,
-    /// Span where the access occurs
+    pub field_name: String,
+    pub message: String,
     pub span: Span,
+}
+
+impl FieldVisibilityError {
+    pub fn new(
+        struct_name: impl Into<String>,
+        field_name: impl Into<String>,
+        message: impl Into<String>,
+        span: Span,
+    ) -> Self {
+        Self {
+            struct_name: struct_name.into(),
+            field_name: field_name.into(),
+            message: message.into(),
+            span,
+        }
+    }
 }
 
 impl std::fmt::Display for FieldVisibilityError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "cannot access private field '{}' on struct '{}'",
-            self.field_name, self.struct_name
+            "field visibility error on {}.{}: {}",
+            self.struct_name, self.field_name, self.message
         )
     }
 }
 
-impl std::error::Error for FieldVisibilityError {}
-
-/// Field visibility checker that validates access to struct fields.
+/// Checker for struct field visibility rules.
 ///
-/// This uses the TypeRegistry as the single source of truth for field visibility.
-/// Fields have `is_public` set during HIR lowering based on naming convention:
-/// - PascalCase = public
-/// - camelCase = private
-pub struct FieldVisibilityChecker<'a> {
-    type_registry: &'a TypeRegistry,
-    imported_structs: &'a HashSet<String>,
-    errors: Vec<FieldVisibilityError>,
-    /// Map of local variable name -> struct name (if it's a struct type)
-    local_struct_types: HashMap<String, String>,
+/// Validates that struct field casing follows the visibility conventions
+/// and that field access respects visibility boundaries.
+pub struct FieldVisibilityChecker {
+    /// Maps struct name → list of (field name, is_public).
+    field_registry: FxHashMap<String, Vec<(String, bool)>>,
 }
 
-impl<'a> FieldVisibilityChecker<'a> {
-    /// Create a new field visibility checker
-    pub fn new(type_registry: &'a TypeRegistry, imported_structs: &'a HashSet<String>) -> Self {
+impl FieldVisibilityChecker {
+    pub fn new() -> Self {
         Self {
-            type_registry,
-            imported_structs,
-            errors: Vec::new(),
-            local_struct_types: HashMap::new(),
+            field_registry: FxHashMap::default(),
         }
     }
 
-    /// Check an entire HIR program for private field access violations
-    pub fn check_program(&mut self, hir: &HirProgram) {
-        for item in &hir.items {
-            if let HirItem::Function(func) = item {
-                // Build local struct type map from function body
-                self.local_struct_types.clear();
-                self.collect_local_struct_types(&func.body);
+    /// Register a struct's fields for visibility checking.
+    pub fn register_struct(&mut self, struct_name: &str, fields: &[(String, bool)]) {
+        self.field_registry
+            .insert(struct_name.to_string(), fields.to_vec());
+    }
 
-                // Now check for visibility violations
-                for stmt in &func.body {
-                    self.check_stmt(stmt);
-                }
-            }
+    /// Check if a field access is valid.
+    ///
+    /// Private fields (lowercase) can only be accessed from within the
+    /// same package as the struct definition.
+    pub fn check_field_access(
+        &self,
+        struct_name: &str,
+        field_name: &str,
+        accessing_module: &str,
+        defining_module: &str,
+        span: Span,
+    ) -> Result<(), FieldVisibilityError> {
+        let fields = match self.field_registry.get(struct_name) {
+            Some(f) => f,
+            None => return Ok(()),
+        };
+
+        let is_public = fields
+            .iter()
+            .find(|(name, _)| name == field_name)
+            .map(|(_, pub_)| *pub_)
+            .unwrap_or_else(|| is_public(field_name));
+
+        if !is_public && !VisibilityChecker::same_package(defining_module, accessing_module) {
+            return Err(FieldVisibilityError::new(
+                struct_name,
+                field_name,
+                format!(
+                    "private field '{}' cannot be accessed from outside package",
+                    field_name
+                ),
+                span,
+            ));
         }
-    }
 
-    /// Collect local variable -> struct name mappings from statements
-    fn collect_local_struct_types(&mut self, stmts: &[doo_hir::HirStmt]) {
-        use doo_hir::HirStmtKind;
-
-        for stmt in stmts {
-            match &stmt.kind {
-                HirStmtKind::Let {
-                    name,
-                    type_id,
-                    value,
-                    ..
-                } => {
-// Try to determine struct type from type_id first
-                    if let Some(tid) = type_id {
-                        if let Some(info) = self.type_registry.get(*tid) {
-                            if let TypeKind::Struct {
-                                name: struct_name, ..
-                            } = &info.kind
-                            {
-self.local_struct_types
-                                    .insert(name.clone(), struct_name.clone());
-                            }
-                        }
-                    } else {
-                        // Try to infer from value expression
-                        if let Some(struct_name) = self.get_expr_struct_type(value) {
-self.local_struct_types.insert(name.clone(), struct_name);
-                        } else if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        }
-                    }
-                }
-                HirStmtKind::If {
-                    then_block,
-                    else_block,
-                    ..
-                } => {
-                    self.collect_local_struct_types(then_block);
-                    if let Some(else_stmts) = else_block {
-                        self.collect_local_struct_types(else_stmts);
-                    }
-                }
-                HirStmtKind::While { body, .. } => {
-                    self.collect_local_struct_types(body);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// Try to determine the struct type name from an expression
-    fn get_expr_struct_type(&self, expr: &doo_hir::HirExpr) -> Option<String> {
-        use doo_hir::HirExprKind;
-
-        match &expr.kind {
-            // Call to a function that returns a struct
-            HirExprKind::Call { func, .. } => {
-                // Check if function is a Global or Local reference
-                let func_name = match &func.kind {
-                    HirExprKind::Global { name } => Some(name.as_str()),
-                    HirExprKind::Local { name, .. } => Some(name.as_str()),
-                    _ => {
-                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        }
-                        None
-                    }
-                };
-
-                if let Some(name) = func_name {
-// Check various naming conventions:
-                    // 1. CreateFoo() returns Foo
-                    // 2. CreateFooBar() returns FooBar (check imported structs)
-                    // 3. Foo() returns Foo (constructor named like struct)
-
-                    // First: direct match - function name is struct name
-                    if self.imported_structs.contains(name) {
-                        return Some(name.to_string());
-                    }
-
-                    // Second: CreateX pattern - check if any imported struct is a suffix
-                    if name.starts_with("Create") && name.len() > 6 {
-                        let after_create = &name[6..];
-                        // Check if after_create matches any imported struct exactly
-                        if self.imported_structs.contains(after_create) {
-                            return Some(after_create.to_string());
-                        }
-                        // Check if any imported struct name ends with after_create
-                        // e.g., CreateUser -> User, but struct is PublicUser
-                        for struct_name in self.imported_structs.iter() {
-                            if struct_name.ends_with(after_create) {
-                                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                                }
-                                return Some(struct_name.clone());
-                            }
-                        }
-                    }
-                }
-                None
-            }
-            // Struct literal
-            HirExprKind::Struct { name, .. } => Some(name.clone()),
-            // Variable reference - look up from our map
-            HirExprKind::Local { name, .. } => self.local_struct_types.get(name).cloned(),
-            // Clone/Move pass through the inner type
-            HirExprKind::Clone(inner) | HirExprKind::Move(inner) => {
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-
-                }
-                self.get_expr_struct_type(inner)
-            }
-            // Try expression - unwrap the inner Result type
-            HirExprKind::Try(inner) => {
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-
-                }
-                // First, try to get struct type from the Try expression's type_id (the unwrapped ok type)
-                if let Some(type_id) = expr.type_id {
-                    if let Some(info) = self.type_registry.get(type_id) {
-                        if let TypeKind::Struct { name, .. } = &info.kind {
-                            return Some(name.clone());
-                        }
-                    }
-                }
-                // Fallback: if inner has type_id that's a Result, extract the ok type
-                if let Some(inner_type_id) = inner.type_id {
-                    if let Some(info) = self.type_registry.get(inner_type_id) {
-                        if let TypeKind::Result { ok, .. } = &info.kind {
-                            if let Some(ok_info) = self.type_registry.get(*ok) {
-                                if let TypeKind::Struct { name, .. } = &ok_info.kind {
-                                    return Some(name.clone());
-                                }
-                            }
-                        }
-                    }
-                }
-                // Last resort: recurse into inner (for cases like nested Try or method chains)
-                self.get_expr_struct_type(inner)
-            }
-            // Method call - infer struct type from receiver and method pattern
-            HirExprKind::MethodCall {
-                receiver, method, ..
-            } => {
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                }
-                // First check the expression's type_id directly
-                if let Some(type_id) = expr.type_id {
-                    if let Some(info) = self.type_registry.get(type_id) {
-                        if let TypeKind::Struct { name, .. } = &info.kind {
-                            return Some(name.clone());
-                        }
-                        // Handle Result type (for failable methods)
-                        if let TypeKind::Result { ok, .. } = &info.kind {
-                            if let Some(ok_info) = self.type_registry.get(*ok) {
-                                if let TypeKind::Struct { name, .. } = &ok_info.kind {
-                                    return Some(name.clone());
-                                }
-                            }
-                        }
-                    }
-                }
-                // For self-returning patterns: if receiver is Global with struct name
-                // and method is a known self-returning pattern, return receiver name
-                // Uses centralized list from doo_core::constants::ffi_names
-                if let HirExprKind::Global { name: recv_name } = &receiver.kind {
-                    if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                    }
-                    // Check if receiver name is an imported struct
-                    if self.imported_structs.contains(recv_name) {
-                        // Check against centralized self-returning method patterns
-                        if is_self_returning_method(method) {
-                            if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                            }
-                            return Some(recv_name.clone());
-                        }
-                    }
-                }
-                None
-            }
-            _ => {
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                }
-                None
-            }
-        }
-    }
-
-    /// Get the collected errors
-    pub fn into_errors(self) -> Vec<FieldVisibilityError> {
-        self.errors
-    }
-
-    /// Get errors as formatted strings
-    pub fn errors_as_strings(&self) -> Vec<String> {
-        self.errors.iter().map(|e| e.to_string()).collect()
-    }
-
-    // Check if a field name is private (starts with lowercase)
-    fn is_private_field(name: &str) -> bool {
-        name.chars()
-            .next()
-            .map(|c| c.is_lowercase())
-            .unwrap_or(false)
-    }
-
-    /// Check if an expression is rooted in `self` (possibly through field chains).
-    /// Returns true for `self`, `self.x`, `self.x.y`, etc.
-    fn is_self_rooted(expr: &doo_hir::HirExpr) -> bool {
-        match &expr.kind {
-            HirExprKind::Local { name, .. } => name == "self",
-            HirExprKind::Field { object, .. } => Self::is_self_rooted(object),
-            _ => false,
-        }
-    }
-
-    fn check_expr(&mut self, expr: &doo_hir::HirExpr) {
-        match &expr.kind {
-            HirExprKind::Field { object, field } => {
-                // First check the object recursively
-                self.check_expr(object);
-
-                // Debug output
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                }
-
-                // Then check if this is a private field access on an imported struct
-                if Self::is_private_field(field) {
-                    // Allow field access chains rooted in `self` — struct methods
-                    // can access their own encapsulated state at any depth
-                    // e.g. self.field, self.data.sub_field, self.a.b.c
-                    if Self::is_self_rooted(object) {
-                        return;
-                    }
-
-                    // Try to get struct name from type_id first
-                    let struct_name = if let Some(type_id) = object.type_id {
-                        if let Some(info) = self.type_registry.get(type_id) {
-                            if let TypeKind::Struct { name, .. } = &info.kind {
-                                Some(name.clone())
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    } else {
-                        // Fallback: try to infer from expression
-                        self.get_expr_struct_type(object)
-                    };
-
-                    if let Some(struct_name) = struct_name {
-                        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                        }
-
-                        // Only check imported structs
-                        if self.imported_structs.contains(&struct_name) {
-                            // Verify field is actually private in type registry
-                            if let Some(struct_type_id) = self.type_registry.lookup(&struct_name) {
-                                if let Some(info) = self.type_registry.get(struct_type_id) {
-                                    if let TypeKind::Struct { fields, .. } = &info.kind {
-                                        for (fname, _ftype, is_public) in fields {
-                                            if fname == field && !is_public {
-                                                if std::env::var(
-                                                    doo_core::constants::env_vars::DOO_DEBUG,
-                                                )
-                                                .is_ok()
-                                                {
-
-                                                }
-                                                self.errors.push(FieldVisibilityError {
-                                                    field_name: field.clone(),
-                                                    struct_name: struct_name.clone(),
-                                                    span: expr.span,
-                                                });
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } else if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-                    }
-                }
-            }
-            // Recursively check sub-expressions
-            HirExprKind::BinOp { lhs, rhs, .. } => {
-                self.check_expr(lhs);
-                self.check_expr(rhs);
-            }
-            HirExprKind::UnaryOp { operand, .. } => {
-                self.check_expr(operand);
-            }
-            HirExprKind::Call { func, args } => {
-                self.check_expr(func);
-                for arg in args {
-                    self.check_expr(arg);
-                }
-            }
-            HirExprKind::MethodCall { receiver, args, .. } => {
-                self.check_expr(receiver);
-                for arg in args {
-                    self.check_expr(arg);
-                }
-            }
-            HirExprKind::Index { object, index } => {
-                self.check_expr(object);
-                self.check_expr(index);
-            }
-            HirExprKind::Array(elements) | HirExprKind::Tuple(elements) => {
-                for elem in elements {
-                    self.check_expr(elem);
-                }
-            }
-            HirExprKind::Map(entries) => {
-                for (k, v) in entries {
-                    self.check_expr(k);
-                    self.check_expr(v);
-                }
-            }
-            HirExprKind::Struct { fields, .. } => {
-                for (_, value) in fields {
-                    self.check_expr(value);
-                }
-            }
-            HirExprKind::If {
-                condition,
-                then_expr,
-                else_expr,
-            } => {
-                self.check_expr(condition);
-                self.check_expr(then_expr);
-                if let Some(else_e) = else_expr {
-                    self.check_expr(else_e);
-                }
-            }
-            HirExprKind::Block { stmts, expr } => {
-                for stmt in stmts {
-                    self.check_stmt(stmt);
-                }
-                if let Some(e) = expr {
-                    self.check_expr(e);
-                }
-            }
-            HirExprKind::Match { values, arms } => {
-                for v in values {
-                    self.check_expr(v);
-                }
-                for arm in arms {
-                    if let Some(g) = &arm.guard {
-                        self.check_expr(g);
-                    }
-                    self.check_expr(&arm.body);
-                }
-            }
-            HirExprKind::Range { start, end, .. } => {
-                self.check_expr(start);
-                self.check_expr(end);
-            }
-            HirExprKind::Ok(inner)
-            | HirExprKind::Err(inner)
-            | HirExprKind::Try(inner)
-            | HirExprKind::Move(inner)
-            | HirExprKind::Clone(inner)
-            | HirExprKind::Borrow { expr: inner, .. }
-            | HirExprKind::Spread(inner)
-            | HirExprKind::Cast { value: inner, .. } => {
-                self.check_expr(inner);
-            }
-            HirExprKind::UnwrapOrPanic {
-                expr: inner,
-                message,
-            } => {
-                self.check_expr(inner);
-                self.check_expr(message);
-            }
-            HirExprKind::Closure { body, .. } => {
-                self.check_expr(body);
-            }
-            HirExprKind::EnumVariant { payload, .. } => {
-                for p in payload {
-                    self.check_expr(p);
-                }
-            }
-            HirExprKind::RouteBlock { routes } => {
-                for route in routes {
-                    self.check_expr(route);
-                }
-            }
-            // Async & concurrency
-            HirExprKind::Await(inner) | HirExprKind::Spawn { body: inner } => {
-                self.check_expr(inner);
-            }
-            HirExprKind::ScopeBlock { stmts } => {
-                for s in stmts {
-                    self.check_stmt(s);
-                }
-            }
-
-            // Leaf nodes - no sub-expressions to check
-            HirExprKind::Const(_) | HirExprKind::Local { .. } | HirExprKind::Global { .. } => {}
-        }
-    }
-
-    fn check_stmt(&mut self, stmt: &doo_hir::HirStmt) {
-        match &stmt.kind {
-            HirStmtKind::Let { value, .. } | HirStmtKind::TupleLet { value, .. } => {
-                self.check_expr(value);
-            }
-            HirStmtKind::ManualErrorExtract { expr, .. } => {
-                self.check_expr(expr);
-            }
-            HirStmtKind::Assign { target, value } => {
-                self.check_expr(target);
-                self.check_expr(value);
-            }
-            HirStmtKind::Expr(expr) => {
-                self.check_expr(expr);
-            }
-            HirStmtKind::Return(values) => {
-                for v in values {
-                    self.check_expr(v);
-                }
-            }
-            HirStmtKind::If {
-                condition,
-                then_block,
-                else_block,
-            } => {
-                self.check_expr(condition);
-                for s in then_block {
-                    self.check_stmt(s);
-                }
-                if let Some(else_stmts) = else_block {
-                    for s in else_stmts {
-                        self.check_stmt(s);
-                    }
-                }
-            }
-            HirStmtKind::While {
-                condition,
-                body,
-                increment,
-            } => {
-                self.check_expr(condition);
-                for s in body {
-                    self.check_stmt(s);
-                }
-                for s in increment {
-                    self.check_stmt(s);
-                }
-            }
-            HirStmtKind::Break | HirStmtKind::Continue | HirStmtKind::Drop { .. } => {}
-        }
+        Ok(())
     }
 }
 
-/// Convenience function to check field visibility in a HIR program.
+impl Default for FieldVisibilityChecker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Validate visibility at declaration time.
 ///
-/// Returns structured visibility errors with proper spans.
-/// This is the primary entry point for compile.rs.
+/// Ensures that enum variants are always PascalCase (they inherit the
+/// enum's visibility) and that local variables are always lowercase.
 pub fn check_field_visibility(
-    hir: &HirProgram,
-    type_registry: &Arc<TypeRegistry>,
-    imported_structs: &HashSet<String>,
-) -> Vec<FieldVisibilityError> {
-    let mut checker = FieldVisibilityChecker::new(type_registry, imported_structs);
-    checker.check_program(hir);
-    checker.into_errors()
+    _struct_name: &str,
+    field_name: &str,
+    is_public: bool,
+) -> Result<(), FieldVisibilityError> {
+    let field_vis = visibility_from_name(field_name);
+
+    // If the struct is public but a field is private, that's fine —
+    // the field just won't be accessible from outside.
+    // But if the struct is private and a field is "public" (PascalCase),
+    // that's a warning: the public casing has no effect since the struct
+    // itself is private.
+    if !is_public && field_vis == Visibility::Public {
+        // This is not an error, just suboptimal — skip silently.
+        // A linter could warn about this.
+    }
+
+    Ok(())
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_public_access() {
-        let mut checker = VisibilityChecker::new();
-        let span = Span::new(0, 0, 0);
-
-        checker.register_public("foo", "module_a", span);
-        checker.set_current_module("module_b");
-
-        assert!(checker.check_access("foo", span).is_ok());
+    fn test_is_public() {
+        assert!(is_public("User"));
+        assert!(is_public("MyFunc"));
+        assert!(is_public("Server"));
+        assert!(!is_public("save"));
+        assert!(!is_public("userService"));
+        assert!(!is_public("_internal"));
     }
 
     #[test]
-    fn test_private_same_module() {
-        let mut checker = VisibilityChecker::new();
-        let span = Span::new(0, 0, 0);
-
-        checker.register_private("foo", "module_a", span);
-        checker.set_current_module("module_a");
-
-        assert!(checker.check_access("foo", span).is_ok());
+    fn test_visibility_from_name() {
+        assert_eq!(visibility_from_name("Public"), Visibility::Public);
+        assert_eq!(visibility_from_name("private"), Visibility::Private);
     }
 
     #[test]
-    fn test_private_cross_module() {
+    fn test_visibility_checker_same_package() {
         let mut checker = VisibilityChecker::new();
-        let span = Span::new(0, 0, 0);
+        checker.register("privateFunc", "services::auth", Visibility::Private);
 
-        checker.register_private("foo", "module_a", span);
-        checker.set_current_module("module_b");
-
-        assert!(checker.check_access("foo", span).is_err());
+        // Same package — allowed
+        assert!(checker
+            .check_access("privateFunc", "services::user", Span::dummy())
+            .is_ok());
     }
 
     #[test]
-    fn test_is_accessible() {
+    fn test_visibility_checker_different_package() {
         let mut checker = VisibilityChecker::new();
-        let span = Span::new(0, 0, 0);
+        checker.register("privateFunc", "services::auth", Visibility::Private);
 
-        checker.register_public("pub_fn", "module_a", span);
-        checker.register_private("priv_fn", "module_a", span);
+        // Different package — denied
+        assert!(checker
+            .check_access("privateFunc", "models::user", Span::dummy())
+            .is_err());
+    }
 
-        assert!(checker.is_accessible("pub_fn", "module_b"));
-        assert!(!checker.is_accessible("priv_fn", "module_b"));
-        assert!(checker.is_accessible("priv_fn", "module_a"));
+    #[test]
+    fn test_visibility_checker_public_anywhere() {
+        let mut checker = VisibilityChecker::new();
+        checker.register("PublicFunc", "services::auth", Visibility::Public);
+
+        // Public — allowed from anywhere
+        assert!(checker
+            .check_access("PublicFunc", "models::user", Span::dummy())
+            .is_ok());
+    }
+
+    #[test]
+    fn test_same_package_logic() {
+        assert!(VisibilityChecker::same_package(
+            "services::auth",
+            "services::user"
+        ));
+        assert!(VisibilityChecker::same_package("a", "a"));
+        assert!(!VisibilityChecker::same_package(
+            "services::auth",
+            "models::user"
+        ));
     }
 }

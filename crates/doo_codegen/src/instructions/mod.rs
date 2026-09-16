@@ -3,23 +3,22 @@
 //! Per-category instruction handlers for modular codegen.
 
 pub mod arithmetic;
-pub mod memory;
-pub mod control_flow;
-// pub mod collections; // Deprecated
 pub mod arrays;
-pub mod maps;
-pub mod composites;
-pub mod calls;
-pub mod enums;
-pub mod closures;
-pub mod casts;
 pub mod async_ops;
+pub mod calls;
+pub mod casts;
+pub mod closures;
+pub mod composites;
+pub mod control_flow;
+pub mod enums;
+pub mod maps;
+pub mod memory;
 
 use doo_core::doo_debug;
 
-use inkwell::values::BasicValueEnum;
-use doo_mir::MirInstr;
 use crate::context::CodegenContext;
+use doo_mir::MirInstr;
+use inkwell::values::BasicValueEnum;
 
 /// Instruction handler trait.
 ///
@@ -27,7 +26,7 @@ use crate::context::CodegenContext;
 pub trait InstructionHandler<'ctx> {
     /// Check if this handler can process the instruction.
     fn handles(&self, instr: &MirInstr) -> bool;
-    
+
     /// Emit LLVM IR for the instruction.
     /// Returns Some(value) if the instruction produces a value.
     fn emit(
@@ -52,11 +51,11 @@ impl<'ctx> InstructionDispatcher<'ctx> {
                 Box::new(arithmetic::ArithmeticHandler),
                 Box::new(memory::MemoryHandler),
                 Box::new(control_flow::ControlFlowHandler),
-                // Box::new(collections::CollectionHandler), // Split into arrays/maps/composites
                 Box::new(arrays::ArrayHandler),
                 Box::new(maps::MapHandler),
                 Box::new(composites::CompositeHandler),
                 Box::new(calls::CallHandler),
+                Box::new(calls::MethodCallHandler),
                 Box::new(enums::EnumHandler),
                 Box::new(closures::ClosureHandler),
                 Box::new(casts::CastHandler),
@@ -65,22 +64,26 @@ impl<'ctx> InstructionDispatcher<'ctx> {
         }
     }
 
-    /// Emit LLVM IR for an instruction.
     pub fn emit(
         &self,
         ctx: &mut CodegenContext<'ctx>,
         instr: &MirInstr,
     ) -> Option<BasicValueEnum<'ctx>> {
-        for handler in &self.handlers {
+        doo_debug!("codegen-dispatch", "instruction {:?}", instr.kind);
+
+        for (idx, handler) in self.handlers.iter().enumerate() {
             if handler.handles(instr) {
-                if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
+                eprintln!("[DISPATCH-DEBUG] handler #{} matched, calling emit()", idx);
+                let result = handler.emit(ctx, instr);
+                match &result {
+                    Some(v) => eprintln!("[DISPATCH-DEBUG] handler #{} returned Some value", idx),
+                    None => eprintln!("[DISPATCH-DEBUG] handler #{} returned None", idx),
                 }
-                return handler.emit(ctx, instr);
+                return result;
             }
         }
-        // Unknown instruction - emit nothing
-        if std::env::var(doo_core::constants::env_vars::DOO_DEBUG).is_ok() {
-        }
+
+        doo_debug!("codegen-dispatch", "no handler for {:?}", instr.kind);
         None
     }
 }

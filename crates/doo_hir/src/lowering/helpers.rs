@@ -1,15 +1,13 @@
 //! Pattern matching, operators, and utility methods.
 
+use super::Lower;
+use crate::types::*;
+use doo_core::types::composite::FunctionSig;
 use doo_core::{
     types::{builtin, TypeId, TypeKind, TypeRegistry},
     Span,
 };
-use doo_frontend::ast::{
-    self, BinaryOp, CompoundOp, Pattern, PatternKind,
-    TypeExpr, UnaryOp,
-};
-use crate::types::*;
-use super::Lower;
+use doo_frontend::ast::{self, BinaryOp, CompoundOp, Pattern, PatternKind, TypeExpr, UnaryOp};
 
 impl Lower {
     pub(crate) fn pattern_to_name(&self, pattern: &Pattern) -> String {
@@ -25,6 +23,8 @@ impl Lower {
                 // For field patterns, use the base object name
                 self.pattern_to_name(object)
             }
+            PatternKind::Or(_) => format!("__or_pat_{}", pattern.span.start),
+            PatternKind::Bind { name, .. } => name.clone(),
         }
     }
 
@@ -64,6 +64,18 @@ impl Lower {
                     pattern.span,
                 )
             }
+            PatternKind::Bind { name, .. } => {
+                // For let bindings, @ bindings just use the bound name
+                HirExpr::new(HirExprKind::Local { name: name.clone() }, pattern.span)
+            }
+            PatternKind::Or(patterns) => {
+                // Or patterns are not valid in let bindings, fallback to first pattern
+                if let Some(first) = patterns.first() {
+                    self.pattern_to_expr(first)
+                } else {
+                    HirExpr::new(HirExprKind::Const(ConstValue::Nil), pattern.span)
+                }
+            }
         }
     }
 
@@ -93,6 +105,7 @@ impl Lower {
             BinaryOp::Or => HirBinOp::Or,
             BinaryOp::BitAnd => HirBinOp::BitAnd,
             BinaryOp::BitOr => HirBinOp::BitOr,
+            BinaryOp::BitXor => HirBinOp::BitXor,
             BinaryOp::NullCoalesce => HirBinOp::NullCoalesce,
             BinaryOp::In => HirBinOp::In,
         }
@@ -100,11 +113,11 @@ impl Lower {
 
     pub(crate) fn lower_match_pattern(&mut self, p: &ast::MatchPattern) -> HirMatchPattern {
         match p {
+            ast::MatchPattern::Wildcard => HirMatchPattern::Wildcard,
             ast::MatchPattern::Literal(e) => HirMatchPattern::Literal(Box::new(self.lower_expr(e))),
             ast::MatchPattern::Condition(e) => {
                 HirMatchPattern::Condition(Box::new(self.lower_expr(e)))
             }
-            ast::MatchPattern::Wildcard => HirMatchPattern::Wildcard,
             ast::MatchPattern::EnumVariant { enum_name, variant } => HirMatchPattern::EnumVariant {
                 enum_name: enum_name.clone(),
                 variant: variant.clone(),
@@ -123,7 +136,6 @@ impl Lower {
             }
         }
     }
-
     pub(crate) fn lower_match_pattern_typed(
         &mut self,
         p: &ast::MatchPattern,
@@ -210,7 +222,11 @@ impl Lower {
         HirMatchPattern::Condition(Box::new(result))
     }
 
-    pub(crate) fn resolve_type_expr(&mut self, ty: &TypeExpr, registry: &mut TypeRegistry) -> TypeId {
+    pub(crate) fn resolve_type_expr(
+        &mut self,
+        ty: &TypeExpr,
+        registry: &mut TypeRegistry,
+    ) -> TypeId {
         match &ty.kind {
             doo_frontend::ast::TypeExprKind::Named(name) => {
                 // Check if this name is a registered type parameter first.
@@ -255,7 +271,12 @@ impl Lower {
                     .map(|p| self.resolve_type_expr(p, registry))
                     .collect();
                 let returns_id = self.resolve_type_expr(returns, registry);
-                registry.register_function(params_ids, returns_id)
+                registry.register_function(FunctionSig {
+                    params: params_ids,
+                    return_type: returns_id,
+                    error_type: None,
+                    is_closure: false,
+                })
             }
             doo_frontend::ast::TypeExprKind::Range(_inner) => registry.declare_named("Range"),
             doo_frontend::ast::TypeExprKind::Any => builtin::ANY,
@@ -266,7 +287,11 @@ impl Lower {
 
     /// Determine the common element type for an array literal.
     /// Handles Spread elements by extracting the element type from the spread source.
-    pub(crate) fn common_array_elem_type(&self, elements: &[HirExpr], registry: &TypeRegistry) -> TypeId {
+    pub(crate) fn common_array_elem_type(
+        &self,
+        elements: &[HirExpr],
+        registry: &TypeRegistry,
+    ) -> TypeId {
         let mut current: Option<TypeId> = None;
         for e in elements {
             // For Spread elements, extract the element type from the inner array

@@ -369,7 +369,7 @@ fn strip_fields_recursive(value: &mut serde_json::Value, fields_to_exclude: &[St
                 .filter(|key| {
                     fields_to_exclude
                         .iter()
-                        .any(|excl| crate::metadata::field_names_match(key, excl))
+                        .any(|excl| crate::framework::metadata::field_names_match(key, excl))
                 })
                 .cloned()
                 .collect();

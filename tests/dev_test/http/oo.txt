@@ -1,0 +1,1288 @@
+This file is a merged representation of a subset of the codebase, containing specifically included files, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of a subset of the repository's contents that is considered the most important context.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Only files matching these patterns are included: **/*.doo
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+middleware_router/
+  01_cors_default_chain.doo
+  02_cors_custom_nonchain.doo
+  03_ratelimit_default_nonchain.doo
+  04_ratelimit_custom_chain.doo
+  05_cors_default_nonchain.doo
+  06_cors_custom_chain.doo
+  07_ratelimit_default_chain.doo
+  08_ratelimit_custom_nonchain.doo
+1_router_not_found.doo
+10_middleware_route_auth.doo
+11_middleware_groups_auth.doo
+12_middlware_chaining.doo
+13_field_decorators_test.doo
+14_logger_test.doo
+15_oauth_test.doo
+2_request_parsing_error.doo
+3_struct_type_mismatch.doo
+4_router_decorator_error.doo
+5_path_params.doo
+6_query_params.doo
+7_auto_json.doo
+8_jwt_middleware_test.doo
+9_route_group.doo
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="middleware_router/01_cors_default_chain.doo">
+import std::Http::{Server};
+
+fn Ping() -> Str {
+    return "ok";
+}
+
+fn main() {
+    let app = Server.new(":3111")
+        .cors();
+
+    app.get("/ping", Ping);
+
+    app.start();
+}
+</file>
+
+<file path="middleware_router/02_cors_custom_nonchain.doo">
+import std::Http::{Server};
+
+fn Ping() -> Str {
+    return "Ok";
+}
+
+fn main() {
+    let app = Server.new(":3112");
+
+    app.cors({
+        origins: ["https://allowed.com"],
+        methods: ["GET"],
+        headers: ["Content-Type"],
+        credentials: true,
+    });
+
+    app.get("/ping", Ping);
+
+    app.start();
+}
+</file>
+
+<file path="middleware_router/03_ratelimit_default_nonchain.doo">
+import std::Http::{Server};
+
+fn Ping() -> Str {
+    return "ok";
+}
+
+fn main() {
+    let app = Server.new(":3113");
+
+    app.ratelimit();
+
+    app.get("/ping", Ping);
+
+    app.start();
+}
+</file>
+
+<file path="middleware_router/04_ratelimit_custom_chain.doo">
+import std::Http::{Server};
+
+fn Ping() -> Str {
+   return "ok";
+}
+
+fn main() {
+    let app = Server.new(":3114")
+        .ratelimit({
+            max: 2,
+            window: 30.seconds,
+            per: "ip",
+        });
+
+    app.get("/ping", Ping);
+
+    app.start();
+}
+</file>
+
+<file path="middleware_router/05_cors_default_nonchain.doo">
+import std::Http::{Server};
+
+fn Ping() -> Str {
+    return "ok";
+}
+
+fn main() {
+    let app = Server.new(":3115");
+
+    app.cors();
+
+    app.get("/ping", Ping);
+
+    app.start();
+}
+</file>
+
+<file path="middleware_router/06_cors_custom_chain.doo">
+import std::Http::{Server};
+
+fn Ping() -> Str {
+    return "ok";
+}
+
+fn main() {
+    let app = Server.new(":3116")
+        .cors({
+            origins: ["https://allowed.com"],
+            methods: ["GET", "POST"],
+            headers: ["Content-Type"],
+            credentials: true
+        });
+
+    app.get("/ping", Ping);
+
+    app.start();
+}
+</file>
+
+<file path="middleware_router/07_ratelimit_default_chain.doo">
+import std::Http::{Server};
+
+fn Ping() -> Str {
+    return "ok";
+}
+
+fn main() {
+    let app = Server.new(":3117")
+        .ratelimit();
+
+    app.get("/ping", Ping);
+
+    app.start();
+}
+</file>
+
+<file path="middleware_router/08_ratelimit_custom_nonchain.doo">
+import std::Http::{Server};
+
+fn Ping() -> Str {
+    return "ok";
+}
+
+fn main() {
+    let app = Server.new(":3118");
+
+    app.ratelimit({
+        max: 2,
+        window: 30.seconds,
+        per: "ip",
+    });
+
+    app.get("/ping", Ping);
+
+    app.start();
+}
+</file>
+
+<file path="1_router_not_found.doo">
+import std::Http::Server;
+
+fn getUserHandler() -> Str {
+    return "User found!";
+}
+
+fn main() {
+    let app = Server::new(":3101").logger();
+
+    app.get("/users", getUserHandler);
+
+    app.start();
+}
+</file>
+
+<file path="10_middleware_route_auth.doo">
+import std::Http::{Server, Request, Response, Next};
+
+enum AuthError {
+    Unauthorized,
+    Forbidden,
+}
+
+struct ApiResponse {
+    Message: Str,
+    UserId: Int,
+}
+
+fn AuthMiddleware(req: Request, next: Next) -> Response ! AuthError {
+    print("🔍 AuthMiddleware: START");
+    let token = req.header("Authorization");
+    print("🔍 AuthMiddleware: Got token:", token);
+
+    if token == "" {
+        print("❌ AuthMiddleware: No token provided - returning Unauthorized");
+        return Err AuthError::Unauthorized;
+    }
+
+    if token != "Bearer valid-token" {
+        print("❌ AuthMiddleware: Invalid token - returning Unauthorized");
+        return Err AuthError::Unauthorized;
+    }
+
+    print("✓ AuthMiddleware: Token valid, calling next...");
+    let response = next.call();
+    print("✓ AuthMiddleware: Got response from next, returning Ok");
+    return Ok response;
+}
+
+fn AdminMiddleware(req: Request, next: Next) -> Response ! AuthError {
+    print("🔍 AdminMiddleware: START");
+    let role = req.header("X-Role");
+    print("🔍 AdminMiddleware: Got role:", role);
+
+    if role != "admin" {
+        print("❌ AdminMiddleware: Not admin role - returning Forbidden");
+        return Err AuthError::Forbidden;
+    }
+
+    print("✓ AdminMiddleware: Admin role confirmed, calling next...");
+    let response = next.call();
+    print("✓ AdminMiddleware: Got response from next, returning Ok");
+    return Ok response;
+}
+
+fn LogMiddleware(req: Request, next: Next) -> Response {
+    print("→ " + req.Method + " " + req.Path);
+    let res = next.call();
+    print("← Status: " + res.Status);
+    return res;
+}
+
+fn GetPublic() -> ApiResponse {
+    print("📍 Handler: GetPublic");
+    return ApiResponse {
+        Message: "Public data",
+        UserId: 0,
+    };
+}
+
+fn GetProfile() -> ApiResponse {
+    print("📍 Handler: GetProfile");
+    return ApiResponse {
+        Message: "User profile",
+        UserId: 123,
+    };
+}
+
+fn GetAdmin() -> ApiResponse {
+    print("📍 Handler: GetAdmin");
+    return ApiResponse {
+        Message: "Admin data",
+        UserId: 1,
+    };
+}
+
+fn main() {
+    let app = Server::new(":3111");
+
+    app.use(LogMiddleware);
+    app.get("/public", GetPublic);
+    app.get("/profile", AuthMiddleware, GetProfile);
+    app.get("/admin", AuthMiddleware, AdminMiddleware, GetAdmin);
+
+    app.start();
+}
+</file>
+
+<file path="11_middleware_groups_auth.doo">
+import std::Http::{Server, Request, Response, Next};
+
+enum AuthError {
+    Unauthorized,
+    Forbidden,
+}
+
+struct ApiResponse {
+    Message: Str,
+    UserId: Int,
+}
+
+struct StatusResponse {
+    Status: Str,
+}
+
+fn AuthMiddleware(req: Request, next: Next) -> Response ! AuthError {
+    let token = req.header("Authorization");
+
+    if token == "" {
+        print("❌ AuthMiddleware: No token provided");
+        return Err AuthError::Unauthorized;
+    }
+
+    if token != "Bearer valid-token" {
+        print("❌ AuthMiddleware: Invalid token");
+        return Err AuthError::Unauthorized;
+    }
+
+    print("✓ AuthMiddleware: Token valid, continuing...");
+    Ok next.call();
+}
+
+fn AdminMiddleware(req: Request, next: Next) -> Response ! AuthError {
+    let role = req.header("X-Role");
+
+    if role != "admin" {
+        print("❌ AdminMiddleware: Not admin role");
+        return Err AuthError::Forbidden;
+    }
+
+    print("✓ AdminMiddleware: Admin role confirmed");
+    Ok next.call();
+}
+
+fn ApiLogMiddleware(req: Request, next: Next) -> Response {
+    print("→ API: " + req.Method + " " + req.Path);
+    let res = next.call();
+    print("← API: Response returned");
+    return res;
+}
+
+fn AdminLogMiddleware(req: Request, next: Next) -> Response {
+    print("→ ADMIN: " + req.Method + " " + req.Path);
+    let res = next.call();
+    print("← ADMIN: Response returned");
+    return res;
+}
+
+fn GlobalLogMiddleware(req: Request, next: Next) -> Response {
+    print("→ GLOBAL: " + req.Method + " " + req.Path);
+    let res = next.call();
+    print("← GLOBAL: Response returned");
+    return res;
+}
+
+fn GetPublicStatus() -> StatusResponse {
+    print("📍 Handler: GetPublicStatus");
+    return StatusResponse {
+        Status: "ok",
+    };
+}
+
+fn GetPublicHealth() -> StatusResponse {
+    print("📍 Handler: GetPublicHealth");
+    return StatusResponse {
+        Status: "healthy",
+    };
+}
+
+fn GetApiProfile() -> ApiResponse {
+    print("📍 Handler: GetApiProfile");
+    return ApiResponse {
+        Message: "User profile",
+        UserId: 123,
+    };
+}
+
+fn PostApiUsers() -> ApiResponse {
+    print("📍 Handler: PostApiUsers");
+    return ApiResponse {
+        Message: "User created",
+        UserId: 456,
+    };
+}
+
+fn GetApiPosts() -> ApiResponse {
+    print("📍 Handler: GetApiPosts");
+    return ApiResponse {
+        Message: "All posts",
+        UserId: 123,
+    };
+}
+
+fn GetAdminDashboard() -> ApiResponse {
+    print("📍 Handler: GetAdminDashboard");
+    return ApiResponse {
+        Message: "Admin dashboard",
+        UserId: 1,
+    };
+}
+
+fn GetAdminUsers() -> ApiResponse {
+    print("📍 Handler: GetAdminUsers");
+    return ApiResponse {
+        Message: "All users",
+        UserId: 1,
+    };
+}
+
+fn DeleteAdminUser(id: Int) -> StatusResponse {
+    print("📍 Handler: DeleteAdminUser - ID: " + id);
+    return StatusResponse {
+        Status: "deleted",
+    };
+}
+
+fn main() {
+    let app = Server::new(":3112");
+
+    app.use(GlobalLogMiddleware);
+
+    app.get("/status", GetPublicStatus);
+    app.get("/health", GetPublicHealth);
+
+    app.group("/api", AuthMiddleware, ApiLogMiddleware, {
+        get("/profile", GetApiProfile),
+        post("/users", PostApiUsers),
+        get("/posts", GetApiPosts),
+    });
+
+    app.group("/admin", AuthMiddleware, AdminMiddleware, AdminLogMiddleware, {
+        get("/dashboard", GetAdminDashboard),
+        get("/users", GetAdminUsers),
+        delete("/users/:id", DeleteAdminUser),
+    });
+
+
+    app.start();
+}
+</file>
+
+<file path="12_middlware_chaining.doo">
+import std::Http::{Server, Request, Response, Next};
+
+enum AuthError {
+    Unauthorized,
+    Forbidden,
+}
+
+struct ApiResponse {
+    Message: Str,
+    Value: Int,
+}
+
+fn LogMiddleware(req: Request, next: Next) -> Response {
+    print("reqdata: " + req.Method + " " + req.Path);
+    let res = next.call();
+    print("← Status: " + res.Status);
+    return res;
+}
+
+fn TimingMiddleware(req: Request, next: Next) -> Response {
+    print("⏱ Start timing");
+    let res = next.call();
+    print("⏱ End timing");
+    return res;
+}
+
+fn CorsMiddleware(req: Request, next: Next) -> Response {
+    print("✓ CORS middleware");
+    let res = next.call();
+    return res;
+}
+
+fn AuthMiddleware(req: Request, next: Next) -> Response ! AuthError {
+    let token = req.header("Authorization");
+
+    if token == "" {
+        print("❌ Auth failed: no token");
+        return Err AuthError::Unauthorized;
+    }
+
+    if token != "Bearer valid-token" {
+        print("❌ Auth failed: invalid token");
+        return Err AuthError::Unauthorized;
+    }
+
+    print("✓ Auth passed");
+    Ok next.call();
+}
+
+fn GetStatus() -> ApiResponse {
+    print("📍 Handler: GetStatus");
+    return ApiResponse {
+        Message: "API is running",
+        Value: 100,
+    };
+}
+
+fn GetProtected() -> ApiResponse {
+    print("📍 Handler: GetProtected");
+    return ApiResponse {
+        Message: "Protected resource",
+        Value: 200,
+    };
+}
+
+fn main() {
+    let app = Server::new(":3109")
+        .use(LogMiddleware, TimingMiddleware, CorsMiddleware);
+
+    app.get("/status", GetStatus);
+    app.get("/protected", AuthMiddleware, GetProtected);
+
+    app.start();
+}
+</file>
+
+<file path="13_field_decorators_test.doo">
+// 13_field_decorators_test.doo
+// Test @writeOnly, @readOnly, @internal decorators with HTTP and Database
+
+import std::Http::Server;
+import std::Database;
+
+// User model with field visibility decorators
+struct User {
+    id: Int @primary @auto,
+    Email: Str @email @unique,
+    Password: Str @hash @writeOnly,          // In request, NOT in response
+    Name: Str,
+    Credits: Int @readOnly @default(100),     // NOT in request, in response
+    Role: Str @default("user"),
+    InternalId: Str @internal,               // NOT in request, NOT in response (backend only)
+}
+
+// Response struct for user profile
+struct UserProfile {
+    id: Int,
+    email: Str,
+    name: Str,
+    credits: Int,
+    role: Str,
+}
+
+// Convert User to UserProfile (manual mapping for response)
+fn ToProfile(user: User) -> UserProfile {
+    return UserProfile {
+        id: user.id,
+        email: user.Email,
+        name: user.Name,
+        credits: user.Credits,
+        role: user.Role,
+    };
+}
+
+// Test handler: Get all users
+fn GetUsers() -> [UserProfile] ! DatabaseError {
+    let db = Database::get()?;
+    let users: [User] = db.raw("SELECT * FROM users")?;
+    let mut profiles: [UserProfile] = [];
+
+    for user in users {
+        profiles.push(ToProfile(user));
+    }
+
+    Ok profiles;
+}
+
+// Test handler: Get single user
+fn GetUser(id: Int) -> UserProfile ! DatabaseError {
+    let db = Database::get()?;
+
+    let user: User = db.rawWithParams("SELECT * FROM users WHERE id = $1", id)?;
+    Ok ToProfile(user);
+}
+static DB: Database;
+fn main() {
+    DB = Database::Postgres()?;
+    let app = Server::new(":3113");
+
+    // Auth endpoints - will auto-handle @writeOnly password
+    app.auth("/signup", "/login", User, DB);
+
+    // CRUD - will respect decorators
+    app.crud("/users", User, DB);
+
+    // Custom endpoints
+    app.get("/users-all", GetUsers);
+
+    app.start();
+}
+</file>
+
+<file path="14_logger_test.doo">
+import std::Http::{Server, Request, Response};
+
+struct OkResponse {
+    ok: Bool,
+    path: Str,
+}
+
+struct StatusMsg {
+    message: Str,
+}
+
+// --- Info category: 2xx responses ---
+fn GetOk(req: Request) -> OkResponse {
+    return OkResponse { ok: true, path: req.Path };
+}
+
+fn PostCreate(req: Request) -> StatusMsg {
+    return StatusMsg { message: "created" };
+}
+
+// --- Error category: 5xx responses ---
+fn Crash(req: Request) -> ! Str {
+    Err "intentional server error";
+}
+
+
+fn main() {
+    // Logger default: all levels (Info, Warn, Error) — chained with cors
+    let app = Server.new(":3120")
+        .cors()
+        .logger();
+
+    app.get("/ok", GetOk);
+    app.post("/create", PostCreate);
+    app.get("/crash", Crash);
+
+    app.start();
+}
+</file>
+
+<file path="15_oauth_test.doo">
+import std::Http::{Server, Request, Response};
+import std::Auth::{Jwt};
+
+struct MessageResponse {
+    message: Str,
+}
+
+struct ProfileResponse {
+    id: Int,
+    email: Str,
+    name: Str,
+}
+
+fn GetPublicInfo() -> MessageResponse {
+    print("📍 Handler: GetPublicInfo (public, no auth)");
+    return MessageResponse {
+        message: "Public information",
+    };
+}
+
+fn GetProfile(req: Request) -> ProfileResponse {
+    print("📍 Handler: GetProfile (JWT protected)");
+    return ProfileResponse {
+        id: 1,
+        email: "user@example.com",
+        name: "OAuth User",
+    };
+}
+
+fn GetStatus() -> MessageResponse {
+    print("📍 Handler: GetStatus (public)");
+    return MessageResponse {
+        message: "Server is running with OAuth",
+    };
+}
+
+fn main() {
+    let app = Server::new(":3120");
+
+    // Setup OAuth login with Google and GitHub providers
+    // This auto-registers routes:
+    //   GET /auth/google          → redirect to Google OAuth
+    //   GET /auth/google/callback → exchange code → JWT session
+    //   GET /auth/github          → redirect to GitHub OAuth
+    //   GET /auth/github/callback → exchange code → JWT session
+    app.oauth({Providers: ["Google", "GitHub"]});
+
+    // Public routes (no auth needed)
+    app.get("/public", GetPublicInfo);
+    app.get("/status", GetStatus);
+
+    // JWT-protected route (works with OAuth sessions too)
+    app.get("/profile", Jwt(), GetProfile);
+
+    app.start();
+}
+</file>
+
+<file path="2_request_parsing_error.doo">
+import std::Http::{Server};
+
+struct SignupInput {
+    email: Str,
+    password: Str,
+}
+
+struct UpdateInput {
+    name: Str,
+    age: Int,
+}
+
+struct PrimitivesInput {
+    s: Str,
+    i: Int,
+    f: Float,
+    b: Bool,
+}
+
+struct ArrayInput {
+    tags: [Str],
+    nums: [Int],
+}
+
+
+enum Role { User, Admin }
+
+struct EnumInput {
+    role: Role,
+    id: Int,
+}
+
+struct MapInput {
+    meta: {Str: Str},
+    flags: {Str: Bool},
+}
+
+struct InnerStruct {
+    x: Int,
+    y: Str,
+}
+
+struct NestedInput {
+    inner: InnerStruct,
+    list: [Int],
+}
+
+fn signupHandler(input: SignupInput) -> Str {
+    // return JSON.stringify({ ok: true, route: "signup", email: input.email });
+    return "signup response";
+}
+
+fn updateHandler(input: UpdateInput) -> Str {
+    // return JSON.stringify({ ok: true, route: "update", name: input.name, age: input.age });
+    return "update response";
+}
+
+fn primitivesHandler(input: PrimitivesInput) -> Str {
+    // return JSON.stringify({ ok: true, route: "primitives", value: input });
+    return "primitives response";
+}
+
+fn arrayHandler(input: ArrayInput) -> Str {
+    // return JSON.stringify({ ok: true, route: "array", tags: input.tags, nums: input.nums });
+    return "array response";
+}
+
+fn enumHandler(input: EnumInput) -> Str {
+    // return JSON.stringify({ ok: true, route: "enum", role: input.role, id: input.id });
+    return "enum response";
+}
+
+fn mapHandler(input: MapInput) -> Str {
+    // return JSON.stringify({ ok: true, route: "map", meta: input.meta, flags: input.flags });
+    return "map response";
+}
+
+fn pingHandler() -> Str {
+    // return JSON.stringify({ ok: true, route: "ping" });
+    return "ping response";
+}
+
+fn nestedHandler(input: NestedInput) -> Str {
+    return "nested response";
+}
+
+fn main() {
+    let app = Server::new(":3102");
+
+    app.post("/api/users/signup", signupHandler);
+    app.put("/api/users/update", updateHandler);
+
+    app.post("/api/test/primitives", primitivesHandler);
+    app.post("/api/test/arrays", arrayHandler);
+    app.post("/api/test/enum", enumHandler);
+    app.post("/api/test/map", mapHandler);
+    app.put("/api/test/nested", nestedHandler);
+
+    app.start();
+}
+</file>
+
+<file path="3_struct_type_mismatch.doo">
+import std::Http::{Server};
+
+struct Address {
+    city: Str,
+    zip: Int,
+}
+
+struct SignupInput {
+    email: Str,
+    age: Int,
+    active: Bool,
+    score: Float,
+
+    address: Address,
+
+    tagsStr: [Str],
+    tagsInt: [Int],
+    tagsBool: [Bool],
+    tagsFloat: [Float],
+}
+
+fn signupHandler(input: SignupInput) -> Str {
+    return "Signup OK: " + input.email;
+}
+
+fn getInfoHandler() -> SignupInput {
+    return SignupInput {
+        email: "test@example.com",
+        age: 25,
+        active: true,
+        score: 98.5,
+        address: Address {
+            city: "Test City",
+            zip: 12345,
+        },
+        tagsStr: ["tag1", "tag2"],
+        tagsInt: [1, 2, 3],
+        tagsBool: [true, false],
+        tagsFloat: [1.1, 2.2],
+    };
+}
+
+fn main() {
+    let app = Server::new(":3103");
+
+    app.post("/api/users/signup", signupHandler);
+    app.get("/api/users/info", getInfoHandler);
+
+    app.start();
+}
+</file>
+
+<file path="4_router_decorator_error.doo">
+import std::Http::Server;
+import std::Database;
+
+enum UserRole {
+    User,
+    Admin,
+    Moderator,
+}
+
+enum Status { Todo, InProgress, Done }
+enum Priority { Low, Medium, High }
+
+
+struct UserInput {
+    Email: Str @email,                       // Must be valid email
+    Age: Int @min(18),                       // Must be Int, >= 18
+    Score: Int @max(100),                    // Must be Int, <= 100
+    Username: Str @min(3) @max(50),          // Must be Str, length between 3 and 50
+    Rank: Int @min(1) @max(5),               // Must be Int, between 1 and 5
+    Role: UserRole,   // Must be one of these values
+    Name: Str,                               // String field
+}
+
+struct User {
+    id: Int @primary @auto,
+    email: Str @email @unique,
+    password: Str @hash @min(6),
+}
+
+struct Task {
+    id: Int @primary @auto,
+    title: Str @min(1) @max(200),
+    status: Status @default(Status::Todo),
+    priority: Priority @default(Priority::Medium),
+    userId: Int @foreign(User),
+}
+
+fn createUser(input: UserInput) -> UserInput {
+    return UserInput {
+        Email: input.Email,
+        Age: input.Age,
+        Score: input.Score,
+        Username: input.Username,
+        Rank: input.Rank,
+        Role: input.Role,
+        Name: input.Name
+    };
+}
+
+fn main() {
+    let db = Database::Postgres()?;
+    let app = Server::new(":3104");
+
+    app.auth("/signup", "/login", User, db);
+    app.post("/api/users/create", createUser);
+    app.crud("/tasks", Task, db);
+
+    app.start();
+}
+</file>
+
+<file path="5_path_params.doo">
+import std::Http::Server;
+
+struct IntPath { id: Int }
+struct StrPath { id: Str }
+struct BoolPath { id: Bool }
+struct FloatPath { id: Float }
+
+fn intHandler(p: IntPath) -> Str => "hello + ${p.id}";
+fn strHandler(p: StrPath) -> Str => "hello + ${p.id}";
+fn boolHandler(p: BoolPath) -> Str => "hello + ${p.id}";
+fn floatHandler(p: FloatPath) -> Str => "hello + ${p.id}";
+fn Crash(req: Request) -> ! Str {
+    Err "sadas";
+}
+
+fn main() {
+    // Custom logger: only Warn (4xx) and Error (5xx)
+    // Info (2xx) should NOT be logged
+    let app = Server::new(":3105")
+        .logger({ Level: "Warn, Error" });
+
+    app.get("/api/users/int/:id", intHandler);
+    app.get("/api/users/str/:id", strHandler);
+    app.get("/api/users/bool/:id", boolHandler);
+    app.get("/api/users/float/:id", floatHandler);
+     app.get("/crash", Crash);
+    app.start();
+}
+</file>
+
+<file path="6_query_params.doo">
+import std::Http::Server;
+
+struct IntParam { id: Int }
+struct StrParam { id: Str }
+struct BoolParam { id: Bool }
+struct FloatParam { id: Float }
+
+fn intHandler(p: IntParam) -> Str => "hello + ${p.id}";
+fn strHandler(p: StrParam) -> Str => "hello + ${p.id}";
+fn boolHandler(p: BoolParam) -> Str => "hello + ${p.id}";
+fn floatHandler(p: FloatParam) -> Str => "hello + ${p.id}";
+
+fn main() {
+    let app = Server::new(":3106");
+
+    app.get("/api/users/int", intHandler);
+    app.get("/api/users/str", strHandler);
+    app.get("/api/users/bool", boolHandler);
+    app.get("/api/users/float", floatHandler);
+
+    app.start();
+}
+</file>
+
+<file path="7_auto_json.doo">
+import std::Http::{Server};
+
+struct SearchQuery {
+    q: Str,
+    page: Int,
+}
+
+struct UserPath {
+    userId: Int,
+}
+
+struct UpdateProfileInput {
+    name: Str,
+    email: Str,
+}
+
+fn searchHandler(query: SearchQuery) -> Str {
+    return "Search for: " + query.q + ", page: " + query.page;
+}
+
+fn getUserHandler(path: UserPath) -> Str {
+    return "User ID: " + path.userId;
+}
+
+fn updateProfileHandler(path: UserPath, body: UpdateProfileInput) -> Str {
+    return "Updated user " + path.userId + " to name=" + body.name + ", email=" + body.email;
+}
+
+fn main() {
+    let app = Server::new(":3107");
+
+    app.get("/search", searchHandler); // Query params
+    app.get("/users/:userId", getUserHandler); // Path params
+    app.post("/users/:userId/profile", updateProfileHandler); // Path + body
+
+    app.start();
+}
+</file>
+
+<file path="8_jwt_middleware_test.doo">
+import std::Http::{Server, Request, Response};
+import std::Database::{Postgres};
+import std::Auth::{Jwt};
+
+struct User {
+    id: Int @primary @auto,
+    Email: Str @unique,
+    Password: Str @hash,
+    Name: Str,
+    Role: Str,
+}
+
+struct ProfileResponse {
+    id: Int,
+    email: Str,
+    name: Str,
+}
+
+struct MessageResponse {
+    message: Str,
+}
+
+fn GetProfile(req: Request) -> ProfileResponse {
+    print("📍 Handler: GetProfile (JWT protected)");
+    return ProfileResponse {
+        id: 1,
+        email: "user@example.com",
+        name: "John Doe",
+    };
+}
+
+fn PostUpdateProfile(req: Request) -> MessageResponse {
+    print("📍 Handler: PostUpdateProfile (JWT protected)");
+    return MessageResponse {
+        message: "Profile updated successfully",
+    };
+}
+
+fn GetApiProfile(req: Request) -> ProfileResponse {
+    print("📍 Handler: GetApiProfile (API group, JWT)");
+    return ProfileResponse {
+        id: 2,
+        email: "api@example.com",
+        name: "API User",
+    };
+}
+
+fn PostApiCreate(req: Request) -> MessageResponse {
+    print("📍 Handler: PostApiCreate (API group, JWT)");
+    return MessageResponse {
+        message: "Resource created",
+    };
+}
+
+fn GetApiList(req: Request) -> MessageResponse {
+    print("📍 Handler: GetApiList (API group, JWT)");
+    return MessageResponse {
+        message: "All resources retrieved",
+    };
+}
+
+fn GetPublicInfo() -> MessageResponse {
+    print("📍 Handler: GetPublicInfo (public, no JWT)");
+    return MessageResponse {
+        message: "Public information",
+    };
+}
+
+fn main() {
+    let db = Database::Postgres()?;
+
+    let app = Server::new(":3108");
+
+    app.auth("/signup", "/login", User, db);
+    app.get("/public", GetPublicInfo);
+    app.get("/profile", Jwt(), GetProfile);
+    app.post("/profile", Jwt(), PostUpdateProfile);
+    app.group("/api", Jwt(), {
+        get("/profile", GetApiProfile),
+        post("/create", PostApiCreate),
+        get("/list", GetApiList),
+    });
+
+    app.start();
+}
+</file>
+
+<file path="9_route_group.doo">
+import std::Http::{Server};
+
+struct UserResponse {
+    Id: Int,
+    Name: Str,
+}
+
+struct PostResponse {
+    Id: Int,
+    Title: Str,
+}
+
+struct StatusResponse {
+    Status: Str,
+    Version: Str,
+}
+
+fn GetPublicStatus() -> StatusResponse {
+    print("📍 Handler: GetPublicStatus");
+    return StatusResponse {
+        Status: "ok",
+        Version: "1.0.0",
+    };
+}
+
+fn GetPublicHealth() -> StatusResponse {
+    print("📍 Handler: GetPublicHealth");
+    return StatusResponse {
+        Status: "healthy",
+        Version: "1.0.0",
+    };
+}
+
+fn GetUserProfile() -> UserResponse {
+    print("📍 Handler: GetUserProfile");
+    return UserResponse {
+        Id: 1,
+        Name: "John Doe",
+    };
+}
+
+fn CreateUser() -> UserResponse {
+    print("📍 Handler: CreateUser");
+    return UserResponse {
+        Id: 2,
+        Name: "New User",
+    };
+}
+
+fn GetUser(id: Int) -> UserResponse {
+    print("📍 Handler: GetUser - ID: " + id);
+    return UserResponse {
+        Id: id,
+        Name: "User " + id,
+    };
+}
+
+fn DeleteUser(id: Int) -> StatusResponse {
+    print("📍 Handler: DeleteUser - ID: " + id);
+    return StatusResponse {
+        Status: "deleted",
+        Version: "1.0.0",
+    };
+}
+
+fn GetPosts() -> PostResponse {
+    print("📍 Handler: GetPosts");
+    return PostResponse {
+        Id: 0,
+        Title: "All Posts",
+    };
+}
+
+fn CreatePost() -> PostResponse {
+    print("📍 Handler: CreatePost");
+    return PostResponse {
+        Id: 1,
+        Title: "New Post",
+    };
+}
+
+fn GetPost(id: Int) -> PostResponse {
+    print("📍 Handler: GetPost - ID: " + id);
+    return PostResponse {
+        Id: id,
+        Title: "Post " + id,
+    };
+}
+
+fn DeletePost(id: Int) -> StatusResponse {
+    print("📍 Handler: DeletePost - ID: " + id);
+    return StatusResponse {
+        Status: "deleted",
+        Version: "1.0.0",
+    };
+}
+
+fn GetAdminDashboard() -> StatusResponse {
+    print("📍 Handler: GetAdminDashboard");
+    return StatusResponse {
+        Status: "admin dashboard",
+        Version: "1.0.0",
+    };
+}
+
+fn GetAdminUsers() -> UserResponse {
+    print("📍 Handler: GetAdminUsers");
+    return UserResponse {
+        Id: 0,
+        Name: "All Admin Users",
+    };
+}
+
+fn main() {
+    let app = Server::new(":3110");
+
+    app.get("/status", GetPublicStatus);
+    app.get("/health", GetPublicHealth);
+
+    app.group("/api", {
+        get("/profile", GetUserProfile),
+        post("/users", CreateUser),
+        get("/users/:id", GetUser),
+        delete("/users/:id", DeleteUser),
+        get("/posts", GetPosts),
+        post("/posts", CreatePost),
+        get("/posts/:id", GetPost),
+        delete("/posts/:id", DeletePost),
+    });
+
+    app.group("/admin", {
+        get("/dashboard", GetAdminDashboard),
+        get("/users", GetAdminUsers),
+    });
+
+    app.start();
+}
+</file>
+
+</files>

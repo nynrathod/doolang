@@ -6,8 +6,10 @@ use crate::context::CodegenContext;
 use doo_core::constants::ffi_names;
 use doo_mir::sym::resolve;
 use doo_mir::{MirConst, MirOperand};
+use inkwell::module::Linkage;
 use inkwell::types::BasicTypeEnum;
-use inkwell::values::{BasicValueEnum, PointerValue};
+use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
+
 /// Convert MirOperand to LLVM value.
 pub(crate) fn operand_to_value<'ctx>(
     ctx: &mut CodegenContext<'ctx>,
@@ -353,4 +355,107 @@ pub(crate) fn load_result_struct<'ctx>(
         // Not a Result - return None
         None
     }
+}
+
+/// Emit a panic call: prints the message and aborts execution.
+/// Calls doo_panic FFI if available, otherwise falls back to printf + exit.
+pub(crate) fn emit_panic<'ctx>(ctx: &mut CodegenContext<'ctx>, message: PointerValue<'ctx>) {
+    let ptr_type = ctx.ptr_type();
+    let i32_type = ctx.i32_type();
+
+    // Try doo_panic first
+    let panic_fn = ctx.module.get_function("doo_panic").unwrap_or_else(|| {
+        let fn_type = ctx.context.void_type().fn_type(&[ptr_type.into()], false);
+        ctx.module
+            .add_function("doo_panic", fn_type, Some(Linkage::External))
+    });
+
+    let _ = ctx
+        .builder
+        .build_call(panic_fn, &[message.into()], "doo_panic");
+
+    let _ = ctx.builder.build_unreachable();
+}
+
+/// Emit an assert: if condition is false, panic with the given message.
+pub(crate) fn emit_assert<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+    cond: inkwell::values::IntValue<'ctx>,
+    message: PointerValue<'ctx>,
+) {
+    let current_fn = match ctx.builder.get_insert_block().and_then(|b| b.get_parent()) {
+        Some(f) => f,
+        None => return,
+    };
+
+    let ok_block = ctx.context.append_basic_block(current_fn, "assert_ok");
+    let fail_block = ctx.context.append_basic_block(current_fn, "assert_fail");
+
+    let _ = ctx
+        .builder
+        .build_conditional_branch(cond, ok_block, fail_block);
+
+    ctx.builder.position_at_end(fail_block);
+    emit_panic(ctx, message);
+
+    ctx.builder.position_at_end(ok_block);
+}
+
+/// Get or declare the doo_alloc function: ptr doo_alloc(i64 size)
+pub(crate) fn get_or_declare_doo_alloc<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+) -> FunctionValue<'ctx> {
+    if let Some(f) = ctx.module.get_function(ffi_names::DOO_ALLOC) {
+        return f;
+    }
+    let ptr_ty = ctx.ptr_type();
+    let i64_ty = ctx.i64_type();
+    let fn_type = ptr_ty.fn_type(&[i64_ty.into()], false);
+    ctx.module
+        .add_function(ffi_names::DOO_ALLOC, fn_type, Some(Linkage::External))
+}
+
+/// Get or declare the doo_free function: void doo_free(ptr)
+pub(crate) fn get_or_declare_doo_free<'ctx>(ctx: &CodegenContext<'ctx>) -> FunctionValue<'ctx> {
+    if let Some(f) = ctx.module.get_function(ffi_names::DOO_FREE) {
+        return f;
+    }
+    let ptr_ty = ctx.ptr_type();
+    let fn_type = ctx.context.void_type().fn_type(&[ptr_ty.into()], false);
+    ctx.module
+        .add_function(ffi_names::DOO_FREE, fn_type, Some(Linkage::External))
+}
+
+/// Get or declare the doo_realloc function: ptr doo_realloc(ptr, i64)
+pub(crate) fn get_or_declare_doo_realloc<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+) -> FunctionValue<'ctx> {
+    if let Some(f) = ctx.module.get_function(ffi_names::DOO_REALLOC) {
+        return f;
+    }
+    let ptr_ty = ctx.ptr_type();
+    let i64_ty = ctx.i64_type();
+    let fn_type = ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false);
+    ctx.module
+        .add_function(ffi_names::DOO_REALLOC, fn_type, Some(Linkage::External))
+}
+
+/// Get or declare doo_flush: void doo_flush()
+pub(crate) fn get_or_declare_doo_flush<'ctx>(
+    ctx: &mut CodegenContext<'ctx>,
+) -> FunctionValue<'ctx> {
+    if let Some(f) = ctx.module.get_function(ffi_names::DOO_FLUSH) {
+        return f;
+    }
+    let void_type = ctx.context.void_type();
+    let fn_type = void_type.fn_type(&[], false);
+    ctx.module
+        .add_function(ffi_names::DOO_FLUSH, fn_type, Some(Linkage::External))
+}
+
+/// Emit a flush_stdout call at the current builder position.
+/// Call this at the end of main() before return.
+pub(crate) fn emit_flush_stdout<'ctx>(ctx: &mut CodegenContext<'ctx>) {
+    let flush_fn = get_or_declare_doo_flush(ctx);
+    let _ = ctx.builder.build_call(flush_fn, &[], "flush_stdout");
 }

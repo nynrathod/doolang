@@ -5,6 +5,7 @@
 use super::InstructionHandler;
 use crate::context::CodegenContext;
 use doo_core::types::builtin;
+use doo_core::TypeKind;
 use doo_mir::sym::resolve;
 use doo_mir::{MirConst, MirInstr, MirInstrKind, MirOperand};
 use inkwell::values::BasicValueEnum;
@@ -32,7 +33,41 @@ impl<'ctx> InstructionHandler<'ctx> for CastHandler {
                 let target_type_id = doo_core::types::TypeId::from(*to_type);
 
                 let result: Option<BasicValueEnum<'ctx>> = if target_type_id == builtin::STR {
-                    emit_string_from_value(ctx, source_val)
+                    // Check if source is actually a Str — only then pass pointer through.
+                    // Non-string pointers (Enum, Struct, Array, Map) must NOT be passed
+                    // through as C strings — they'd print "<null>" or garbage.
+                    let source_type = match value {
+                        MirOperand::Local(name) | MirOperand::Temp(name) => {
+                            ctx.get_variable_type(&resolve(*name))
+                        }
+                        _ => None,
+                    };
+
+                    let is_str = source_type.map_or(false, |tid| {
+                        ctx.get_type_kind(tid)
+                            .map_or(false, |k| matches!(k, TypeKind::Str))
+                    });
+
+                    if is_str {
+                        // String pointer → pass through directly
+                        Some(source_val)
+                    } else if source_val.is_int_value() {
+                        // Int/Bool → convert to string
+                        emit_string_from_value(ctx, source_val)
+                    } else if source_val.is_float_value() {
+                        // Float → convert to string
+                        emit_string_from_value(ctx, source_val)
+                    } else if source_val.is_pointer_value() {
+                        // Non-string pointer (Enum, Struct, Array, Map)
+                        // Format as type name instead of passing raw pointer through.
+                        let type_name = source_type
+                            .and_then(|tid| ctx.get_type_kind(tid))
+                            .map(|k| k.kind_name().to_string())
+                            .unwrap_or_else(|| "<value>".to_string());
+                        Some(ctx.const_string(&type_name).into())
+                    } else {
+                        emit_string_from_value(ctx, source_val)
+                    }
                 } else if source_val.is_pointer_value() {
                     // String (or Ptr) -> Int/Float via FFI
                     // Assuming source is String for now if it's a pointer and not array/map/etc
@@ -43,7 +78,7 @@ impl<'ctx> InstructionHandler<'ctx> for CastHandler {
                     if target_type_id == builtin::INT {
                         let cast_fn = ctx
                             .module
-                            .get_function(ffi_names::DOO_CAST_STR_TO_INT)
+                            .get_function("doo_cast_str_to_int")
                             .unwrap_or_else(|| {
                                 let i64_ty = ctx.context.i64_type();
                                 let ptr_ty = ctx
@@ -51,8 +86,7 @@ impl<'ctx> InstructionHandler<'ctx> for CastHandler {
                                     .i8_type()
                                     .ptr_type(inkwell::AddressSpace::default());
                                 let fn_ty = i64_ty.fn_type(&[ptr_ty.into()], false);
-                                ctx.module
-                                    .add_function(ffi_names::DOO_CAST_STR_TO_INT, fn_ty, None)
+                                ctx.module.add_function("doo_cast_str_to_int", fn_ty, None)
                             });
 
                         Some(
@@ -67,7 +101,7 @@ impl<'ctx> InstructionHandler<'ctx> for CastHandler {
                         // Use centralized FFI function for str->float conversion
                         let cast_fn = ctx
                             .module
-                            .get_function(ffi_names::DOO_CAST_STR_TO_FLOAT)
+                            .get_function("doo_cast_str_to_float")
                             .unwrap_or_else(|| {
                                 let f64_ty = ctx.context.f64_type();
                                 let ptr_ty = ctx
@@ -75,11 +109,8 @@ impl<'ctx> InstructionHandler<'ctx> for CastHandler {
                                     .i8_type()
                                     .ptr_type(inkwell::AddressSpace::default());
                                 let fn_ty = f64_ty.fn_type(&[ptr_ty.into()], false);
-                                ctx.module.add_function(
-                                    ffi_names::DOO_CAST_STR_TO_FLOAT,
-                                    fn_ty,
-                                    None,
-                                )
+                                ctx.module
+                                    .add_function("doo_cast_str_to_float", fn_ty, None)
                             });
                         Some(
                             ctx.builder
@@ -271,120 +302,115 @@ fn emit_string_from_value<'ctx>(
 ) -> Option<BasicValueEnum<'ctx>> {
     use doo_core::constants::ffi_names;
 
-    // Check if it's already a string (pointer)
-    // Note: This is weak checking, assumes pointers cast to str are already strings
+    // Str (pointer) → pass through — already a string
     if val.is_pointer_value() {
         return Some(val);
     }
 
-    // For floats, use doo_format_float (ryu) instead of snprintf("%f")
-    if val.is_float_value() {
-        let ptr_ty = ctx
-            .context
-            .i8_type()
-            .ptr_type(inkwell::AddressSpace::default());
-        let f64_ty = ctx.f64_type();
-        let format_fn = ctx
+    // Int → call doo_int_to_str (Rust)
+    if val.is_int_value() {
+        let int_val = val.into_int_value();
+        let bit_width = int_val.get_type().get_bit_width();
+
+        // Bool (i1) → call doo_bool_to_str
+        if bit_width == 1 {
+            let bool_fn = ctx
+                .module
+                .get_function(ffi_names::DOO_BOOL_TO_STR)
+                .unwrap_or_else(|| {
+                    let ptr_type = ctx.ptr_type();
+                    let i32_type = ctx.i32_type();
+                    let fn_type = ptr_type.fn_type(&[i32_type.into()], false);
+                    ctx.module
+                        .add_function(ffi_names::DOO_BOOL_TO_STR, fn_type, None)
+                });
+            // Extend i1 to i32 for the FFI call
+            let extended = ctx
+                .builder
+                .build_int_z_extend(int_val, ctx.i32_type(), "bool_ext")
+                .ok()?;
+            let result = ctx
+                .builder
+                .build_call(bool_fn, &[extended.into()], "bool_to_str")
+                .ok()?
+                .try_as_basic_value()
+                .basic()?;
+            return Some(result);
+        }
+
+        // Int → call doo_int_to_str
+        let int_fn = ctx
             .module
-            .get_function(ffi_names::DOO_FORMAT_FLOAT)
+            .get_function(ffi_names::DOO_INT_TO_STR)
             .unwrap_or_else(|| {
-                let fn_ty = ptr_ty.fn_type(&[f64_ty.into()], false);
+                let ptr_type = ctx.ptr_type();
+                let i64_type = ctx.i64_type();
+                let fn_type = ptr_type.fn_type(&[i64_type.into()], false);
                 ctx.module
-                    .add_function(ffi_names::DOO_FORMAT_FLOAT, fn_ty, None)
+                    .add_function(ffi_names::DOO_INT_TO_STR, fn_type, None)
             });
+        // Ensure int is i64
+        let int_64 = if bit_width < 64 {
+            ctx.builder
+                .build_int_z_extend(int_val, ctx.i64_type(), "int_ext")
+                .ok()?
+        } else {
+            int_val
+        };
         let result = ctx
             .builder
-            .build_call(format_fn, &[val.into()], "fmt_float")
+            .build_call(int_fn, &[int_64.into()], "int_to_str")
             .ok()?
             .try_as_basic_value()
             .basic()?;
         return Some(result);
     }
 
-    let snprintf = ctx
+    // Float → call doo_float_to_str (Rust)
+    if val.is_float_value() {
+        let float_val = val.into_float_value();
+        // Ensure it's f64
+        let f64_val = if float_val.get_type() != ctx.f64_type() {
+            ctx.builder
+                .build_float_ext(float_val, ctx.f64_type(), "fext")
+                .ok()?
+        } else {
+            float_val
+        };
+        let float_fn = ctx
+            .module
+            .get_function(ffi_names::DOO_FLOAT_TO_STR)
+            .unwrap_or_else(|| {
+                let ptr_type = ctx.ptr_type();
+                let f64_type = ctx.f64_type();
+                let fn_type = ptr_type.fn_type(&[f64_type.into()], false);
+                ctx.module
+                    .add_function(ffi_names::DOO_FLOAT_TO_STR, fn_type, None)
+            });
+        let result = ctx
+            .builder
+            .build_call(float_fn, &[f64_val.into()], "float_to_str")
+            .ok()?
+            .try_as_basic_value()
+            .basic()?;
+        return Some(result);
+    }
+
+    // Null/nil → call doo_null_to_str
+    let null_fn = ctx
         .module
-        .get_function(ffi_names::SNPRINTF)
+        .get_function(ffi_names::DOO_NULL_TO_STR)
         .unwrap_or_else(|| {
-            let i32_ty = ctx.context.i32_type();
-            let i64_ty = ctx.context.i64_type();
-            let ptr_ty = ctx
-                .context
-                .i8_type()
-                .ptr_type(inkwell::AddressSpace::default());
-            let fn_ty = i32_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], true);
-            ctx.module.add_function(ffi_names::SNPRINTF, fn_ty, None)
+            let ptr_type = ctx.ptr_type();
+            let fn_type = ptr_type.fn_type(&[], false);
+            ctx.module
+                .add_function(ffi_names::DOO_NULL_TO_STR, fn_type, None)
         });
-
-    let malloc = ctx
-        .module
-        .get_function(ffi_names::MALLOC)
-        .unwrap_or_else(|| {
-            let i64_ty = ctx.context.i64_type();
-            let ptr_ty = ctx
-                .context
-                .i8_type()
-                .ptr_type(inkwell::AddressSpace::default());
-            let fn_ty = ptr_ty.fn_type(&[i64_ty.into()], false);
-            ctx.module.add_function(ffi_names::MALLOC, fn_ty, None)
-        });
-
-    let (fmt_str, args) = if val.is_int_value() {
-        ("%lld", vec![val])
-    } else if val.is_float_value() {
-        ("%f", vec![val])
-    } else {
-        // Bool or other? Bool is often i1 which is int value.
-        // If TypeId check was here we could do "true"/"false".
-        // But here we rely on LLVM value type.
-        // Assuming int format for now.
-        ("%lld", vec![val])
-    };
-
-    let fmt = ctx.const_string(fmt_str);
-    let null_buf = ctx
-        .context
-        .i8_type()
-        .ptr_type(inkwell::AddressSpace::default())
-        .const_null();
-    let zero_len = ctx.context.i64_type().const_zero();
-
-    // Call snprintf(null, 0, fmt, val) to get length
-    use inkwell::values::BasicMetadataValueEnum;
-    let mut call_args: Vec<BasicMetadataValueEnum> =
-        vec![null_buf.into(), zero_len.into(), fmt.into()];
-    call_args.extend(args.iter().map(|v| BasicMetadataValueEnum::from(*v)));
-
-    let len_i32 = ctx
+    let result = ctx
         .builder
-        .build_call(snprintf, &call_args, "len")
+        .build_call(null_fn, &[], "null_to_str")
         .ok()?
         .try_as_basic_value()
-        .basic()?
-        .into_int_value();
-
-    let len_i64 = ctx
-        .builder
-        .build_int_z_extend(len_i32, ctx.i64_type(), "len64")
-        .ok()?;
-    let size = ctx
-        .builder
-        .build_int_add(len_i64, ctx.i64_type().const_int(1, false), "size")
-        .ok()?;
-
-    // Malloc
-    let buf = ctx
-        .builder
-        .build_call(malloc, &[size.into()], "buf")
-        .ok()?
-        .try_as_basic_value()
-        .basic()?
-        .into_pointer_value();
-
-    // Actual format
-    let mut print_args: Vec<BasicMetadataValueEnum> = vec![buf.into(), size.into(), fmt.into()];
-    print_args.extend(args.iter().map(|v| BasicMetadataValueEnum::from(*v)));
-
-    ctx.builder.build_call(snprintf, &print_args, "fmt").ok()?;
-
-    Some(buf.into())
+        .basic()?;
+    Some(result)
 }

@@ -1,0 +1,13 @@
+[package]
+name = "doo_macro"
+version.workspace = true
+edition.workspace = true
+description = "Macro expansion engine — TokenStream API, registry, and discovery"
+license = "MIT"
+
+[dependencies]
+doo_core = { path = "../doo_core" }
+rustc-hash = "1.1"
+
+[features]
+default = []
